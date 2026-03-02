@@ -37,6 +37,8 @@ const providers = {
 const worker = new ReviewWorker();
 const bridge = new ConvexMetadataBridge();
 const records = new Map<string, ReviewRecord>();
+const UNSUPPORTED_REMOTE_SANDBOX_ERROR =
+  'executionMode "remoteSandbox" is not supported by review-service';
 const MAX_RECORDS = 500;
 const MAX_RECORD_AGE_MS = 60 * 60 * 1000;
 const MAX_RECORD_EVENTS = 200;
@@ -166,9 +168,7 @@ async function runInline(record: ReviewRecord): Promise<void> {
     emit(record, { type: 'progress', message: 'starting inline review run' });
 
     if (record.request.executionMode === 'remoteSandbox') {
-      throw new Error(
-        'executionMode "remoteSandbox" is not yet supported for inline review execution'
-      );
+      throw new Error(UNSUPPORTED_REMOTE_SANDBOX_ERROR);
     }
 
     const review = await runReview(
@@ -197,6 +197,9 @@ app.post('/v1/review/start', async (c) => {
   try {
     const body = await c.req.json();
     const { request, delivery } = StartRequestSchema.parse(body);
+    if (request.executionMode === 'remoteSandbox') {
+      return c.json({ error: UNSUPPORTED_REMOTE_SANDBOX_ERROR }, 400);
+    }
 
     const reviewId = randomUUID();
     const record: ReviewRecord = {

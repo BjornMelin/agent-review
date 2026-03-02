@@ -104,4 +104,4 @@ Returns:
 
 - Service state is in-memory only.
 - No authentication layer is currently implemented.
-- `remoteSandbox` execution mode triggers sandbox preflight before provider execution.
+- `remoteSandbox` execution mode is currently rejected with `400`.

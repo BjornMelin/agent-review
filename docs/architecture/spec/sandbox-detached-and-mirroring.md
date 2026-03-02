@@ -37,7 +37,7 @@ Default policy (`createDefaultPolicy`) denies network, uses fixed command allowl
 
 ## Service Integration
 
-When service receives `executionMode=remoteSandbox`, it runs a sandbox preflight (`git --version`) before invoking core review logic.
+`review-service` currently rejects `executionMode=remoteSandbox` requests with `400` and does not invoke `runInSandbox`.
 
 ## Detached Execution (`review-worker`)
 
