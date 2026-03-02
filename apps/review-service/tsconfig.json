@@ -1,0 +1,32 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../../packages/review-types"
+    },
+    {
+      "path": "../../packages/review-core"
+    },
+    {
+      "path": "../../packages/review-provider-codex"
+    },
+    {
+      "path": "../../packages/review-provider-openai"
+    },
+    {
+      "path": "../../packages/review-sandbox-vercel"
+    },
+    {
+      "path": "../../packages/review-convex-bridge"
+    },
+    {
+      "path": "../review-worker"
+    }
+  ]
+}

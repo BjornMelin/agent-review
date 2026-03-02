@@ -1,0 +1,33 @@
+{
+  "name": "@review-agent/review-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run --passWithNoTests",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@review-agent/review-core": "workspace:*",
+    "@review-agent/review-provider-codex": "workspace:*",
+    "@review-agent/review-provider-openai": "workspace:*",
+    "@review-agent/review-sandbox-vercel": "workspace:*",
+    "@review-agent/review-types": "workspace:*",
+    "workflow": "^4.1.0-beta.62"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  }
+}
