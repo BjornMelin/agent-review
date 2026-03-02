@@ -137,7 +137,7 @@ export async function mergeBaseWithHead(
     cwd,
     ['merge-base', head, preferredBranchRef],
     {
-      allowExitCodes: [0, 128],
+      allowExitCodes: [0, 1, 128],
     }
   );
   return mergeBase || null;
@@ -184,12 +184,11 @@ async function buildUncommittedPatch(cwd: string): Promise<string> {
   const [staged, unstaged, untrackedListRaw] = await Promise.all([
     runGit(cwd, ['diff', '--no-color', '--binary', '--staged']),
     runGit(cwd, ['diff', '--no-color', '--binary']),
-    runGit(cwd, ['ls-files', '--others', '--exclude-standard']),
+    runGit(cwd, ['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
 
   const untrackedFiles = untrackedListRaw
-    .split('\n')
-    .map((line) => line.trim())
+    .split('\0')
     .filter((line) => line.length > 0);
   const untrackedPatches = await Promise.all(
     untrackedFiles.map((relativePath) =>

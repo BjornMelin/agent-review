@@ -15,26 +15,38 @@ export async function makeRepo(): Promise<{
   cwd: string;
   cleanup: () => Promise<void>;
 }> {
-  const cwd = await mkdtemp(join(tmpdir(), 'review-core-test-'));
-  await runGit(cwd, ['init', '--initial-branch=main']);
-  await runGit(cwd, ['config', 'user.name', 'Tester']);
-  await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
-  await writeFile(join(cwd, 'file.ts'), 'export const value = 1;\n', 'utf8');
-  await runGit(cwd, ['add', 'file.ts']);
-  await runGit(cwd, ['commit', '-m', 'base']);
-  await writeFile(join(cwd, 'file.ts'), 'export const value = 2;\n', 'utf8');
+  let cwd: string | undefined;
+  try {
+    cwd = await mkdtemp(join(tmpdir(), 'review-core-test-'));
+    await runGit(cwd, ['init', '--initial-branch=main']);
+    await runGit(cwd, ['config', 'user.name', 'Tester']);
+    await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+    await writeFile(join(cwd, 'file.ts'), 'export const value = 1;\n', 'utf8');
+    await runGit(cwd, ['add', 'file.ts']);
+    await runGit(cwd, ['commit', '-m', 'base']);
+    await writeFile(join(cwd, 'file.ts'), 'export const value = 2;\n', 'utf8');
+    const repoPath = cwd;
 
-  return {
-    cwd,
-    cleanup: async () => {
-      await rm(cwd, { recursive: true, force: true });
-    },
-  };
+    return {
+      cwd: repoPath,
+      cleanup: async () => {
+        await rm(repoPath, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true }).catch(() => {});
+    }
+    throw error;
+  }
 }
 
-export function makeProvider(raw: unknown): ReviewProvider {
+export function makeProvider(
+  id: ReviewProvider['id'],
+  raw: unknown
+): ReviewProvider {
   return {
-    id: 'codexDelegate',
+    id,
     capabilities: () => ({
       jsonSchemaOutput: true,
       reasoningControl: false,

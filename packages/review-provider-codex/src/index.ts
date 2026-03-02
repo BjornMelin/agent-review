@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -114,11 +115,7 @@ export class CodexDelegateProvider implements ReviewProvider {
     const hasEnvToken = Boolean(
       process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY
     );
-    const authPath = resolve(
-      process.env.HOME ?? process.cwd(),
-      '.codex',
-      'auth.json'
-    );
+    const authPath = resolve(homedir() ?? process.cwd(), '.codex', 'auth.json');
     const hasAuthFile = await access(authPath)
       .then(() => true)
       .catch(() => false);

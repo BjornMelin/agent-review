@@ -114,6 +114,7 @@ describe('sandbox policy and budget enforcement', () => {
         policy,
       })
     ).rejects.toThrow('sandbox output budget exceeded');
+    expect(stopMock).toHaveBeenCalledTimes(1);
   });
 
   it('enforces artifact budget', async () => {
@@ -126,6 +127,7 @@ describe('sandbox policy and budget enforcement', () => {
         policy,
       })
     ).rejects.toThrow('sandbox artifact budget exceeded');
+    expect(stopMock).toHaveBeenCalledTimes(1);
   });
 
   it('emits audit metadata and applies bootstrap_then_deny profile', async () => {

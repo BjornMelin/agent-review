@@ -136,6 +136,21 @@ function printDoctorChecks(checks: DoctorCheck[]): void {
   }
 }
 
+function parsePositiveIntOption(
+  input: string | undefined,
+  name: string
+): number | undefined {
+  if (input == null || input.trim().length === 0) {
+    return undefined;
+  }
+
+  const parsed = Number(input.trim());
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`--${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function filterDoctorChecks(
   checks: DoctorCheck[],
   provider: string
@@ -194,6 +209,11 @@ async function writeOutput(outputPath: string, payload: string): Promise<void> {
 async function runCommand(options: RunCliOptions): Promise<number> {
   const target = parseTarget(options);
   const providerConfig = parseProviderModel(options);
+  const maxFiles = parsePositiveIntOption(options.maxFiles, 'max-files');
+  const maxDiffBytes = parsePositiveIntOption(
+    options.maxDiffBytes,
+    'max-diff-bytes'
+  );
   const outputFormats = toOutputFormats(options.format);
   const request: ReviewRequest = ReviewRequestSchema.parse({
     cwd: resolve(options.cwd ?? process.cwd()),
@@ -205,12 +225,8 @@ async function runCommand(options: RunCliOptions): Promise<number> {
     reasoningEffort: options.reasoningEffort,
     includePaths: options.includePath,
     excludePaths: options.excludePath,
-    maxFiles: options.maxFiles
-      ? Number.parseInt(options.maxFiles, 10)
-      : undefined,
-    maxDiffBytes: options.maxDiffBytes
-      ? Number.parseInt(options.maxDiffBytes, 10)
-      : undefined,
+    maxFiles,
+    maxDiffBytes,
     outputFormats,
     severityThreshold: options.severityThreshold,
     detached: Boolean(options.detached),

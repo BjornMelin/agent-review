@@ -63,6 +63,8 @@ export type MirrorWriteBridge = {
   mirrorWrite(reviewId: string, result: ReviewResult): Promise<boolean>;
 };
 
+const DEFAULT_MODEL = 'unknown';
+
 type EmitContext = {
   onEvent: RunReviewOptions['onEvent'];
   nowMs: () => number;
@@ -451,7 +453,7 @@ export async function runReview(
       modelResolved:
         providerOutput.resolvedModel ??
         request.model ??
-        `${provider.id}:default`,
+        `${provider.id}:${DEFAULT_MODEL}`,
       executionMode: request.executionMode,
       promptPack: REVIEW_PROMPT_PACK_ID,
       gitContext: diff.gitContext,

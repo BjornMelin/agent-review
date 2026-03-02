@@ -47,18 +47,24 @@ run_build() {
 }
 
 hash_dist_tree() {
-  if ! find "${WORKSPACE_ROOTS[@]}" -type d -name dist | grep -q .; then
-    echo "[repro] ERROR: no dist directories found after build" >&2
+  local files=()
+  while IFS= read -r -d '' file; do
+    files+=("$file");
+  done < <(
+    find "${WORKSPACE_ROOTS[@]}" -type f -print0 | sort -z
+  )
+
+  if ((${#files[@]} == 0)); then
+    echo "[repro] ERROR: no regular files found after build" >&2
     return 1
   fi
 
-  find "${WORKSPACE_ROOTS[@]}" -type d -name dist -print0 \
-    | xargs -0 -I{} find "{}" -type f -print0 \
-    | sort -z \
-    | xargs -0 "$HASH_TOOL" "${HASH_TOOL_ARGS[@]}" \
-    | awk '{ print $1 }' \
-    | "$HASH_TOOL" "${HASH_TOOL_ARGS[@]}" \
-    | awk '{ print $1 }'
+  {
+    for file in "${files[@]}"; do
+      printf '%s\0' "${file#"$ROOT_DIR"/}"
+      cat "$file"
+    done
+  } | "$HASH_TOOL" "${HASH_TOOL_ARGS[@]}" | awk '{ print $1 }'
 }
 
 run_build "pass 1"

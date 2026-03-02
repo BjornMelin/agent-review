@@ -6,7 +6,7 @@ import { makeProvider, makeRepo } from './test-helpers.js';
 function makeDeterministicProvider(
   repoPath: string
 ): ReturnType<typeof makeProvider> {
-  return makeProvider({
+  return makeProvider('codexDelegate', {
     findings: [
       {
         title: '[P1] Value constant changed without tests',

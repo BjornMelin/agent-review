@@ -17,10 +17,23 @@ export const SandboxBudgetSchema = z.strictObject({
   maxArtifactBytes: z.number().int().positive(),
 });
 
+const SANDBOX_ROOT = '/vercel/sandbox';
+
+function sanitizeSandboxCwd(cwd: string): string {
+  const resolved = resolve(SANDBOX_ROOT, cwd);
+  if (
+    resolved !== SANDBOX_ROOT &&
+    !resolved.startsWith(`${SANDBOX_ROOT}${sep}`)
+  ) {
+    throw new Error(`command cwd escapes sandbox root: ${cwd}`);
+  }
+  return resolved;
+}
+
 export const SandboxCommandSchema = z.strictObject({
   cmd: z.string().min(1),
   args: z.array(z.string()).default([]),
-  cwd: z.string().default('/vercel/sandbox'),
+  cwd: z.string().transform(sanitizeSandboxCwd).default(SANDBOX_ROOT),
   timeoutMs: z.number().int().positive().optional(),
   env: z.record(z.string(), z.string()).optional(),
 });
@@ -179,11 +192,9 @@ function redactSecrets(text: string): {
 export async function runInSandbox(
   input: SandboxExecutionInput
 ): Promise<SandboxExecutionOutput> {
-  const sandboxRoot = '/vercel/sandbox';
-
   function sanitizeFilePath(filePath: string): string {
-    const resolvedPath = resolve(sandboxRoot, filePath);
-    const relativePath = relative(sandboxRoot, resolvedPath);
+    const resolvedPath = resolve(SANDBOX_ROOT, filePath);
+    const relativePath = relative(SANDBOX_ROOT, resolvedPath);
     if (
       relativePath.length === 0 ||
       relativePath === '..' ||

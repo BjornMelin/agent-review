@@ -12,6 +12,7 @@ import {
 } from '@review-agent/review-types';
 import { ReviewWorker } from '@review-agent/review-worker';
 import { Hono } from 'hono';
+import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 
 type ReviewStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -26,7 +27,7 @@ type ReviewRecord = {
   error?: string;
   detachedRunId?: string;
   events: LifecycleEvent[];
-  listeners: Set<(event: LifecycleEvent) => void>;
+  listeners: Set<(event: LifecycleEvent) => void | Promise<void>>;
 };
 
 const providers = {
@@ -149,7 +150,16 @@ function emit(
 
   for (const listener of [...record.listeners]) {
     try {
-      listener(enriched);
+      const result = listener(enriched);
+      if (result instanceof Promise) {
+        result.catch(() => {
+          console.error(
+            `[review-service] dropping failed lifecycle listener for ${record.reviewId}:`,
+            'listener promise rejected'
+          );
+          record.listeners.delete(listener);
+        });
+      }
     } catch (error) {
       console.error(
         `[review-service] dropping failed lifecycle listener for ${record.reviewId}:`,
@@ -295,38 +305,66 @@ app.get('/v1/review/:reviewId/events', async (c) => {
     return c.json({ error: 'review not found' }, 404);
   }
 
-  const stream = new ReadableStream({
-    start(controller) {
-      const send = (event: LifecycleEvent) => {
-        controller.enqueue(`event: ${event.type}\n`);
-        controller.enqueue(`data: ${JSON.stringify(event)}\n\n`);
-      };
+  return streamSSE(c, async (stream) => {
+    const send = async (event: LifecycleEvent) => {
+      await stream.writeSSE({
+        event: event.type,
+        data: JSON.stringify(event),
+        id: event.meta.eventId,
+        retry: 1000,
+      });
+    };
 
-      for (const event of record.events) {
-        send(event);
-      }
+    for (const event of record.events) {
+      await send(event);
+    }
 
-      record.listeners.add(send);
+    record.listeners.add(send);
 
-      const heartbeat = setInterval(() => {
-        controller.enqueue(': keepalive\n\n');
-      }, 15000);
+    const heartbeat = setInterval(() => {
+      void stream.writeSSE({
+        event: 'keepalive',
+        data: '',
+      });
+    }, 15000);
 
-      const abortHandler = () => {
-        clearInterval(heartbeat);
-        record.listeners.delete(send);
-        controller.close();
-      };
-
-      c.req.raw.signal.addEventListener('abort', abortHandler, { once: true });
-    },
+    stream.onAbort(() => {
+      clearInterval(heartbeat);
+      record.listeners.delete(send);
+    });
   });
+});
 
-  return new Response(stream, {
+app.get('/v1/review/:reviewId/artifacts/:format', (c) => {
+  const record = records.get(c.req.param('reviewId'));
+  if (!record || !record.result) {
+    return c.json({ error: 'artifact not ready' }, 404);
+  }
+
+  const allowedFormats = ['sarif', 'json', 'markdown'] as const;
+  const formatParam = c.req.param('format');
+  const format = allowedFormats.find((value) => value === formatParam);
+  if (!format) {
+    return c.json(
+      {
+        error: `artifact format must be one of: ${allowedFormats.join(', ')}`,
+      },
+      400
+    );
+  }
+
+  const artifact = record.result.artifacts[format];
+  if (!artifact) {
+    return c.json({ error: `artifact format ${format} not generated` }, 404);
+  }
+
+  const contentType =
+    format === 'markdown'
+      ? 'text/markdown; charset=utf-8'
+      : 'application/json; charset=utf-8';
+  return new Response(artifact, {
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
+      'Content-Type': contentType,
     },
   });
 });
@@ -350,29 +388,6 @@ app.post('/v1/review/:reviewId/cancel', async (c) => {
   }
 
   return c.json({ reviewId, status: record.status, cancelled: false }, 409);
-});
-
-app.get('/v1/review/:reviewId/artifacts/:format', (c) => {
-  const record = records.get(c.req.param('reviewId'));
-  if (!record || !record.result) {
-    return c.json({ error: 'artifact not ready' }, 404);
-  }
-
-  const format = c.req.param('format') as 'sarif' | 'json' | 'markdown';
-  const artifact = record.result.artifacts[format];
-  if (!artifact) {
-    return c.json({ error: `artifact format ${format} not generated` }, 404);
-  }
-
-  const contentType =
-    format === 'markdown'
-      ? 'text/markdown; charset=utf-8'
-      : 'application/json; charset=utf-8';
-  return new Response(artifact, {
-    headers: {
-      'Content-Type': contentType,
-    },
-  });
 });
 
 const port = Number.parseInt(process.env.PORT ?? '3042', 10);
