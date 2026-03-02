@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts", "src/**/*.json"],
+  "references": [
+    {
+      "path": "../review-types"
+    },
+    {
+      "path": "../review-git"
+    },
+    {
+      "path": "../review-prompts"
+    },
+    {
+      "path": "../review-reporters"
+    }
+  ]
+}

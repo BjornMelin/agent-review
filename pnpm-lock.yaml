@@ -104,7 +104,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/review-types
       workflow:
-        specifier: ^4.1.0-beta.62
+        specifier: 4.1.0-beta.62
         version: 4.1.0-beta.62(@nestjs/common@11.1.14(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.14(@nestjs/common@11.1.14(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))(@opentelemetry/api@1.9.0)(@swc/cli@0.8.0(@swc/core@1.15.3)(chokidar@5.0.0))(@swc/core@1.15.3)(react-router@7.13.1(react@19.2.4))(typescript@5.9.3)
     devDependencies:
       tsx:

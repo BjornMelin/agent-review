@@ -1,0 +1,8 @@
+{
+  "promptPackId": "codex-review-parity-v1",
+  "uncommittedPrompt": "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+  "baseBranchPromptTemplate": "Review the code changes against the base branch '{baseBranch}'. The merge base commit for this comparison is {mergeBaseSha}. Run `git diff {mergeBaseSha}` to inspect the changes relative to {baseBranch}. Provide prioritized, actionable findings.",
+  "baseBranchPromptBackupTemplate": "Review the code changes against the base branch '{branch}'. Start by finding the merge diff between the current branch and {branch}'s upstream e.g. (`git merge-base HEAD \"$(git rev-parse --abbrev-ref \"{branch}@{upstream}\")\"`), then run `git diff` against that SHA to see what changes we would merge into the {branch} branch. Provide prioritized, actionable findings.",
+  "commitPromptTemplate": "Review the code changes introduced by commit {sha}. Provide prioritized, actionable findings.",
+  "commitPromptWithTitleTemplate": "Review the code changes introduced by commit {sha} (\"{title}\"). Provide prioritized, actionable findings."
+}
