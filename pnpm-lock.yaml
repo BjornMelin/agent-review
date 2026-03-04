@@ -52,8 +52,8 @@ importers:
   apps/review-service:
     dependencies:
       '@hono/node-server':
-        specifier: ^1.14.0
-        version: 1.19.9(hono@4.12.3)
+        specifier: ^1.19.10
+        version: 1.19.10(hono@4.12.4)
       '@review-agent/review-convex-bridge':
         specifier: workspace:*
         version: link:../../packages/review-convex-bridge
@@ -76,8 +76,8 @@ importers:
         specifier: workspace:*
         version: link:../review-worker
       hono:
-        specifier: ^4.7.2
-        version: 4.12.3
+        specifier: ^4.12.4
+        version: 4.12.4
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -725,8 +725,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@hono/node-server@1.19.9':
-    resolution: {integrity: sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==}
+  '@hono/node-server@1.19.10':
+    resolution: {integrity: sha512-hZ7nOssGqRgyV3FVVQdfi+U4q02uB23bpnYpdvNXkYTRRyWx84b7yf1ans+dnJ/7h41sGL3CeQTfO+ZGxuO+Iw==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
@@ -1638,8 +1638,8 @@ packages:
       bare-buffer:
         optional: true
 
-  bare-os@3.7.0:
-    resolution: {integrity: sha512-64Rcwj8qlnTZU8Ps6JJEdSmxBEUGgI7g8l+lMtsJLl4IsfTcHMTfJ188u2iGV6P6YPRZrtv72B2kjn+hp+Yv3g==}
+  bare-os@3.7.1:
+    resolution: {integrity: sha512-ebvMaS5BgZKmJlvuWh14dg9rbUI84QeV3WlWn6Ph6lFI8jJoh7ADtVTyD2c93euwbe+zgi0DVrl4YmqXeM9aIA==}
     engines: {bare: '>=1.14.0'}
 
   bare-path@3.0.0:
@@ -2181,8 +2181,8 @@ packages:
     resolution: {integrity: sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==}
     engines: {node: '>= 0.4'}
 
-  hono@4.12.3:
-    resolution: {integrity: sha512-SFsVSjp8sj5UumXOOFlkZOG6XS9SJDKw0TbwFeV+AJ8xlST8kxK5Z/5EYa111UY8732lK2S/xB653ceuaoGwpg==}
+  hono@4.12.4:
+    resolution: {integrity: sha512-ooiZW1Xy8rQ4oELQ++otI2T9DsKpV0M6c6cO6JGx4RTfav9poFFLlet9UMXHZnoM1yG0HWGlQLswBGX3RZmHtg==}
     engines: {node: '>=16.9.0'}
 
   http-cache-semantics@4.2.0:
@@ -3574,9 +3574,9 @@ snapshots:
   '@esbuild/win32-x64@0.27.3':
     optional: true
 
-  '@hono/node-server@1.19.9(hono@4.12.3)':
+  '@hono/node-server@1.19.10(hono@4.12.4)':
     dependencies:
-      hono: 4.12.3
+      hono: 4.12.4
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
@@ -4731,11 +4731,11 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
-  bare-os@3.7.0: {}
+  bare-os@3.7.1: {}
 
   bare-path@3.0.0:
     dependencies:
-      bare-os: 3.7.0
+      bare-os: 3.7.1
 
   bare-stream@2.8.0(bare-events@2.8.2):
     dependencies:
@@ -5345,7 +5345,7 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
-  hono@4.12.3: {}
+  hono@4.12.4: {}
 
   http-cache-semantics@4.2.0: {}
 
