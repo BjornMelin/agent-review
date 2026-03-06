@@ -19,7 +19,7 @@
     "@review-agent/review-provider-openai": "workspace:*",
     "@review-agent/review-sandbox-vercel": "workspace:*",
     "@review-agent/review-types": "workspace:*",
-    "workflow": "4.1.0-beta.62"
+    "workflow": "4.1.0-beta.63"
   },
   "devDependencies": {
     "tsx": "^4.20.5"
