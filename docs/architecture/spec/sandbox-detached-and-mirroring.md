@@ -4,6 +4,9 @@
 
 `runInSandbox` executes command batches under policy and budget controls.
 
+The default Vercel Sandbox runtime is `node24`. Callers may explicitly request
+`node22` or `python3.13` when a review workload requires a different runtime.
+
 ## Policy Model
 
 - `commandAllowlist: Set<string>`
@@ -45,8 +48,9 @@ Detached runs are started via `ReviewWorker.startDetached(requestInput)`.
 
 Execution strategy:
 
-1. Attempt `workflow/api` `start(reviewWorkflow, [request])`.
-2. If workflow APIs fail/unavailable, fallback to local async in-process run.
+1. Attempt `@workflow/core/runtime` `start(reviewWorkflow, [request])`.
+2. If workflow runtime APIs fail/unavailable, fallback to local async in-process
+   run.
 
 Run records expose:
 

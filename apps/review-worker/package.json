@@ -17,12 +17,11 @@
     "@review-agent/review-core": "workspace:*",
     "@review-agent/review-provider-codex": "workspace:*",
     "@review-agent/review-provider-openai": "workspace:*",
-    "@review-agent/review-sandbox-vercel": "workspace:*",
     "@review-agent/review-types": "workspace:*",
-    "workflow": "4.1.0-beta.62"
+    "@workflow/core": "4.2.4"
   },
   "devDependencies": {
-    "tsx": "^4.20.5"
+    "tsx": "4.21.0"
   },
   "exports": {
     ".": {

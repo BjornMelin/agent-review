@@ -23,6 +23,6 @@
     "@review-agent/review-prompts": "workspace:*",
     "@review-agent/review-reporters": "workspace:*",
     "@review-agent/review-types": "workspace:*",
-    "minimatch": "^10.0.1"
+    "minimatch": "^10.2.5"
   }
 }

@@ -18,6 +18,7 @@ export const SandboxBudgetSchema = z.strictObject({
 });
 
 const SANDBOX_ROOT = '/vercel/sandbox';
+const DEFAULT_SANDBOX_RUNTIME = 'node24';
 
 function sanitizeSandboxCwd(cwd: string): string {
   const resolved = resolve(SANDBOX_ROOT, cwd);
@@ -229,7 +230,7 @@ export async function runInSandbox(
       : undefined;
 
   const sandbox = await Sandbox.create({
-    runtime: input.runtime ?? 'node22',
+    runtime: input.runtime ?? DEFAULT_SANDBOX_RUNTIME,
     timeout: budget.maxWallTimeMs,
     networkPolicy: createNetworkPolicy(
       input.policy.networkProfile,

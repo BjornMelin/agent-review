@@ -127,6 +127,7 @@ Optional provider diagnostics hooks:
   - `gateway`
   - `openrouter`
 - Uses AI SDK structured output (`Output.object`) with `RawModelOutputSchema`.
+- Uses AI SDK Gateway `createGateway` for `gateway:*` model routing.
 - Environment variables:
   - `AI_GATEWAY_API_KEY`
   - `OPENROUTER_API_KEY`

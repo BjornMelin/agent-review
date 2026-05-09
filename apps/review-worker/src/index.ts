@@ -137,7 +137,7 @@ export class ReviewWorker {
   async startDetached(requestInput: unknown): Promise<DetachedRunRecord> {
     const request = ReviewRequestSchema.parse(requestInput);
     try {
-      const { start } = await import('workflow/api');
+      const { start } = await import('@workflow/core/runtime');
       const run = await start(reviewWorkflow, [request]);
       const record: DetachedRunRecord = {
         runId: run.runId,
@@ -161,7 +161,7 @@ export class ReviewWorker {
 
     if (local.workflowRunId) {
       try {
-        const { getRun } = await import('workflow/api');
+        const { getRun } = await import('@workflow/core/runtime');
         const workflowRun = await getRun(local.workflowRunId);
         const status = await workflowRun.status;
         if (status === 'completed') {
@@ -199,7 +199,7 @@ export class ReviewWorker {
 
     if (record.workflowRunId) {
       try {
-        const { getRun } = await import('workflow/api');
+        const { getRun } = await import('@workflow/core/runtime');
         const workflowRun = await getRun(record.workflowRunId);
         await workflowRun.cancel();
       } catch {

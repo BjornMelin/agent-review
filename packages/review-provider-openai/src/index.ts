@@ -1,4 +1,4 @@
-import { createGatewayProvider } from '@ai-sdk/gateway';
+import { createGateway } from '@ai-sdk/gateway';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import {
   type ProviderDiagnostic,
@@ -9,7 +9,7 @@ import {
   type ReviewProviderRunOutput,
   type ReviewProviderValidationInput,
 } from '@review-agent/review-types';
-import { Output, generateText } from 'ai';
+import { generateText, Output } from 'ai';
 
 const DEFAULT_GATEWAY_MODEL_ID = 'gateway:openai/gpt-5';
 const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -83,7 +83,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
       openRouterOptions.headers = this.options.openRouterHeaders;
     }
 
-    const gatewayProvider = createGatewayProvider(gatewayOptions);
+    const gatewayProvider = createGateway(gatewayOptions);
     const openRouterProvider = createOpenAICompatible(openRouterOptions);
 
     this.registry = {

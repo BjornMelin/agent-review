@@ -20,6 +20,6 @@
   },
   "dependencies": {
     "@review-agent/review-types": "workspace:*",
-    "convex": "^1.32.0"
+    "convex": "^1.38.0"
   }
 }
