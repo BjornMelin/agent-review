@@ -355,7 +355,7 @@ app.get('/v1/review/:reviewId/events', async (c) => {
 
 app.get('/v1/review/:reviewId/artifacts/:format', (c) => {
   const record = records.get(c.req.param('reviewId'));
-  if (!record || !record.result) {
+  if (!record?.result) {
     return c.json({ error: 'artifact not ready' }, 404);
   }
 

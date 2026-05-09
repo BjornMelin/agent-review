@@ -42,7 +42,5 @@
       "path": "./packages/review-convex-bridge"
     }
   ],
-  "exclude": [
-    "opensrc"
-  ]
+  "exclude": ["opensrc"]
 }

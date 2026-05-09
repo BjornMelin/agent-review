@@ -3,10 +3,11 @@
   "files": {
     "includes": [
       "**",
-      "!**/dist/**",
-      "!**/.turbo/**",
-      "!**/coverage/**",
-      "!opensrc/**"
+      "!**/dist",
+      "!**/.turbo",
+      "!**/coverage",
+      "!opensrc",
+      "!.agents"
     ]
   },
   "formatter": {
