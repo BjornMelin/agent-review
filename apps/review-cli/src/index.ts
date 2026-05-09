@@ -3,8 +3,8 @@ import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ConvexMetadataBridge } from '@review-agent/review-convex-bridge';
 import {
-  type DoctorCheck,
   computeExitCode,
+  type DoctorCheck,
   listStaticModels,
   runDoctorChecks,
   runReview,
@@ -167,7 +167,28 @@ function filterDoctorChecks(
   if (!providerPrefix) {
     throw new Error(`invalid provider filter "${provider}"`);
   }
-  return checks.filter((check) => check.name.startsWith(providerPrefix));
+  const providerChecks = checks.filter((check) =>
+    check.name.startsWith(providerPrefix)
+  );
+  if (provider === 'gateway' || provider === 'openrouter') {
+    const providerToken = provider === 'gateway' ? 'gateway' : 'openrouter';
+    const envToken = provider === 'gateway' ? 'AI_GATEWAY' : 'OPENROUTER';
+    return providerChecks.filter((check) => {
+      if (check.name.endsWith('.available')) {
+        return true;
+      }
+      const searchable = [
+        check.name,
+        check.detail,
+        check.remediation ?? '',
+      ].join(' ');
+      return (
+        searchable.toLowerCase().includes(providerToken) ||
+        searchable.includes(envToken)
+      );
+    });
+  }
+  return providerChecks;
 }
 
 function mapErrorToExitCode(error: unknown): number {
