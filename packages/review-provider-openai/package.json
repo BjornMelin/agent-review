@@ -19,10 +19,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@ai-sdk/gateway": "^2.0.0",
-    "@ai-sdk/openai-compatible": "^1.0.0",
+    "@ai-sdk/gateway": "^3.0.112",
+    "@ai-sdk/openai-compatible": "^2.0.47",
     "@review-agent/review-types": "workspace:*",
-    "ai": "^6.0.105",
-    "zod": "^4.3.6"
+    "ai": "^6.0.177",
+    "zod": "^4.4.3"
   }
 }

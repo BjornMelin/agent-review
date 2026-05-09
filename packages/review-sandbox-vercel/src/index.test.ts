@@ -1,31 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const {
-  runCommandMock,
-  writeFilesMock,
-  updateNetworkPolicyMock,
-  stopMock,
-  createMock,
-} = vi.hoisted(() => {
-  const runCommand = vi.fn();
-  const writeFiles = vi.fn();
-  const updateNetworkPolicy = vi.fn();
-  const stop = vi.fn();
-  const create = vi.fn(async () => ({
-    sandboxId: 'sbx-test',
-    writeFiles,
-    runCommand,
-    updateNetworkPolicy,
-    stop,
-  }));
-  return {
-    runCommandMock: runCommand,
-    writeFilesMock: writeFiles,
-    updateNetworkPolicyMock: updateNetworkPolicy,
-    stopMock: stop,
-    createMock: create,
-  };
-});
+const { runCommandMock, updateNetworkPolicyMock, stopMock, createMock } =
+  vi.hoisted(() => {
+    const runCommand = vi.fn();
+    const writeFiles = vi.fn();
+    const updateNetworkPolicy = vi.fn();
+    const stop = vi.fn();
+    const create = vi.fn(async () => ({
+      sandboxId: 'sbx-test',
+      writeFiles,
+      runCommand,
+      updateNetworkPolicy,
+      stop,
+    }));
+    return {
+      runCommandMock: runCommand,
+      updateNetworkPolicyMock: updateNetworkPolicy,
+      stopMock: stop,
+      createMock: create,
+    };
+  });
 
 vi.mock('@vercel/sandbox', () => ({
   Sandbox: {
@@ -150,7 +144,24 @@ describe('sandbox policy and budget enforcement', () => {
     expect(result.audit.redactions.apiKeyLike).toBeGreaterThan(0);
     expect(result.audit.redactions.bearer).toBeGreaterThan(0);
     expect(result.audit.commands[0]?.commandId).toBeTruthy();
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runtime: 'node24' })
+    );
     expect(updateNetworkPolicyMock).toHaveBeenCalledWith('deny-all');
     expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes through an explicit sandbox runtime override', async () => {
+    const policy = createDefaultPolicy();
+
+    await runInSandbox({
+      commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+      policy,
+      runtime: 'node22',
+    });
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runtime: 'node22' })
+    );
   });
 });

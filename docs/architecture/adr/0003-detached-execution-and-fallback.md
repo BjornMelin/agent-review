@@ -11,7 +11,7 @@ Service workloads can exceed synchronous HTTP tolerances. The platform requires 
 
 Use workflow-backed detached execution when available, with local asynchronous fallback when workflow API operations are unavailable.
 
-- Primary path: `workflow/api` `start(...)`
+- Primary path: `@workflow/core/runtime` `start(...)`
 - Fallback path: local in-process async execution with in-memory state tracking
 - Shared detached status model for both paths
 

@@ -104,7 +104,7 @@ export class ConvexMetadataBridge {
   }
 
   async readSummary(reviewId: string): Promise<MirrorReadPayload | null> {
-    if (!this.client || !this.client.query) {
+    if (!this.client?.query) {
       return null;
     }
     try {

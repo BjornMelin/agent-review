@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ReviewRequestSchema, buildJsonSchemaSet } from './index.js';
+import { buildJsonSchemaSet, ReviewRequestSchema } from './index.js';
 
 describe('review-types schemas', () => {
   it('rejects unknown keys at boundaries', () => {

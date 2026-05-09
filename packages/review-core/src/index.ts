@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  type DiffChunk,
-  type DiffContext,
   buildChangedLineIndex,
   collectDiffForTarget,
+  type DiffChunk,
+  type DiffContext,
   normalizeFilePath,
 } from '@review-agent/review-git';
 import {
@@ -19,17 +19,17 @@ import {
 } from '@review-agent/review-reporters';
 import {
   type CorrelationIds,
+  hasFindingsAtOrAboveThreshold,
   type LifecycleEvent,
   type OutputFormat,
   type ProviderDiagnostic,
+  parseRawModelOutput,
+  parseReviewRequest,
   type RawModelOutput,
   type ReviewFinding,
   type ReviewProvider,
   type ReviewRequest,
   type ReviewResult,
-  hasFindingsAtOrAboveThreshold,
-  parseRawModelOutput,
-  parseReviewRequest,
   severityToPriority,
 } from '@review-agent/review-types';
 import { minimatch } from 'minimatch';

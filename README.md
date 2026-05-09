@@ -36,8 +36,8 @@ docs/
 
 ## Prerequisites
 
-- Node.js 22.x
-- pnpm 10.6.0
+- Node.js 24.x
+- pnpm 11.0.9
 - git (required for diff collection)
 - Optional: `codex` CLI for `codexDelegate` provider
 

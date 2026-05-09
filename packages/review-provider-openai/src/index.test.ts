@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const generateTextMock = vi.fn();
 
 vi.mock('@ai-sdk/gateway', () => ({
-  createGatewayProvider: () => (modelId: string) => ({
+  createGateway: () => (modelId: string) => ({
     provider: 'gateway',
     modelId,
   }),

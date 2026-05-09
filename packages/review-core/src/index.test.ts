@@ -6,8 +6,8 @@ import type {
 } from '@review-agent/review-types';
 import { describe, expect, it } from 'vitest';
 import {
-  InvalidFindingLocationError,
   computeExitCode,
+  InvalidFindingLocationError,
   runDoctorChecks,
   runReview,
 } from './index.js';

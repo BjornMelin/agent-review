@@ -7,7 +7,7 @@ import type { ReviewProvider } from '@review-agent/review-types';
 
 const execFileAsync = promisify(execFile);
 
-export async function runGit(cwd: string, args: string[]): Promise<void> {
+async function runGit(cwd: string, args: string[]): Promise<void> {
   await execFileAsync('git', args, { cwd });
 }
 

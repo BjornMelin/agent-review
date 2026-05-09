@@ -1,7 +1,14 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
   "files": {
-    "ignore": ["**/dist/**", "**/.turbo/**", "**/coverage/**"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/.turbo",
+      "!**/coverage",
+      "!opensrc",
+      "!.agents"
+    ]
   },
   "formatter": {
     "enabled": true,
