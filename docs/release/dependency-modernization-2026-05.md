@@ -37,9 +37,9 @@ with current upstream support:
   pulled unused framework adapters and CLI dependencies into the worker graph.
 - pnpm overrides are limited to patched transitive versions needed to resolve
   advisories in `devalue`, `picomatch`, `postcss`, `undici`, and `vite`.
-- `@nestjs/core` build scripts are denied because the only observed install
-  script is an `opencollective` donation prompt. Native tool packages required
-  for execution remain allowed.
+- pnpm build-script policy allows only the native/toolchain packages still
+  present in the dependency graph: `@biomejs/biome`, `cbor-extract`, and
+  `esbuild`.
 
 ## Verification
 
