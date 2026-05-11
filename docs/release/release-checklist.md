@@ -1,5 +1,12 @@
 # Release Checklist
 
+## Issue-Backed Execution
+
+Use the
+[one-issue-one-PR release playbook](./one-issue-one-pr-playbook.md) for roadmap
+execution, release-train ledgers, PR body evidence, hosted review handling, and
+issue closeout.
+
 ## Preconditions
 
 1. `pnpm install --frozen-lockfile`
