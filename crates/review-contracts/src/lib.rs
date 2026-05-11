@@ -9,7 +9,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -32,6 +32,10 @@ const REVIEW_RESULT_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/review-result.schema.json");
 const SANDBOX_AUDIT_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/sandbox-audit.schema.json");
+
+static REVIEW_REQUEST_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
+static REVIEW_RESULT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
+static SANDBOX_AUDIT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
 
 /// Contract parsing error raised before a generated DTO crosses the Rust boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,42 +81,46 @@ impl Error for ContractParseError {}
 
 /// Validate and parse a `ReviewRequest` JSON value through the committed schema.
 pub fn parse_review_request(input: &Value) -> Result<ReviewRequest, ContractParseError> {
-    parse_contract("ReviewRequest", REVIEW_REQUEST_SCHEMA, input)
+    parse_contract(
+        "ReviewRequest",
+        REVIEW_REQUEST_SCHEMA,
+        &REVIEW_REQUEST_VALIDATOR,
+        input,
+    )
 }
 
 /// Validate and parse a `ReviewResult` JSON value through the committed schema.
 pub fn parse_review_result(input: &Value) -> Result<ReviewResult, ContractParseError> {
-    let result = parse_contract("ReviewResult", REVIEW_RESULT_SCHEMA, input)?;
+    let result = parse_contract(
+        "ReviewResult",
+        REVIEW_RESULT_SCHEMA,
+        &REVIEW_RESULT_VALIDATOR,
+        input,
+    )?;
     validate_review_result_semantics(&result)?;
     Ok(result)
 }
 
 /// Validate and parse a `SandboxAudit` JSON value through the committed schema.
 pub fn parse_sandbox_audit(input: &Value) -> Result<SandboxAudit, ContractParseError> {
-    parse_contract("SandboxAudit", SANDBOX_AUDIT_SCHEMA, input)
+    parse_contract(
+        "SandboxAudit",
+        SANDBOX_AUDIT_SCHEMA,
+        &SANDBOX_AUDIT_VALIDATOR,
+        input,
+    )
 }
 
 fn parse_contract<T>(
     schema_name: &'static str,
     schema_json: &'static str,
+    validator_cache: &'static OnceLock<Result<jsonschema::Validator, String>>,
     input: &Value,
 ) -> Result<T, ContractParseError>
 where
     T: DeserializeOwned,
 {
-    let schema_value = serde_json::from_str::<Value>(schema_json).map_err(|error| {
-        ContractParseError::InvalidSchema {
-            schema: schema_name,
-            message: error.to_string(),
-        }
-    })?;
-    let validator = jsonschema::validator_for(&schema_value).map_err(|error| {
-        ContractParseError::InvalidSchema {
-            schema: schema_name,
-            message: error.to_string(),
-        }
-    })?;
-
+    let validator = schema_validator(schema_name, schema_json, validator_cache)?;
     validator
         .validate(input)
         .map_err(|error| ContractParseError::InvalidJson {
@@ -124,6 +132,27 @@ where
         schema: schema_name,
         message: error.to_string(),
     })
+}
+
+fn schema_validator(
+    schema_name: &'static str,
+    schema_json: &'static str,
+    validator_cache: &'static OnceLock<Result<jsonschema::Validator, String>>,
+) -> Result<&'static jsonschema::Validator, ContractParseError> {
+    let compiled = validator_cache.get_or_init(|| {
+        let schema_value =
+            serde_json::from_str::<Value>(schema_json).map_err(|error| error.to_string())?;
+
+        jsonschema::validator_for(&schema_value).map_err(|error| error.to_string())
+    });
+
+    match compiled {
+        Ok(validator) => Ok(validator),
+        Err(message) => Err(ContractParseError::InvalidSchema {
+            schema: schema_name,
+            message: message.clone(),
+        }),
+    }
 }
 
 fn validate_review_result_semantics(result: &ReviewResult) -> Result<(), ContractParseError> {
@@ -138,4 +167,35 @@ fn validate_review_result_semantics(result: &ReviewResult) -> Result<(), Contrac
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parser_helpers_reuse_compiled_validators() {
+        let request = json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "uncommittedChanges" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        });
+
+        parse_review_request(&request).expect("request parses");
+        let first = request_validator_ref();
+
+        parse_review_request(&request).expect("request parses again");
+        let second = request_validator_ref();
+
+        assert!(std::ptr::eq(first, second));
+    }
+
+    fn request_validator_ref() -> &'static jsonschema::Validator {
+        REVIEW_REQUEST_VALIDATOR
+            .get()
+            .and_then(|result| result.as_ref().ok())
+            .expect("request validator must be compiled")
+    }
 }
