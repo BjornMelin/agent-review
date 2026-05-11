@@ -4,6 +4,14 @@
   "generator": "packages/review-types/scripts/generate-json-schema.mjs",
   "schemas": [
     {
+      "name": "commandRunInput",
+      "file": "command-run-input.schema.json"
+    },
+    {
+      "name": "commandRunOutput",
+      "file": "command-run-output.schema.json"
+    },
+    {
       "name": "lifecycleEvent",
       "file": "lifecycle-event.schema.json"
     },

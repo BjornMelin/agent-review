@@ -1,11 +1,14 @@
 ---
 source: crates/review-contracts/tests/contract_parity.rs
+assertion_line: 40
 expression: snapshot
 ---
 schemaSetVersion: 1
 source: packages/review-types/src/index.ts
 generator: packages/review-types/scripts/generate-json-schema.mjs
 schemas:
+  - commandRunInput -> command-run-input.schema.json
+  - commandRunOutput -> command-run-output.schema.json
   - lifecycleEvent -> lifecycle-event.schema.json
   - outputFormat -> output-format.schema.json
   - providerDiagnostic -> provider-diagnostic.schema.json

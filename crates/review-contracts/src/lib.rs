@@ -31,11 +31,21 @@ const REVIEW_REQUEST_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/review-request.schema.json");
 const REVIEW_RESULT_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/review-result.schema.json");
+const COMMAND_RUN_INPUT_SCHEMA: &str = include_str!(
+    "../../../packages/review-types/generated/json-schema/command-run-input.schema.json"
+);
+const COMMAND_RUN_OUTPUT_SCHEMA: &str = include_str!(
+    "../../../packages/review-types/generated/json-schema/command-run-output.schema.json"
+);
 const SANDBOX_AUDIT_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/sandbox-audit.schema.json");
 
 static REVIEW_REQUEST_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
 static REVIEW_RESULT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
+static COMMAND_RUN_INPUT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> =
+    OnceLock::new();
+static COMMAND_RUN_OUTPUT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> =
+    OnceLock::new();
 static SANDBOX_AUDIT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
 
 /// Contract parsing error raised before a generated DTO crosses the Rust boundary.
@@ -112,6 +122,26 @@ pub fn parse_review_result(input: &Value) -> Result<ReviewResult, ContractParseE
     )?;
     validate_review_result_semantics(&result)?;
     Ok(result)
+}
+
+/// Validate and parse a `CommandRunInput` JSON value through the committed schema.
+pub fn parse_command_run_input(input: &Value) -> Result<CommandRunInput, ContractParseError> {
+    parse_contract(
+        "CommandRunInput",
+        COMMAND_RUN_INPUT_SCHEMA,
+        &COMMAND_RUN_INPUT_VALIDATOR,
+        input,
+    )
+}
+
+/// Validate and parse a `CommandRunOutput` JSON value through the committed schema.
+pub fn parse_command_run_output(input: &Value) -> Result<CommandRunOutput, ContractParseError> {
+    parse_contract(
+        "CommandRunOutput",
+        COMMAND_RUN_OUTPUT_SCHEMA,
+        &COMMAND_RUN_OUTPUT_VALIDATOR,
+        input,
+    )
 }
 
 /// Validate and parse a `SandboxAudit` JSON value through the committed schema.
