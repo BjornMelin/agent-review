@@ -56,6 +56,9 @@ const SAFE_GIT_ENV = {
 } as const;
 
 const SAFE_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+const MAX_UNTRACKED_PATH_BYTES = 4096;
+const MIN_UNTRACKED_LIST_BUFFER_BYTES = 8 * 1024;
+const MAX_UNTRACKED_LIST_BUFFER_BYTES = 16 * 1024 * 1024;
 
 function assertSafeGitRevisionArgument(value: string, label: string): void {
   if (value.startsWith('-')) {
@@ -429,6 +432,54 @@ function gitBufferOptions(options: DiffIndexOptions): GitExecOptions {
     : { maxBufferBytes: options.maxDiffBytes };
 }
 
+function assertSafePathFilterArgument(value: string, label: string): void {
+  const segments = value.split('/');
+  if (
+    value.startsWith('/') ||
+    value.startsWith('~') ||
+    value.startsWith('!') ||
+    value.startsWith(':') ||
+    value.includes('\\') ||
+    value.includes('//') ||
+    value.includes('\0') ||
+    segments.includes('..') ||
+    value === '.' ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    })
+  ) {
+    throw new Error(`${label} must be a safe repository-relative path filter`);
+  }
+}
+
+function gitPathspecArgs(options: DiffIndexOptions): string[] {
+  const pathspecs: string[] = [];
+  for (const [index, includePath] of (options.includePaths ?? []).entries()) {
+    assertSafePathFilterArgument(includePath, `includePaths[${index}]`);
+    pathspecs.push(`:(top,glob)${includePath}`);
+  }
+  for (const [index, excludePath] of (options.excludePaths ?? []).entries()) {
+    assertSafePathFilterArgument(excludePath, `excludePaths[${index}]`);
+    pathspecs.push(`:(top,exclude,glob)${excludePath}`);
+  }
+  return pathspecs.length > 0 ? ['--', ...pathspecs] : [];
+}
+
+function untrackedListBufferOptions(options: DiffIndexOptions): GitExecOptions {
+  const maxFiles =
+    options.maxFiles ?? DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxFiles;
+  return {
+    maxBufferBytes: Math.min(
+      MAX_UNTRACKED_LIST_BUFFER_BYTES,
+      Math.max(
+        MIN_UNTRACKED_LIST_BUFFER_BYTES,
+        (maxFiles + 1) * (MAX_UNTRACKED_PATH_BYTES + 1)
+      )
+    ),
+  };
+}
+
 function pathMatchesAnyFilter(
   relativePath: string,
   patterns: string[]
@@ -467,18 +518,38 @@ async function buildUncommittedPatch(
   options: DiffIndexOptions = {}
 ): Promise<string> {
   const gitOptions = gitBufferOptions(options);
-  const [staged, unstaged, untrackedListRaw] = await Promise.all([
+  const pathspecArgs = gitPathspecArgs(options);
+  let untrackedListRaw: string;
+  try {
+    untrackedListRaw = await runGit(
+      cwd,
+      ['ls-files', '--others', '--exclude-standard', '-z', ...pathspecArgs],
+      untrackedListBufferOptions(options)
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('maxBuffer')) {
+      throw new Error('untracked file list exceeds configured budget');
+    }
+    throw error;
+  }
+  const [staged, unstaged] = await Promise.all([
     runGit(
       cwd,
-      ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary', '--staged'],
+      [
+        'diff',
+        ...SAFE_DIFF_ARGS,
+        '--no-color',
+        '--binary',
+        '--staged',
+        ...pathspecArgs,
+      ],
       gitOptions
     ),
     runGit(
       cwd,
-      ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary'],
+      ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary', ...pathspecArgs],
       gitOptions
     ),
-    runGit(cwd, ['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
 
   const untrackedFiles = untrackedListRaw
@@ -558,6 +629,7 @@ export async function collectDiffForTarget(
             '--binary',
             '--end-of-options',
             mergeBaseSha,
+            ...gitPathspecArgs(options),
           ],
           gitBufferOptions(options)
         );
@@ -571,6 +643,7 @@ export async function collectDiffForTarget(
             '--binary',
             '--end-of-options',
             target.branch,
+            ...gitPathspecArgs(options),
           ],
           gitBufferOptions(options)
         );
@@ -604,6 +677,7 @@ export async function collectDiffForTarget(
           '--format=',
           '--end-of-options',
           commitSha,
+          ...gitPathspecArgs(options),
         ],
         gitBufferOptions(options)
       );

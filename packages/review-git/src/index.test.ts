@@ -376,6 +376,89 @@ describe('collectDiffForTarget', () => {
     }
   });
 
+  it('applies path filters inside tracked diff subprocesses', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await mkdir(join(cwd, 'src'));
+      await mkdir(join(cwd, 'tmp'));
+      await writeFile(join(cwd, 'src', 'keep.txt'), 'base\n');
+      await writeFile(join(cwd, 'tmp', 'noisy.txt'), 'base\n');
+      await runGit(cwd, ['add', 'src/keep.txt', 'tmp/noisy.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+      await runGit(cwd, ['checkout', '-b', 'feature']);
+
+      await writeFile(join(cwd, 'src', 'keep.txt'), 'changed\n');
+      await writeFile(join(cwd, 'tmp', 'noisy.txt'), 'x'.repeat(4096));
+      const uncommitted = await collectDiffForTarget(
+        cwd,
+        { type: 'uncommittedChanges' },
+        { includePaths: ['src/**'], maxDiffBytes: 512 }
+      );
+
+      expect(uncommitted.patch).toContain('+++ b/src/keep.txt');
+      expect(uncommitted.patch).toContain('+changed');
+      expect(uncommitted.patch).not.toContain('tmp/noisy.txt');
+
+      await runGit(cwd, ['add', 'src/keep.txt', 'tmp/noisy.txt']);
+      await runGit(cwd, ['commit', '-m', 'change']);
+      const sha = await runGit(cwd, ['rev-parse', 'HEAD']);
+      const committed = await collectDiffForTarget(
+        cwd,
+        { type: 'commit', sha },
+        { includePaths: ['src/**'], maxDiffBytes: 512 }
+      );
+
+      expect(committed.patch).toContain('+++ b/src/keep.txt');
+      expect(committed.patch).toContain('+changed');
+      expect(committed.patch).not.toContain('tmp/noisy.txt');
+
+      const baseBranch = await collectDiffForTarget(
+        cwd,
+        { type: 'baseBranch', branch: 'main' },
+        { includePaths: ['src/**'], maxDiffBytes: 512 }
+      );
+
+      expect(baseBranch.patch).toContain('+++ b/src/keep.txt');
+      expect(baseBranch.patch).toContain('+changed');
+      expect(baseBranch.patch).not.toContain('tmp/noisy.txt');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds the untracked file enumeration subprocess', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'tracked.txt'), 'base\n');
+      await runGit(cwd, ['add', 'tracked.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+
+      for (let index = 0; index < 80; index += 1) {
+        const paddedIndex = String(index).padStart(2, '0');
+        await writeFile(
+          join(cwd, `untracked-${paddedIndex}-${'x'.repeat(180)}.txt`),
+          'content\n'
+        );
+      }
+
+      await expect(
+        collectDiffForTarget(
+          cwd,
+          { type: 'uncommittedChanges' },
+          { maxFiles: 1 }
+        )
+      ).rejects.toThrow('untracked file list exceeds configured budget');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('escapes untracked symlink targets before writing synthetic patch bodies', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
     try {

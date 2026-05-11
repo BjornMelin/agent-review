@@ -1345,6 +1345,15 @@ export function assertReviewRequestWithinSecurityLimits(
   request: ReviewRequest,
   limits: ReviewSecurityLimits = DEFAULT_REVIEW_SECURITY_LIMITS
 ): void {
+  if (request.maxFiles !== undefined && request.maxFiles > limits.maxMaxFiles) {
+    throw new Error('maxFiles exceeds configured limit');
+  }
+  if (
+    request.maxDiffBytes !== undefined &&
+    request.maxDiffBytes > limits.maxMaxDiffBytes
+  ) {
+    throw new Error('maxDiffBytes exceeds configured byte limit');
+  }
   assertStringWithinSecurityLimit(request.cwd, 'cwd', limits.maxCwdBytes);
   assertStringWithinSecurityLimit(request.model, 'model', limits.maxModelBytes);
   assertPathFiltersWithinSecurityLimit(

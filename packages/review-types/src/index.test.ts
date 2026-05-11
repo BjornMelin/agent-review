@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   ARTIFACT_CONTENT_TYPES,
+  assertReviewRequestWithinSecurityLimits,
   buildJsonSchemaSet,
   CommandRunInputSchema,
   CommandRunOutputSchema,
@@ -190,6 +191,24 @@ describe('review-types schemas', () => {
         { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxModelBytes: 4 }
       )
     ).toThrow(/model exceeds/);
+    expect(() =>
+      assertReviewRequestWithinSecurityLimits(
+        ReviewRequestSchema.parse({
+          ...request,
+          maxFiles: 50,
+        }),
+        { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxMaxFiles: 10 }
+      )
+    ).toThrow(/maxFiles exceeds/);
+    expect(() =>
+      assertReviewRequestWithinSecurityLimits(
+        ReviewRequestSchema.parse({
+          ...request,
+          maxDiffBytes: 50,
+        }),
+        { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxMaxDiffBytes: 10 }
+      )
+    ).toThrow(/maxDiffBytes exceeds/);
 
     const secret =
       'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 Bearer abc.def.ghi';
