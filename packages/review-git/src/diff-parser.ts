@@ -9,19 +9,25 @@ export type DiffChunk = {
 
 function decodeGitQuotedPath(value: string): string {
   const bytes: number[] = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index] ?? '';
+  for (let index = 0; index < value.length; ) {
+    const codePoint = value.codePointAt(index);
+    const char = codePoint === undefined ? '' : String.fromCodePoint(codePoint);
+    index += char.length || 1;
     if (char !== '\\') {
       bytes.push(...Buffer.from(char, 'utf8'));
       continue;
     }
 
-    const escapedValue = value[index + 1] ?? '';
-    index += 1;
+    const escapedCodePoint = value.codePointAt(index);
+    const escapedValue =
+      escapedCodePoint === undefined
+        ? ''
+        : String.fromCodePoint(escapedCodePoint);
+    index += escapedValue.length || 1;
     if (/^[0-7]$/.test(escapedValue)) {
       let octal = escapedValue;
-      while (octal.length < 3 && /^[0-7]$/.test(value[index + 1] ?? '')) {
-        octal += value[index + 1];
+      while (octal.length < 3 && /^[0-7]$/.test(value[index] ?? '')) {
+        octal += value[index];
         index += 1;
       }
       bytes.push(Number.parseInt(octal, 8));

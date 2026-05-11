@@ -25,7 +25,12 @@ export async function ensureRustDiffBinary(): Promise<string> {
       cwd: repoRoot,
       encoding: 'utf8',
     }
-  ).then(() => join(repoRoot, 'target', 'debug', binaryName));
+  )
+    .then(() => join(repoRoot, 'target', 'debug', binaryName))
+    .catch((error: unknown) => {
+      buildPromise = undefined;
+      throw error;
+    });
   return buildPromise;
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { parseUnifiedDiff } from './diff-parser.js';
 import { collectDiffForTarget, type DiffContext } from './index.js';
 import { parseWithRustDiffCandidate } from './rust-diff-candidate.js';
 
@@ -308,6 +309,35 @@ async function readCorpus(): Promise<CorpusFixture[]> {
 const corpus = await readCorpus();
 
 describe('diff corpus conformance', () => {
+  it('decodes raw non-BMP characters in quoted paths', async () => {
+    const cwd = '/repo';
+    const smile = String.fromCodePoint(0x1f600);
+    const file = `emoji-${smile}.ts`;
+    const patch = [
+      `diff --git "a/${file}" "b/${file}"`,
+      'index 7898192..6178079 100644',
+      `--- "a/${file}"`,
+      `+++ "b/${file}"`,
+      '@@ -1 +1 @@',
+      '-export const value = 1;',
+      '+export const value = 2;',
+    ].join('\n');
+
+    const chunks = parseUnifiedDiff(cwd, patch);
+    expect(chunks.map((chunk) => chunk.file)).toEqual([file]);
+    expect(chunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
+      `${cwd}/${file}`,
+    ]);
+
+    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
+      const rustChunks = await parseWithRustDiffCandidate(cwd, patch);
+      expect(rustChunks.map((chunk) => chunk.file)).toEqual([file]);
+      expect(rustChunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
+        `${cwd}/${file}`,
+      ]);
+    }
+  });
+
   for (const fixture of corpus) {
     it(`matches ${fixture.name}`, async () => {
       const cwd = await initRepo();
