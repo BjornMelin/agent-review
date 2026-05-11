@@ -22,6 +22,9 @@ export const ReviewProviderKindSchema = z.enum([
   'openaiCompatible',
 ]);
 export const ExecutionModeSchema = z.enum(['localTrusted', 'remoteSandbox']);
+/**
+ * Defines the lifecycle states shared by review service, worker, and durable store records.
+ */
 export const ReviewRunStatusSchema = z.enum([
   'queued',
   'running',
@@ -37,12 +40,18 @@ export const ReasoningEffortSchema = z.enum([
   'xhigh',
 ]);
 export const OutputFormatSchema = z.enum(['sarif', 'json', 'markdown']);
+/**
+ * Maps generated artifact formats to canonical HTTP content type headers with charset.
+ */
 export const ARTIFACT_CONTENT_TYPES = {
   json: 'application/json; charset=utf-8',
   markdown: 'text/markdown; charset=utf-8',
   sarif: 'application/json; charset=utf-8',
 } as const satisfies Record<z.infer<typeof OutputFormatSchema>, string>;
 export const SeverityThresholdSchema = z.enum(['p0', 'p1', 'p2', 'p3']);
+/**
+ * Lists review run statuses that represent terminal states with no further transitions.
+ */
 export const TERMINAL_REVIEW_RUN_STATUSES = [
   'completed',
   'failed',
@@ -208,17 +217,29 @@ export const ProviderDiagnosticSchema = z.strictObject({
   remediation: z.string().min(1).optional(),
 });
 
+/**
+ * Defines whether a review request runs inline or as a detached async job.
+ */
 export const ReviewDeliverySchema = z.enum(['inline', 'detached']);
 
+/**
+ * Validates the start-review request body with delivery mode defaulting to inline.
+ */
 export const ReviewStartRequestSchema = z.strictObject({
   request: ReviewRequestSchema,
   delivery: ReviewDeliverySchema.default('inline'),
 });
 
+/**
+ * Validates the canonical service error response body with a non-empty message.
+ */
 export const ReviewErrorResponseSchema = z.strictObject({
   error: z.string().min(1),
 });
 
+/**
+ * Validates the start-review response with optional detached run ID and result.
+ */
 export const ReviewStartResponseSchema = z.strictObject({
   reviewId: z.string().min(1),
   status: ReviewRunStatusSchema,
@@ -226,6 +247,9 @@ export const ReviewStartResponseSchema = z.strictObject({
   result: ReviewResultSchema.optional(),
 });
 
+/**
+ * Validates the review status response with timestamps and optional error or result.
+ */
 export const ReviewStatusResponseSchema = z.strictObject({
   reviewId: z.string().min(1),
   status: ReviewRunStatusSchema,
@@ -235,18 +259,27 @@ export const ReviewStatusResponseSchema = z.strictObject({
   updatedAt: z.number().int().nonnegative(),
 });
 
+/**
+ * Validates the cancel-review response with current run status and conflict marker.
+ */
 export const ReviewCancelResponseSchema = z.strictObject({
   reviewId: z.string().min(1),
   status: ReviewRunStatusSchema,
   cancelled: z.boolean().optional(),
 });
 
+/**
+ * Validates event replay cursor parameters with bounded pagination defaulting to 100.
+ */
 export const ReviewEventCursorSchema = z.strictObject({
   reviewId: z.string().min(1),
   afterEventId: z.string().min(1).optional(),
   limit: z.number().int().positive().max(500).default(100),
 });
 
+/**
+ * Validates service-facing artifact metadata including format, content type, size, and creation time.
+ */
 export const ReviewArtifactMetadataSchema = z.strictObject({
   reviewId: z.string().min(1),
   format: OutputFormatSchema,
@@ -260,6 +293,9 @@ const SandboxAuditRedactionsSchema = z.strictObject({
   bearer: z.number().int().nonnegative(),
 });
 
+/**
+ * Validates sandbox audit records including policy, resource use, redactions, and commands.
+ */
 export const SandboxAuditSchema = z.strictObject({
   sandboxId: z.string().min(1),
   policy: z.strictObject({
@@ -295,6 +331,9 @@ export const SandboxAuditSchema = z.strictObject({
   ),
 });
 
+/**
+ * Validates durable store records for review runs, status, request, timestamps, and execution IDs.
+ */
 export const ReviewRunStoreRecordSchema = z.strictObject({
   reviewId: z.string().min(1),
   runId: z.string().min(1),
@@ -308,6 +347,9 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   sandboxId: z.string().min(1).optional(),
 });
 
+/**
+ * Validates durable store records for lifecycle events with sequence and creation time.
+ */
 export const ReviewEventStoreRecordSchema = z.strictObject({
   reviewId: z.string().min(1),
   eventId: z.string().min(1),
@@ -316,6 +358,9 @@ export const ReviewEventStoreRecordSchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
 });
 
+/**
+ * Validates durable store records for generated artifacts, checksums, and storage keys.
+ */
 export const ReviewArtifactStoreRecordSchema = z.strictObject({
   reviewId: z.string().min(1),
   artifactId: z.string().min(1),
@@ -451,9 +496,15 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
   };
 }
 
+/**
+ * Checks whether a review run status represents a terminal state.
+ *
+ * @param status - The review run status to inspect.
+ * @returns True when the status is completed, failed, or cancelled.
+ */
 export function isTerminalReviewRunStatus(status: ReviewRunStatus): boolean {
-  return TERMINAL_REVIEW_RUN_STATUSES.some(
-    (terminalStatus) => terminalStatus === status
+  return (TERMINAL_REVIEW_RUN_STATUSES as readonly ReviewRunStatus[]).includes(
+    status
   );
 }
 

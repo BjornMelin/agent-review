@@ -97,14 +97,6 @@ type LifecycleEventPayload = {
   >;
 }[LifecycleEvent['type']];
 
-function getRecord(reviewId: string): ReviewRecord {
-  const record = records.get(reviewId);
-  if (!record) {
-    throw new Error(`review ${reviewId} not found`);
-  }
-  return record;
-}
-
 function emit(
   record: ReviewRecord,
   event: LifecycleEvent | LifecycleEventPayload,
@@ -252,8 +244,13 @@ app.post('/v1/review/start', async (c) => {
 });
 
 app.get('/v1/review/:reviewId', async (c) => {
+  const record = records.get(c.req.param('reviewId'));
+  if (!record) {
+    const response: ReviewErrorResponse = { error: 'review not found' };
+    return c.json(response, 404);
+  }
+
   try {
-    const record = getRecord(c.req.param('reviewId'));
     if (
       record.detachedRunId &&
       (record.status === 'queued' || record.status === 'running')
@@ -292,8 +289,11 @@ app.get('/v1/review/:reviewId', async (c) => {
     };
     return c.json(response);
   } catch (error) {
-    const response: ReviewErrorResponse = { error: String(error) };
-    return c.json(response, 404);
+    console.error('[review-service] failed to fetch run status', error);
+    const response: ReviewErrorResponse = {
+      error: 'failed to fetch run status',
+    };
+    return c.json(response, 502);
   }
 });
 
@@ -321,10 +321,15 @@ app.get('/v1/review/:reviewId/events', async (c) => {
     record.listeners.add(send);
 
     const heartbeat = setInterval(() => {
-      void stream.writeSSE({
-        event: 'keepalive',
-        data: '',
-      });
+      stream
+        .writeSSE({
+          event: 'keepalive',
+          data: '',
+        })
+        .catch((error) => {
+          console.error('[review-service] events heartbeat error', error);
+          cleanup();
+        });
     }, 15000);
 
     let cleanedUp = false;
@@ -392,17 +397,23 @@ app.post('/v1/review/:reviewId/cancel', async (c) => {
   }
 
   if (record.detachedRunId) {
-    const cancelled = await worker.cancel(record.detachedRunId);
-    if (cancelled) {
-      record.status = 'cancelled';
-      record.updatedAt = Date.now();
-      emit(record, { type: 'cancelled' });
-      cleanupReviewRecords();
-      const response: ReviewCancelResponse = {
-        reviewId,
-        status: record.status,
-      };
-      return c.json(response);
+    try {
+      const cancelled = await worker.cancel(record.detachedRunId);
+      if (cancelled) {
+        record.status = 'cancelled';
+        record.updatedAt = Date.now();
+        emit(record, { type: 'cancelled' });
+        cleanupReviewRecords();
+        const response: ReviewCancelResponse = {
+          reviewId,
+          status: record.status,
+        };
+        return c.json(response);
+      }
+    } catch (error) {
+      console.error('[review-service] failed to cancel run', error);
+      const response: ReviewErrorResponse = { error: 'failed to cancel run' };
+      return c.json(response, 502);
     }
   }
 

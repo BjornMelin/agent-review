@@ -19,6 +19,10 @@ const entries = Object.entries(schemas).sort(([left], [right]) =>
   left.localeCompare(right)
 );
 
+if (entries.length === 0) {
+  throw new Error('buildJsonSchemaSet returned no schemas');
+}
+
 await rm(outputDir, { force: true, recursive: true });
 await mkdir(outputDir, { recursive: true });
 
