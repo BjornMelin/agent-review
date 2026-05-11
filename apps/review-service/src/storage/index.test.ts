@@ -292,6 +292,191 @@ describe('review storage', () => {
     });
   });
 
+  it('does not count queued reservations against running capacity', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'queued-review',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve queued first',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'second-queued-review',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve queued second',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+    });
+  });
+
+  it('counts queued detached workflow records against execution and scope capacity', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await store.set(
+        createLeasedRecord({
+          reviewId: 'queued-detached-review',
+          request,
+          detachedRunId: 'detached-queued-run',
+          status: 'queued',
+          lease: {
+            owner: 'review-service',
+            scopeKey,
+            acquiredAt: BASE_TIME_MS,
+            heartbeatAt: BASE_TIME_MS,
+            expiresAt: BASE_TIME_MS + 60_000,
+          },
+        }),
+        { reason: 'queued detached workflow run' }
+      );
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-detached-execution',
+            request: { ...request, cwd: '/repo/other' },
+            lease: {
+              owner: 'review-service',
+              scopeKey: 'localTrusted|codexDelegate|/repo/other|custom',
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve after queued detached execution',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'running',
+        message: 'review runtime concurrency is at capacity',
+      });
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-detached-scope',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve after queued detached scope',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'scope',
+        message: 'review runtime scope is at capacity',
+      });
+    });
+  });
+
+  it('counts leased queued reservations against scope capacity while dispatching', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'dispatching-queued-review',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve dispatching queued',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-dispatching-scope',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve after dispatching scope',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'scope',
+        message: 'review runtime scope is at capacity',
+      });
+    });
+  });
+
   it('counts legacy unleased and expired leased rows until reconciliation confirms terminal state', async () => {
     await withTestStore(async ({ store }) => {
       await store.set(

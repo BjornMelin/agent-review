@@ -620,20 +620,24 @@ function runtimeReservationFor(
   options: ReviewStoreRuntimeCapacityOptions
 ): ReviewStoreRuntimeReservation {
   let queued = 0;
-  let active = 0;
+  let running = 0;
   let scopedActive = 0;
   for (const record of records) {
     if (!isActiveForRuntimeCapacity(record, options)) {
       continue;
     }
-    active += 1;
     if (record.status === 'queued') {
       queued += 1;
     }
-    const recordScopeKey =
-      record.lease?.scopeKey ?? options.scopeKeyForRequest?.(record.request);
-    if (recordScopeKey === scopeKey) {
-      scopedActive += 1;
+    if (isRuntimeExecutionCapacityRecord(record)) {
+      running += 1;
+    }
+    if (isScopedCapacityRecord(record)) {
+      const recordScopeKey =
+        record.lease?.scopeKey ?? options.scopeKeyForRequest?.(record.request);
+      if (recordScopeKey === scopeKey) {
+        scopedActive += 1;
+      }
     }
   }
   if (queued >= options.maxQueuedRuns) {
@@ -643,7 +647,7 @@ function runtimeReservationFor(
       message: 'review queue is at capacity',
     };
   }
-  if (active >= options.maxRunningRuns) {
+  if (running >= options.maxRunningRuns) {
     return {
       reserved: false,
       reason: 'running',
@@ -658,6 +662,20 @@ function runtimeReservationFor(
     };
   }
   return { reserved: true };
+}
+
+function isRuntimeExecutionCapacityRecord(
+  record: RuntimeCapacityRecord
+): boolean {
+  return record.status === 'running' || Boolean(record.detachedRunId);
+}
+
+function isScopedCapacityRecord(record: RuntimeCapacityRecord): boolean {
+  return (
+    record.status === 'running' ||
+    Boolean(record.lease) ||
+    Boolean(record.detachedRunId)
+  );
 }
 
 function capacityRecordForRunRow(run: ReviewRunRow): RuntimeCapacityRecord {

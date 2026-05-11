@@ -81,6 +81,10 @@ export type SandboxPolicy = {
   budget: SandboxBudget;
 };
 
+/**
+ * Defines files, commands, artifacts, policy, runtime, and cancellation for a
+ * sandbox execution.
+ */
 export type SandboxExecutionInput = {
   files?: Array<{ path: string; content: Buffer }>;
   commands: SandboxCommandInput[];

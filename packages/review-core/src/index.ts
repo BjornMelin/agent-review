@@ -385,11 +385,24 @@ function cancellationErrorFromSignal(
   );
 }
 
+function isAbortLikeError(
+  error: unknown,
+  signal: AbortSignal | undefined
+): boolean {
+  return (
+    error instanceof ReviewRunCancelledError ||
+    (error instanceof Error && error.name === 'AbortError') ||
+    (signal?.reason instanceof Error && error === signal.reason)
+  );
+}
+
 function normalizeCancellationError(
   error: unknown,
   signal: AbortSignal | undefined
 ): unknown {
-  return signal?.aborted ? cancellationErrorFromSignal(signal) : error;
+  return signal?.aborted && isAbortLikeError(error, signal)
+    ? cancellationErrorFromSignal(signal)
+    : error;
 }
 
 export function computeExitCode(

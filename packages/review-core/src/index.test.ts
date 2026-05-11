@@ -491,7 +491,9 @@ describe('runReview', () => {
         ...makeProvider({}, 'codexDelegate'),
         run: vi.fn(async () => {
           controller.abort(new Error('provider aborted'));
-          throw new Error('raw abort transport error');
+          const error = new Error('raw abort transport error');
+          error.name = 'AbortError';
+          throw error;
         }),
       };
 
@@ -514,6 +516,80 @@ describe('runReview', () => {
       ).rejects.toMatchObject({
         name: 'ReviewRunCancelledError',
         message: 'provider aborted',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('normalizes provider aborts that throw the abort reason', async () => {
+    const repo = await makeRepo();
+    try {
+      const controller = new AbortController();
+      const provider = {
+        ...makeProvider({}, 'codexDelegate'),
+        run: vi.fn(async () => {
+          controller.abort(new Error('detached review cancelled'));
+          throw controller.signal.reason;
+        }),
+      };
+
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: provider,
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+            signal: controller.signal,
+          }
+        )
+      ).rejects.toMatchObject({
+        name: 'ReviewRunCancelledError',
+        message: 'detached review cancelled',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('preserves provider failures that race with cancellation', async () => {
+    const repo = await makeRepo();
+    try {
+      const controller = new AbortController();
+      const provider = {
+        ...makeProvider({}, 'codexDelegate'),
+        run: vi.fn(async () => {
+          controller.abort(new Error('client disconnected'));
+          throw new Error('provider authentication failed');
+        }),
+      };
+
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: provider,
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+            signal: controller.signal,
+          }
+        )
+      ).rejects.toMatchObject({
+        name: 'Error',
+        message: 'provider authentication failed',
       });
     } finally {
       await repo.cleanup();

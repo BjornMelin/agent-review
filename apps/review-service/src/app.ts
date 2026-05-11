@@ -352,6 +352,15 @@ export function createReviewServiceApp(
     return true;
   }
 
+  async function failMissingDetachedRun(record: ReviewRecord): Promise<void> {
+    record.status = 'failed';
+    record.error = 'detached run not found';
+    record.updatedAt = nowMs();
+    setTerminalRetention(record);
+    await emit(record, { type: 'failed', message: record.error });
+    await store.set(record, { reason: 'detached run missing' });
+  }
+
   function detachedTerminalMeta(
     record: ReviewRecord,
     suffix: string
@@ -611,7 +620,7 @@ export function createReviewServiceApp(
     }
     const detached = await dependencies.worker.get(record.detachedRunId);
     if (!detached) {
-      await failExpiredRuntimeLease(record);
+      await failMissingDetachedRun(record);
       return;
     }
 

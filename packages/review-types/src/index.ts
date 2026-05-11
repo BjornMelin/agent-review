@@ -499,6 +499,9 @@ export type ReviewEventCursor = z.infer<typeof ReviewEventCursorSchema>;
 export type ReviewArtifactMetadata = z.infer<
   typeof ReviewArtifactMetadataSchema
 >;
+/**
+ * Describes persisted runtime lease ownership and heartbeat timestamps for a run.
+ */
 export type ReviewRunLease = z.infer<typeof ReviewRunLeaseSchema>;
 /**
  * Command execution request accepted by the local runner helper.

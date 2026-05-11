@@ -83,23 +83,35 @@ The request body is parsed by `ReviewStartRequestSchema`.
 The service atomically reserves runtime capacity before dispatching inline or
 detached work. Tunables live in `ReviewServiceConfig`:
 
-- `maxQueuedRuns`
-- `maxRunningRuns`
-- `maxActiveRunsPerScope`
-- `runtimeLeaseTtlMs`
+- `maxQueuedRuns`: positive integer, default `100`. Caps queued nonterminal
+  records.
+- `maxRunningRuns`: positive integer, default `10`. Caps running nonterminal
+  records and queued detached Workflow records that have already been accepted
+  by the worker.
+- `maxActiveRunsPerScope`: positive integer, default `2`. Caps running records
+  and leased queued dispatch records sharing the same runtime scope key.
+- `runtimeLeaseTtlMs`: positive integer milliseconds, default `600000`. Sets
+  the heartbeat lease window for accepted work.
+- `maxRecordAgeMs`: positive integer milliseconds, default `3600000`. Sets
+  terminal retention and the upgrade-drain window for considering legacy
+  unleased queued or running records valid during scoped-limit reconstruction
+  and queue/drain accounting.
 
 Every accepted run receives a service-owned lease with `owner`, `scopeKey`,
 `acquiredAt`, `heartbeatAt`, and `expiresAt`. `maxQueuedRuns` bounds queued
-records, while `maxRunningRuns` bounds all live leased records that have not
-reached a terminal state. The current scope key is derived from execution mode,
-provider, canonicalized cwd, and target identity. Nonterminal leased rows keep
-counting against capacity even after their lease expiry timestamp until service
-reconciliation reaches a terminal status. Legacy unleased queued or running rows
-also count against the global queue/running limits during the `maxRecordAgeMs`
-upgrade-drain window; their scoped limit is reconstructed from the persisted
-request when the service supplies a scope-key derivation callback. Expired leased
-rows are marked `failed` with `runtime lease expired` when the run is next
-reconciled.
+records. `maxRunningRuns` bounds records actively consuming execution capacity:
+running inline runs, running detached runs, and queued detached Workflow records
+after a `detachedRunId` has been persisted. The current scope key is derived
+from execution mode, provider, canonicalized cwd, and target identity.
+Leased queued rows count against scoped capacity immediately so concurrent
+same-scope detached dispatches cannot over-admit while `startDetached` is still
+pending. Nonterminal leased rows keep counting against capacity even after their
+lease expiry timestamp until service reconciliation reaches a terminal status.
+Legacy unleased queued or running rows also count against the global
+queue/running limits during the `maxRecordAgeMs` upgrade-drain window; their
+scoped limit is reconstructed from the persisted request when the service
+supplies a scope-key derivation callback. Expired leased rows are marked
+`failed` with `runtime lease expired` when the run is next reconciled.
 Nonterminal detached Workflow status refreshes only unexpired leases, while
 terminal Workflow status is still reconciled after lease expiry. Workflow
 remains the execution orchestrator; `ReviewStoreAdapter` remains the queryable

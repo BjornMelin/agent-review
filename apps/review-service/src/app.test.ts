@@ -137,7 +137,7 @@ function createStore(
     },
     async reserve(record, options) {
       let queued = 0;
-      let active = 0;
+      let running = 0;
       let scopedActive = 0;
       for (const existing of records.values()) {
         if (['completed', 'failed', 'cancelled'].includes(existing.status)) {
@@ -155,15 +155,19 @@ function createStore(
             continue;
           }
         }
-        active += 1;
         if (existing.status === 'queued') {
           queued += 1;
         }
-        const existingScopeKey =
-          existing.lease?.scopeKey ??
-          options.scopeKeyForRequest?.(existing.request);
-        if (existingScopeKey === record.lease.scopeKey) {
-          scopedActive += 1;
+        if (existing.status === 'running' || existing.detachedRunId) {
+          running += 1;
+        }
+        if (existing.status === 'running' || existing.lease) {
+          const existingScopeKey =
+            existing.lease?.scopeKey ??
+            options.scopeKeyForRequest?.(existing.request);
+          if (existingScopeKey === record.lease.scopeKey) {
+            scopedActive += 1;
+          }
         }
       }
       if (queued >= options.maxQueuedRuns) {
@@ -173,7 +177,7 @@ function createStore(
           message: 'review queue is at capacity',
         };
       }
-      if (active >= options.maxRunningRuns) {
+      if (running >= options.maxRunningRuns) {
         return {
           reserved: false,
           reason: 'running',
@@ -1410,9 +1414,16 @@ describe('createReviewServiceApp', () => {
   it('atomically reserves runtime capacity under concurrent starts', async () => {
     const store = createInMemoryReviewStore();
     let releaseStart: (() => void) | undefined;
+    let resolveFirstStartEntered: () => void = () => undefined;
+    const firstStartEntered = new Promise<void>((resolve) => {
+      resolveFirstStartEntered = resolve;
+    });
     const worker = createWorker();
     worker.startDetached = vi.fn(async (request) => {
       worker.started.push(request);
+      if (worker.started.length === 1) {
+        resolveFirstStartEntered();
+      }
       await new Promise<void>((resolve) => {
         releaseStart = resolve;
       });
@@ -1443,7 +1454,7 @@ describe('createReviewServiceApp', () => {
         delivery: 'detached',
       }),
     });
-    await Promise.resolve();
+    await firstStartEntered;
     const second = app.request('/v1/review/start', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1604,6 +1615,124 @@ describe('createReviewServiceApp', () => {
     expect(worker.started).toEqual([]);
   });
 
+  it('enforces per-scope runtime backpressure for queued detached workflow runs', async () => {
+    const worker = createWorker(
+      createDetachedRun({ status: 'queued', runId: 'detached-queued-run' })
+    );
+    const request = createRequest({ cwd: '/repo/detached-scope' });
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store: createStore(),
+      nowMs: () => 2_000,
+      uuid: createUuid([
+        'review-first-detached',
+        'event-start',
+        'review-second-detached',
+      ]),
+      config: {
+        maxActiveRunsPerScope: 1,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const first = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+    expect(first.status).toBe(202);
+    expect(await first.json()).toMatchObject({
+      reviewId: 'review-first-detached',
+      status: 'queued',
+      detachedRunId: 'detached-queued-run',
+    });
+
+    const second = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+
+    expect(second.status).toBe(429);
+    expect(await second.json()).toEqual({
+      error: 'review runtime scope is at capacity',
+    });
+    expect(worker.started).toHaveLength(1);
+  });
+
+  it('blocks concurrent same-scope detached dispatches before worker acceptance', async () => {
+    let releaseStart: (() => void) | undefined;
+    let resolveFirstStartEntered: () => void = () => undefined;
+    const firstStartEntered = new Promise<void>((resolve) => {
+      resolveFirstStartEntered = resolve;
+    });
+    const worker = createWorker();
+    worker.startDetached = vi.fn(async (request) => {
+      worker.started.push(request);
+      if (worker.started.length === 1) {
+        resolveFirstStartEntered();
+      }
+      await new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      const run = createDetachedRun({
+        runId: `detached-run-${worker.started.length}`,
+        workflowRunId: `detached-run-${worker.started.length}`,
+      });
+      worker.runs.set(run.runId, run);
+      return run;
+    });
+    const request = createRequest({ cwd: '/repo/concurrent-scope' });
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store: createInMemoryReviewStore(),
+      nowMs: () => 2_000,
+      uuid: createUuid(['review-a', 'review-b', 'event-start']),
+      config: {
+        maxQueuedRuns: 10,
+        maxRunningRuns: 10,
+        maxActiveRunsPerScope: 1,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const first = app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+    await firstStartEntered;
+    const second = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+
+    expect(second.status).toBe(429);
+    expect(await second.json()).toEqual({
+      error: 'review runtime scope is at capacity',
+    });
+    expect(worker.started).toHaveLength(1);
+
+    releaseStart?.();
+    const accepted = await first;
+    expect(accepted.status).toBe(202);
+  });
+
   it('reconciles detached completion after lease TTL before expiring the lease', async () => {
     const request = createRequest();
     const worker = createWorker();
@@ -1720,6 +1849,55 @@ describe('createReviewServiceApp', () => {
     expect(await blocked.json()).toEqual({
       error: 'review runtime concurrency is at capacity',
     });
+  });
+
+  it('fails detached reviews immediately when their worker run disappears', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      nowMs: () => 2_000,
+      uuid: createUuid([
+        'review-missing-detached',
+        'event-start',
+        'event-failed',
+      ]),
+      config: {
+        runtimeLeaseTtlMs: 60_000,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest({ cwd: '/repo/missing-detached' }),
+        delivery: 'detached',
+      }),
+    });
+    expect(start.status).toBe(202);
+
+    worker.runs.clear();
+    const status = await app.request('/v1/review/review-missing-detached');
+
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      reviewId: 'review-missing-detached',
+      status: 'failed',
+      error: 'detached run not found',
+    });
+    const failedRecord = await store.get('review-missing-detached');
+    expect(failedRecord).toMatchObject({
+      status: 'failed',
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: 'failed' }),
+      ]),
+    });
+    expect(failedRecord?.lease).toBeUndefined();
+    expect(worker.cancelledRunIds).toEqual([]);
   });
 
   it('marks active runs failed when their runtime lease expires', async () => {
