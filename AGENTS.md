@@ -4,7 +4,8 @@ Instructions for AI coding agents working with this codebase.
 
 ## Repository Architecture Snapshot
 
-This repository is a TypeScript monorepo managed by pnpm workspaces and Turborepo.
+This repository is a TypeScript monorepo managed by pnpm workspaces and
+Turborepo, with a root Cargo workspace for narrow Rust helpers.
 
 - `apps/review-cli`: CLI entrypoint (`review-agent`) for local and CI usage.
 - `apps/review-service`: HTTP service for inline and detached review orchestration.
@@ -20,6 +21,9 @@ This repository is a TypeScript monorepo managed by pnpm workspaces and Turborep
 - `packages/review-reporters`: JSON/Markdown/SARIF rendering.
 - `packages/review-convex-bridge`: Optional non-blocking metadata mirror.
 - `packages/review-evals`: Exit-code oriented eval helpers.
+- `crates/review-contracts`: Rust DTO generation from committed
+  `packages/review-types` JSON Schema artifacts. This is parity
+  infrastructure only; it must not become a competing schema source of truth.
 
 ## Verification Commands
 
@@ -28,8 +32,15 @@ Use root scripts unless a task is package-local:
 - `pnpm lint`
 - `pnpm typecheck`
 - `pnpm test`
+- `pnpm rust:check`
 - `pnpm build`
-- `pnpm check` (runs lint + typecheck + test)
+- `pnpm check` (runs lint + typecheck + test + Rust gates)
+
+Rust-specific closeout for Rust changes:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- `cargo test --workspace --all-targets --all-features --locked`
 
 ## Documentation Synchronization Contract
 
@@ -47,6 +58,7 @@ Update documentation for any of the following:
 - New/changed CLI commands, flags, defaults, or exit codes.
 - New/changed HTTP endpoints, payloads, status values, or streaming events.
 - New/changed schema fields/enums in `packages/review-types`.
+- New/changed Rust contract generation or Cargo workspace gates.
 - Provider behavior or environment-variable requirements.
 - Sandbox policy/budget/network model changes.
 - Detached execution semantics and fallback behavior.

@@ -95,6 +95,21 @@ const PrioritySchema = z.union([
   z.literal(3),
 ]);
 
+const LineRangeSchema = z
+  .strictObject({
+    start: z.number().int().positive(),
+    end: z.number().int().positive(),
+  })
+  .superRefine((value, context) => {
+    if (value.end < value.start) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'end must be >= start',
+        path: ['end'],
+      });
+    }
+  });
+
 export const ReviewFindingSchema = z.strictObject({
   title: z.string().min(1),
   body: z.string().min(1),
@@ -102,20 +117,7 @@ export const ReviewFindingSchema = z.strictObject({
   confidenceScore: z.number().min(0).max(1),
   codeLocation: z.strictObject({
     absoluteFilePath: z.string().min(1),
-    lineRange: z
-      .strictObject({
-        start: z.number().int().positive(),
-        end: z.number().int().positive(),
-      })
-      .superRefine((value, context) => {
-        if (value.end < value.start) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'end must be >= start',
-            path: ['end'],
-          });
-        }
-      }),
+    lineRange: LineRangeSchema,
   }),
   fingerprint: z.string().min(1),
 });
@@ -153,10 +155,7 @@ export const RawModelOutputSchema = z.strictObject({
       priority: PrioritySchema.optional(),
       code_location: z.strictObject({
         absolute_file_path: z.string().min(1),
-        line_range: z.strictObject({
-          start: z.number().int().positive(),
-          end: z.number().int().positive(),
-        }),
+        line_range: LineRangeSchema,
       }),
     })
   ),

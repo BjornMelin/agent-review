@@ -1,6 +1,7 @@
 # Review Agent Platform
 
-Codex-grade review agent platform implemented as a pnpm/Turborepo monorepo.
+Codex-grade review agent platform implemented as a pnpm/Turborepo monorepo with
+a small Rust helper workspace for generated contract parity.
 
 ## What It Does
 
@@ -33,6 +34,8 @@ packages/
   review-reporters/
   review-sandbox-vercel/
   review-types/
+crates/
+  review-contracts/
 docs/
   architecture/
 ```
@@ -41,6 +44,7 @@ docs/
 
 - Node.js 24.x
 - pnpm 11.0.9
+- Rust stable with `rustfmt` and `clippy`
 - git (required for diff collection)
 - Optional: `codex` CLI for `codexDelegate` provider
 
@@ -110,10 +114,12 @@ Root scripts:
 - `pnpm typecheck`
 - `pnpm lint`
 - `pnpm test`
+- `pnpm rust:check`
 - `pnpm check`
 - `bash scripts/repro-check.sh`
 
-CI workflow: `.github/workflows/ci.yml` runs install, format, lint, typecheck, test, and build.
+CI workflow: `.github/workflows/ci.yml` installs Node/pnpm and stable Rust, then
+runs install, format, lint, typecheck, test, Rust contract gates, and build.
 
 ## Documentation
 

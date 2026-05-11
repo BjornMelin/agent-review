@@ -37,6 +37,7 @@ This directory contains canonical product and architecture documentation for the
 Implementation contracts are defined in code and mirrored here:
 
 - Shared schemas/types: `packages/review-types/src/index.ts`
+- Rust contract DTO parity: `crates/review-contracts`
 - Core orchestration: `packages/review-core/src/index.ts`
 - Provider construction/model policy: `packages/review-provider-registry/src/index.ts`
 - CLI surface: `apps/review-cli/src/index.ts`
