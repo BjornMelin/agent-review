@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 const child = spawn(
   'vitest',
-  ['run', 'src/diff-corpus.test.ts', 'src/performance.test.ts'],
+  ['run', 'test/diff-corpus.test.ts', 'test/performance.test.ts'],
   {
     cwd: new URL('..', import.meta.url),
     env: {

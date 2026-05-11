@@ -1,12 +1,19 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { parseUnifiedDiff } from './diff-parser.js';
-import { collectDiffForTarget, type DiffContext } from './index.js';
-import { parseWithRustDiffCandidate } from './rust-diff-candidate.js';
+import { parseUnifiedDiff } from '../src/diff-parser.js';
+import { collectDiffForTarget, type DiffContext } from '../src/index.js';
+import { parseWithRustDiffCandidate } from '../test-support/rust-diff-candidate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -99,6 +106,19 @@ const builders = {
     await writeText(cwd, 'README.md', '# baseline\n');
     await commitAll(cwd);
     await writeText(cwd, 'quoted\tnew.ts', 'export const untracked = 1;\n');
+  },
+  'untracked-non-ascii-path': async (cwd: string) => {
+    await writeText(cwd, 'README.md', '# baseline\n');
+    await commitAll(cwd);
+    await writeText(cwd, 'café-new.ts', 'export const untracked = 1;\n');
+  },
+  'untracked-symlink-injection': async (cwd: string) => {
+    await writeText(cwd, 'README.md', '# baseline\n');
+    await commitAll(cwd);
+    await symlink(
+      'safe\ndiff --git a/../../outside b/../../outside\n@@ -0,0 +1 @@\n+bad',
+      join(cwd, 'linked-secret')
+    );
   },
   'binary-file': async (cwd: string) => {
     await writeText(cwd, 'README.md', '# baseline\n');
@@ -318,6 +338,34 @@ describe('diff corpus conformance', () => {
       'index 7898192..6178079 100644',
       `--- "a/${file}"`,
       `+++ "b/${file}"`,
+      '@@ -1 +1 @@',
+      '-export const value = 1;',
+      '+export const value = 2;',
+    ].join('\n');
+
+    const chunks = parseUnifiedDiff(cwd, patch);
+    expect(chunks.map((chunk) => chunk.file)).toEqual([file]);
+    expect(chunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
+      `${cwd}/${file}`,
+    ]);
+
+    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
+      const rustChunks = await parseWithRustDiffCandidate(cwd, patch);
+      expect(rustChunks.map((chunk) => chunk.file)).toEqual([file]);
+      expect(rustChunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
+        `${cwd}/${file}`,
+      ]);
+    }
+  });
+
+  it('preserves invalid quoted octal escapes without truncating path bytes', async () => {
+    const cwd = '/repo';
+    const file = 'invalid-\\777.ts';
+    const patch = [
+      'diff --git "a/invalid-\\777.ts" "b/invalid-\\777.ts"',
+      'index 7898192..6178079 100644',
+      '--- "a/invalid-\\777.ts"',
+      '+++ "b/invalid-\\777.ts"',
       '@@ -1 +1 @@',
       '-export const value = 1;',
       '+export const value = 2;',

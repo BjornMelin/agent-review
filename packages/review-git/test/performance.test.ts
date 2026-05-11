@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { parseUnifiedDiff } from './diff-parser.js';
-import { buildChangedLineIndex, collectDiffForTarget } from './index.js';
+import { parseUnifiedDiff } from '../src/diff-parser.js';
+import { buildChangedLineIndex, collectDiffForTarget } from '../src/index.js';
 import {
   ensureRustDiffBinary,
   parseWithRustDiffCandidate,
-} from './rust-diff-candidate.js';
+} from '../test-support/rust-diff-candidate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -98,12 +98,14 @@ describe('large diff performance suite', () => {
         file: chunk.file,
         absoluteFilePath: chunk.absoluteFilePath,
         changedLines: chunk.changedLines,
+        patch: chunk.patch,
       }))
     ).toEqual(
       tsChunks.map((chunk) => ({
         file: chunk.file,
         absoluteFilePath: chunk.absoluteFilePath,
         changedLines: chunk.changedLines,
+        patch: chunk.patch,
       }))
     );
     if (process.env.REVIEW_AGENT_STRICT_PERF === '1') {

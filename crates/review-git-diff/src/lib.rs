@@ -46,8 +46,12 @@ fn decode_git_quoted_path(value: &str) -> String {
                         _ => break,
                     }
                 }
-                if let Ok(value) = u8::from_str_radix(&octal, 8) {
-                    bytes.push(value);
+                match u8::from_str_radix(&octal, 8) {
+                    Ok(value) => bytes.push(value),
+                    Err(_) => {
+                        bytes.push(b'\\');
+                        bytes.extend_from_slice(octal.as_bytes());
+                    }
                 }
             }
             other => {
@@ -258,6 +262,10 @@ pub fn parse_unified_diff(cwd: &Path, patch: &str) -> Vec<DiffChunk> {
         }
 
         if line.starts_with("\\ No newline at end of file") {
+            continue;
+        }
+
+        if line.is_empty() {
             continue;
         }
 

@@ -97,7 +97,7 @@ Coverage expectations:
 
 ## Git Diff Corpus and Rust Candidate Gate
 
-`packages/review-git/src/fixtures/diff-corpus/expected.json` is the stable
+`packages/review-git/test/fixtures/diff-corpus/expected.json` is the stable
 diff/index corpus. The Vitest corpus builds real temporary Git repositories and
 normalizes absolute paths to `<repo>/...` so review diffs stay deterministic
 while still asserting absolute-path semantics.

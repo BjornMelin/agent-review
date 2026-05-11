@@ -116,6 +116,39 @@ describe('collectDiffForTarget', () => {
     }
   });
 
+  it('escapes untracked symlink targets before writing synthetic patch bodies', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'tracked.txt'), 'base\n');
+      await runGit(cwd, ['add', 'tracked.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+
+      await symlink(
+        'safe\ndiff --git a/../../outside b/../../outside\n@@ -0,0 +1 @@\n+bad',
+        join(cwd, 'linked-secret')
+      );
+
+      const diff = await collectDiffForTarget(cwd, {
+        type: 'uncommittedChanges',
+      });
+
+      expect(diff.chunks).toHaveLength(1);
+      expect(diff.chunks[0]?.file).toBe('linked-secret');
+      expect(diff.chunks[0]?.absoluteFilePath).toBe(join(cwd, 'linked-secret'));
+      expect(diff.patch).toContain(
+        '+safe\\ndiff --git a/../../outside b/../../outside'
+      );
+      expect(diff.patch).not.toContain(
+        '\ndiff --git a/../../outside b/../../outside'
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('collects untracked files when cwd is a symlink to the repo root', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'review-git-test-'));
     const linkParent = await mkdtemp(join(tmpdir(), 'review-git-link-'));

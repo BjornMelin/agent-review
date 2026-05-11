@@ -104,6 +104,58 @@
     }
   },
   {
+    "name": "untracked-non-ascii-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "café-new.ts",
+          "absoluteFilePath": "<repo>/café-new.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "added",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": true,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "untracked-symlink-injection",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "linked-secret",
+          "absoluteFilePath": "<repo>/linked-secret",
+          "changedLines": [1],
+          "metadata": {
+            "status": "added",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": true,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
     "name": "binary-file",
     "expected": {
       "gitContext": {

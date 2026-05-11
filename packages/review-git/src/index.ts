@@ -199,6 +199,12 @@ function encodeGitQuotedPath(path: string): string {
         break;
       default: {
         const codePoint = char.codePointAt(0) ?? 0;
+        if (codePoint > 0x7f) {
+          encoded += [...Buffer.from(char, 'utf8')]
+            .map((byte) => `\\${byte.toString(8).padStart(3, '0')}`)
+            .join('');
+          break;
+        }
         encoded +=
           codePoint < 0x20 || codePoint === 0x7f
             ? `\\${codePoint.toString(8).padStart(3, '0')}`
@@ -218,7 +224,8 @@ function needsGitDiffPathQuoting(path: string): boolean {
       char === '"' ||
       char === ' ' ||
       codePoint < 0x20 ||
-      codePoint === 0x7f
+      codePoint === 0x7f ||
+      codePoint >= 0x80
     ) {
       return true;
     }
@@ -229,6 +236,31 @@ function needsGitDiffPathQuoting(path: string): boolean {
 function formatGitDiffPath(side: 'a' | 'b', relativePath: string): string {
   const path = `${side}/${relativePath}`;
   return needsGitDiffPathQuoting(path) ? encodeGitQuotedPath(path) : path;
+}
+
+function encodeSyntheticPatchLineContent(value: string): string {
+  return [...value]
+    .map((char) => {
+      switch (char) {
+        case '\\':
+          return '\\\\';
+        case '\n':
+          return '\\n';
+        case '\r':
+          return '\\r';
+        case '\t':
+          return '\\t';
+        case '\b':
+          return '\\b';
+        case '\f':
+          return '\\f';
+        case '\v':
+          return '\\v';
+        default:
+          return char;
+      }
+    })
+    .join('');
 }
 
 function assertPathContained(
@@ -258,7 +290,7 @@ function buildUntrackedSymlinkPatch(
     '--- /dev/null',
     `+++ ${newPath}`,
     '@@ -0,0 +1 @@',
-    `+${linkTarget}`,
+    `+${encodeSyntheticPatchLineContent(linkTarget)}`,
     '\\ No newline at end of file',
     '',
   ].join('\n');

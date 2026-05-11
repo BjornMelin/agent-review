@@ -10,13 +10,25 @@ const binaryName =
 
 let buildPromise: Promise<string> | undefined;
 
+/**
+ * Parsed diff chunk returned by the Rust parser candidate.
+ */
 export type RustDiffChunk = {
+  /** Repository-relative path for the changed file. */
   file: string;
+  /** Absolute path for the changed file. */
   absoluteFilePath: string;
+  /** Per-file unified diff patch text. */
   patch: string;
+  /** Sorted one-based changed line numbers in the target file. */
   changedLines: number[];
 };
 
+/**
+ * Builds the Rust diff parser candidate once for the current test process.
+ *
+ * @returns Promise for the absolute path to the built parser binary.
+ */
 export async function ensureRustDiffBinary(): Promise<string> {
   buildPromise ??= execFileAsync(
     'cargo',
@@ -66,6 +78,13 @@ async function runWithStdin(
   });
 }
 
+/**
+ * Parses unified diff text with the Rust parser candidate.
+ *
+ * @param cwd Repository root used to resolve absolute file paths.
+ * @param patch Unified diff text to parse.
+ * @returns Parsed diff chunks from the Rust helper.
+ */
 export async function parseWithRustDiffCandidate(
   cwd: string,
   patch: string

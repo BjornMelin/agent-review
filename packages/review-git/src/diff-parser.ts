@@ -30,7 +30,12 @@ function decodeGitQuotedPath(value: string): string {
         octal += value[index];
         index += 1;
       }
-      bytes.push(Number.parseInt(octal, 8));
+      const byte = Number.parseInt(octal, 8);
+      if (byte > 0xff) {
+        bytes.push(...Buffer.from(`\\${octal}`, 'utf8'));
+        continue;
+      }
+      bytes.push(byte);
       continue;
     }
 
@@ -256,6 +261,10 @@ export function parseUnifiedDiff(cwd: string, patch: string): DiffChunk[] {
     }
 
     if (line.startsWith('\\ No newline at end of file')) {
+      continue;
+    }
+
+    if (line === '') {
       continue;
     }
 
