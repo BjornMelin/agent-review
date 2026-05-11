@@ -145,6 +145,11 @@ export class ReviewWorker {
       return null;
     }
 
+    if (isTerminalReviewRunStatus(local.status)) {
+      cleanupLocalRuns();
+      return local;
+    }
+
     if (local.workflowRunId) {
       try {
         const { getRun } = await import('@workflow/core/runtime');
@@ -183,6 +188,14 @@ export class ReviewWorker {
       return false;
     }
 
+    if (
+      record.status === 'completed' ||
+      record.status === 'failed' ||
+      record.status === 'cancelled'
+    ) {
+      return false;
+    }
+
     if (record.workflowRunId) {
       try {
         const { getRun } = await import('@workflow/core/runtime');
@@ -193,12 +206,6 @@ export class ReviewWorker {
       }
     }
 
-    if (record.status === 'completed' || record.status === 'failed') {
-      return false;
-    }
-    if (record.status === 'cancelled') {
-      return false;
-    }
     record.status = 'cancelled';
     record.completedAt = Date.now();
     cleanupLocalRuns();
