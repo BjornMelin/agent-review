@@ -19,6 +19,34 @@ export const SandboxBudgetSchema = z.strictObject({
 
 const SANDBOX_ROOT = '/vercel/sandbox';
 const DEFAULT_SANDBOX_RUNTIME = 'node24';
+const SUPPRESSED_CLEANUP_ERRORS_KEY = 'suppressedCleanupErrors';
+
+type ErrorWithSuppressedCleanup = Error & {
+  suppressedCleanupErrors?: unknown[];
+};
+
+function cleanupErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function attachSuppressedCleanupError(
+  primaryError: unknown,
+  cleanupError: unknown
+): void {
+  if (!(primaryError instanceof Error)) {
+    return;
+  }
+  const error = primaryError as ErrorWithSuppressedCleanup;
+  const suppressed = [...(error.suppressedCleanupErrors ?? []), cleanupError];
+  error.message = `${error.message}; sandbox cleanup failed: ${cleanupErrorMessage(
+    cleanupError
+  )}`;
+  Object.defineProperty(error, SUPPRESSED_CLEANUP_ERRORS_KEY, {
+    configurable: true,
+    enumerable: true,
+    value: suppressed,
+  });
+}
 
 function sanitizeSandboxCwd(cwd: string): string {
   const resolved = resolve(SANDBOX_ROOT, cwd);
@@ -300,6 +328,12 @@ export async function runInSandbox(
     bearer: 0,
   };
   let denyAllApplied = input.policy.networkProfile !== 'bootstrap_then_deny';
+  let workFailed = true;
+  const stopSandbox = () =>
+    sandbox.stop({
+      blocking: true,
+      signal: AbortSignal.timeout(10_000),
+    });
 
   try {
     throwIfAborted(input.signal);
@@ -466,11 +500,17 @@ export async function runInSandbox(
       artifacts,
       audit,
     };
+    workFailed = false;
+    await stopSandbox();
     return result;
-  } finally {
-    await sandbox.stop({
-      blocking: true,
-      signal: AbortSignal.timeout(10_000),
-    });
+  } catch (error) {
+    if (workFailed) {
+      try {
+        await stopSandbox();
+      } catch (cleanupError) {
+        attachSuppressedCleanupError(error, cleanupError);
+      }
+    }
+    throw error;
   }
 }

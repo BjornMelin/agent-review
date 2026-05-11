@@ -50,6 +50,9 @@ export class UnsupportedRemoteSandboxTargetError extends Error {
   }
 }
 
+/**
+ * Represents a review run cancellation caused by an abort signal.
+ */
 export class ReviewRunCancelledError extends Error {
   constructor(message = 'review run cancelled') {
     super(message);

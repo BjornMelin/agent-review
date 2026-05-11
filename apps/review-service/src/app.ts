@@ -297,6 +297,16 @@ export function createReviewServiceApp(
     };
   }
 
+  function assertRuntimeLeaseAttached(
+    record: ReviewRecord
+  ): asserts record is ReviewRecord & {
+    lease: NonNullable<ReviewRecord['lease']>;
+  } {
+    if (!record.lease) {
+      throw new Error('runtime reservation requires a lease');
+    }
+  }
+
   function heartbeatRuntimeLease(record: ReviewRecord): void {
     if (!record.lease || isTerminalReviewRunStatus(record.status)) {
       return;
@@ -469,6 +479,35 @@ export function createReviewServiceApp(
     record: ReviewRecord,
     signal?: AbortSignal
   ): Promise<void> {
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatStopped = false;
+    const stopInlineHeartbeat = () => {
+      heartbeatStopped = true;
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+    };
+    const persistInlineHeartbeat = async (): Promise<void> => {
+      if (heartbeatStopped || isTerminalReviewRunStatus(record.status)) {
+        return;
+      }
+      heartbeatRuntimeLease(record);
+      await store.set(record, { reason: 'inline heartbeat' });
+    };
+    const startInlineHeartbeat = () => {
+      const heartbeatIntervalMs = Math.max(
+        100,
+        Math.min(Math.floor(config.runtimeLeaseTtlMs / 2), 30_000)
+      );
+      heartbeatTimer = setInterval(() => {
+        void persistInlineHeartbeat().catch((error) => {
+          logger.error('[review-service] inline heartbeat failed', error);
+        });
+      }, heartbeatIntervalMs);
+      heartbeatTimer.unref?.();
+    };
+
     try {
       record.status = 'running';
       record.updatedAt = nowMs();
@@ -483,11 +522,13 @@ export function createReviewServiceApp(
         throw new Error(config.remoteSandboxInlineError);
       }
 
+      startInlineHeartbeat();
       const review = await runner(
         record.request,
         {
           providers: dependencies.providers,
           onEvent: async (event) => {
+            await persistInlineHeartbeat();
             await emit(record, event);
           },
           now: () => new Date(nowMs()),
@@ -498,12 +539,14 @@ export function createReviewServiceApp(
         },
         dependencies.bridge
       );
+      stopInlineHeartbeat();
       record.result = review;
       record.status = 'completed';
       record.updatedAt = nowMs();
       setTerminalRetention(record);
       await store.set(record, { reason: 'inline completed' });
     } catch (error) {
+      stopInlineHeartbeat();
       const cancelled = error instanceof ReviewRunCancelledError;
       record.status = cancelled ? 'cancelled' : 'failed';
       record.error = error instanceof Error ? error.message : String(error);
@@ -518,6 +561,8 @@ export function createReviewServiceApp(
       await store.set(record, {
         reason: cancelled ? 'inline cancelled' : 'inline failed',
       });
+    } finally {
+      stopInlineHeartbeat();
     }
   }
 
@@ -693,9 +738,12 @@ export function createReviewServiceApp(
       const reviewId = uuid();
       const record = createReviewRecord(request, reviewId, nowMs());
       attachRuntimeLease(record, runtimeScopeKeyForRequest(request));
+      assertRuntimeLeaseAttached(record);
       await cleanupReviewRecords();
       const reservation = await store.reserve(record, {
         nowMs: nowMs(),
+        legacyUnleasedActiveTtlMs: config.maxRecordAgeMs,
+        scopeKeyForRequest: runtimeScopeKeyForRequest,
         maxQueuedRuns: config.maxQueuedRuns,
         maxRunningRuns: config.maxRunningRuns,
         maxActiveRunsPerScope: config.maxActiveRunsPerScope,

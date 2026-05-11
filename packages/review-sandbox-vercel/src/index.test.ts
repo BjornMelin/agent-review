@@ -133,6 +133,43 @@ describe('sandbox policy and budget enforcement', () => {
     expect(stopMock).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves the primary failure when cleanup fails', async () => {
+    const policy = createDefaultPolicy();
+    policy.budget.maxOutputBytes = 4;
+    const cleanupError = new Error('cleanup failed');
+    stopMock.mockRejectedValueOnce(cleanupError);
+    runCommandMock.mockResolvedValue(
+      createFinishedCommand({
+        stdout: 'output that exceeds the configured budget',
+        stderr: '',
+      })
+    );
+
+    const execution = runInSandbox({
+      commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+      policy,
+    });
+    await expect(execution).rejects.toMatchObject({
+      message: expect.stringContaining('sandbox output budget exceeded'),
+      suppressedCleanupErrors: [cleanupError],
+    });
+    await expect(execution).rejects.toThrow('sandbox cleanup failed');
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces cleanup failures when sandbox work succeeds', async () => {
+    const policy = createDefaultPolicy();
+    stopMock.mockRejectedValueOnce(new Error('cleanup failed'));
+
+    await expect(
+      runInSandbox({
+        commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+        policy,
+      })
+    ).rejects.toThrow('cleanup failed');
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
   it('enforces artifact budget', async () => {
     const policy = createDefaultPolicy();
     policy.budget.maxArtifactBytes = 64;

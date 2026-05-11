@@ -36,6 +36,10 @@ type CleanupCandidate = {
   updatedAt: Date;
   retentionExpiresAt: Date | null;
 };
+type RuntimeCapacityRecord = Pick<
+  ReviewRecord,
+  'status' | 'lease' | 'detachedRunId' | 'updatedAt' | 'request'
+>;
 
 type SerializedReviewRunResult = Omit<ReviewRunResult, 'diff'> & {
   diff: Omit<ReviewRunResult['diff'], 'changedLineIndex'> & {
@@ -64,6 +68,8 @@ export type ReviewRecord = {
   events: LifecycleEvent[];
 };
 
+type ReviewRecordWithLease = ReviewRecord & { lease: ReviewRunLease };
+
 /**
  * Carries optional audit context for store write operations.
  */
@@ -90,11 +96,16 @@ export type ReviewStoreCleanupOptions = {
  */
 export type ReviewStoreRuntimeCapacityOptions = ReviewStoreWriteOptions & {
   nowMs: number;
+  legacyUnleasedActiveTtlMs?: number;
+  scopeKeyForRequest?: (request: ReviewRequest) => string;
   maxQueuedRuns: number;
   maxRunningRuns: number;
   maxActiveRunsPerScope: number;
 };
 
+/**
+ * Describes whether a runtime reservation was accepted or why capacity rejected it.
+ */
 export type ReviewStoreRuntimeReservation =
   | { reserved: true }
   | { reserved: false; reason: 'queue' | 'running' | 'scope'; message: string };
@@ -105,7 +116,7 @@ export type ReviewStoreRuntimeReservation =
 export type ReviewStoreAdapter = {
   get(reviewId: string): Promise<ReviewRecord | undefined>;
   reserve(
-    record: ReviewRecord,
+    record: ReviewRecordWithLease,
     options: ReviewStoreRuntimeCapacityOptions
   ): Promise<ReviewStoreRuntimeReservation>;
   set(record: ReviewRecord, options?: ReviewStoreWriteOptions): Promise<void>;
@@ -209,6 +220,14 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
     next.deletedAt = record.deletedAt;
   }
   return next;
+}
+
+function assertReviewRecordWithLease(
+  record: ReviewRecord
+): asserts record is ReviewRecordWithLease {
+  if (!record.lease) {
+    throw new Error('runtime reservation requires a lease');
+  }
 }
 
 function serializeReviewRunResult(
@@ -372,11 +391,12 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
       const record = records.get(reviewId);
       return record ? cloneRecord(record) : undefined;
     },
-    reserve(record, options) {
-      return withReserveLock(() => {
+    async reserve(record, options) {
+      assertReviewRecordWithLease(record);
+      return await withReserveLock(() => {
         const reservation = runtimeReservationFor(
           [...records.values()],
-          record.lease?.scopeKey ?? '',
+          record.lease.scopeKey,
           options
         );
         if (!reservation.reserved) {
@@ -578,18 +598,24 @@ function cleanupReviewIdsForRows(
 }
 
 function isActiveForRuntimeCapacity(
-  record: Pick<ReviewRecord, 'status' | 'lease' | 'detachedRunId'>,
-  nowMs: number
+  record: Pick<ReviewRecord, 'status' | 'lease' | 'updatedAt'>,
+  options: ReviewStoreRuntimeCapacityOptions
 ): boolean {
-  return (
-    !isTerminalStatus(record.status) &&
-    record.lease !== undefined &&
-    (record.lease.expiresAt > nowMs || record.detachedRunId !== undefined)
-  );
+  if (isTerminalStatus(record.status)) {
+    return false;
+  }
+  if (record.lease) {
+    return true;
+  }
+  if (record.status !== 'queued' && record.status !== 'running') {
+    return false;
+  }
+  const ttlMs = options.legacyUnleasedActiveTtlMs;
+  return ttlMs === undefined || record.updatedAt + ttlMs > options.nowMs;
 }
 
 function runtimeReservationFor(
-  records: Array<Pick<ReviewRecord, 'status' | 'lease' | 'detachedRunId'>>,
+  records: RuntimeCapacityRecord[],
   scopeKey: string,
   options: ReviewStoreRuntimeCapacityOptions
 ): ReviewStoreRuntimeReservation {
@@ -597,14 +623,16 @@ function runtimeReservationFor(
   let active = 0;
   let scopedActive = 0;
   for (const record of records) {
-    if (!isActiveForRuntimeCapacity(record, options.nowMs)) {
+    if (!isActiveForRuntimeCapacity(record, options)) {
       continue;
     }
     active += 1;
     if (record.status === 'queued') {
       queued += 1;
     }
-    if (record.lease?.scopeKey === scopeKey) {
+    const recordScopeKey =
+      record.lease?.scopeKey ?? options.scopeKeyForRequest?.(record.request);
+    if (recordScopeKey === scopeKey) {
       scopedActive += 1;
     }
   }
@@ -632,14 +660,14 @@ function runtimeReservationFor(
   return { reserved: true };
 }
 
-function capacityRecordForRunRow(
-  run: ReviewRunRow
-): Pick<ReviewRecord, 'status' | 'lease' | 'detachedRunId'> {
+function capacityRecordForRunRow(run: ReviewRunRow): RuntimeCapacityRecord {
   const leaseAcquiredAt = msFromDate(run.leaseAcquiredAt);
   const leaseHeartbeatAt = msFromDate(run.leaseHeartbeatAt);
   const leaseExpiresAt = msFromDate(run.leaseExpiresAt);
   return {
     status: run.status,
+    request: run.request,
+    updatedAt: run.updatedAt.getTime(),
     ...(run.detachedRunId ? { detachedRunId: run.detachedRunId } : {}),
     ...(run.leaseOwner &&
     run.leaseScopeKey &&
@@ -803,6 +831,7 @@ export function createDrizzleReviewStore(
       return hydrate(reviewId);
     },
     async reserve(record, options) {
+      assertReviewRecordWithLease(record);
       return db.transaction(
         async (tx) => {
           await tx.execute(
@@ -814,7 +843,7 @@ export function createDrizzleReviewStore(
             .where(inArray(reviewRuns.status, ['queued', 'running']));
           const reservation = runtimeReservationFor(
             rows.map(capacityRecordForRunRow),
-            record.lease?.scopeKey ?? '',
+            record.lease.scopeKey,
             options
           );
           if (!reservation.reserved) {

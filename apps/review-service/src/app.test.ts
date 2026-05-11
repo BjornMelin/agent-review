@@ -140,18 +140,29 @@ function createStore(
       let active = 0;
       let scopedActive = 0;
       for (const existing of records.values()) {
-        if (
-          ['completed', 'failed', 'cancelled'].includes(existing.status) ||
-          existing.lease === undefined ||
-          existing.lease.expiresAt <= options.nowMs
-        ) {
+        if (['completed', 'failed', 'cancelled'].includes(existing.status)) {
           continue;
+        }
+        if (!existing.lease) {
+          const legacyActiveTtlMs = options.legacyUnleasedActiveTtlMs;
+          if (existing.status !== 'queued' && existing.status !== 'running') {
+            continue;
+          }
+          if (
+            legacyActiveTtlMs !== undefined &&
+            existing.updatedAt + legacyActiveTtlMs <= options.nowMs
+          ) {
+            continue;
+          }
         }
         active += 1;
         if (existing.status === 'queued') {
           queued += 1;
         }
-        if (existing.lease?.scopeKey === record.lease?.scopeKey) {
+        const existingScopeKey =
+          existing.lease?.scopeKey ??
+          options.scopeKeyForRequest?.(existing.request);
+        if (existingScopeKey === record.lease.scopeKey) {
           scopedActive += 1;
         }
       }
@@ -808,6 +819,70 @@ describe('createReviewServiceApp', () => {
     expect(await invalidArtifact.json()).toEqual({
       error: 'invalid artifact format xml',
     });
+  });
+
+  it('refreshes inline leases while provider work is still running', async () => {
+    const store = createStore();
+    let currentTime = 1_000;
+    let releaseRunner: (() => void) | undefined;
+    const runnerReleased = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    let resolveHeartbeatObserved: () => void = () => undefined;
+    const heartbeatObserved = new Promise<void>((resolve) => {
+      resolveHeartbeatObserved = resolve;
+    });
+    const runner = vi.fn<ReviewServiceRunner>(async (request, options) => {
+      currentTime = 1_300;
+      await options.onEvent?.({
+        type: 'progress',
+        message: 'provider still running',
+        meta: {
+          eventId: 'provider-progress-event',
+          timestampMs: currentTime,
+          correlation: {
+            reviewId: 'provider-review',
+          },
+        },
+      });
+      resolveHeartbeatObserved();
+      await runnerReleased;
+      return createReviewResult(request);
+    });
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      runner,
+      nowMs: () => currentTime,
+      uuid: createUuid([
+        'review-inline-heartbeat',
+        'event-start',
+        'event-provider',
+      ]),
+      config: {
+        runtimeLeaseTtlMs: 500,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const start = app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+    await heartbeatObserved;
+
+    const runningRecord = await store.get('review-inline-heartbeat');
+    expect(runningRecord?.lease).toMatchObject({
+      heartbeatAt: 1_300,
+      expiresAt: 1_800,
+    });
+
+    releaseRunner?.();
+    expect((await start).status).toBe(200);
   });
 
   it('records inline cancellation as cancelled instead of failed', async () => {

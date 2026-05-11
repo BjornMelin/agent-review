@@ -69,6 +69,9 @@ const helperEnvAllowlist = [
   'ComSpec',
 ] as const;
 
+/**
+ * Configures cancellable command execution.
+ */
 export type CommandRunOptions = {
   signal?: AbortSignal;
 };
