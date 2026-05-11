@@ -1,5 +1,6 @@
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { ReviewProviderRunInput } from '@review-agent/review-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   computeExitCode,
@@ -142,6 +143,85 @@ describe('runReview', () => {
           }
         )
       ).rejects.toBeInstanceOf(InvalidFindingLocationError);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('filters provider input and changed-line indexes with production path filters', async () => {
+    const repo = await makeRepo();
+    try {
+      await mkdir(join(repo.cwd, 'src/generated'), { recursive: true });
+      await mkdir(join(repo.cwd, 'test'), { recursive: true });
+      await writeFile(
+        join(repo.cwd, 'src/app.ts'),
+        'export const app = 2;\n',
+        'utf8'
+      );
+      await writeFile(
+        join(repo.cwd, 'src/generated/client.ts'),
+        'export const generated = 2;\n',
+        'utf8'
+      );
+      await writeFile(
+        join(repo.cwd, 'test/app.test.ts'),
+        'export const test = 2;\n',
+        'utf8'
+      );
+
+      const raw = {
+        findings: [
+          {
+            title: '[P1] Included location',
+            body: 'Inside filtered scope.',
+            confidence_score: 0.8,
+            priority: 1,
+            code_location: {
+              absolute_file_path: join(repo.cwd, 'src/app.ts'),
+              line_range: { start: 1, end: 1 },
+            },
+          },
+        ],
+        overall_correctness: 'patch is incorrect',
+        overall_explanation: 'Included file is reviewable.',
+        overall_confidence_score: 0.8,
+      };
+      const providerRun = vi.fn(async (input: ReviewProviderRunInput) => {
+        expect(input.normalizedDiffChunks.map((chunk) => chunk.file)).toEqual([
+          'src/app.ts',
+        ]);
+        return { raw, text: JSON.stringify(raw) };
+      });
+      const provider = {
+        ...makeProvider(raw, 'codexDelegate'),
+        run: providerRun,
+      };
+
+      const review = await runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          outputFormats: ['json'],
+          includePaths: ['src/**'],
+          excludePaths: ['src/generated/**'],
+        },
+        {
+          providers: {
+            codexDelegate: provider,
+            openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+          },
+        }
+      );
+
+      expect(providerRun).toHaveBeenCalledTimes(1);
+      expect(review.diff.chunks.map((chunk) => chunk.file)).toEqual([
+        'src/app.ts',
+      ]);
+      expect([...review.diff.changedLineIndex.keys()]).toEqual([
+        join(repo.cwd, 'src/app.ts'),
+      ]);
+      expect(review.result.findings).toHaveLength(1);
     } finally {
       await repo.cleanup();
     }
