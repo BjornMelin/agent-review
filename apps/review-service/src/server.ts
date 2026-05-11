@@ -1,16 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { ConvexMetadataBridge } from '@review-agent/review-convex-bridge';
-import { createCodexDelegateProvider } from '@review-agent/review-provider-codex';
-import { createOpenAICompatibleReviewProvider } from '@review-agent/review-provider-openai';
+import { createReviewProviders } from '@review-agent/review-provider-registry';
 import { ReviewWorker } from '@review-agent/review-worker';
 import { createReviewServiceApp } from './app.js';
 
 const app = createReviewServiceApp({
-  providers: {
-    codexDelegate: createCodexDelegateProvider(),
-    openaiCompatible: createOpenAICompatibleReviewProvider(),
-  },
+  providers: createReviewProviders(),
   worker: new ReviewWorker(),
   bridge: new ConvexMetadataBridge(),
   uuid: randomUUID,

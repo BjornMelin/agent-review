@@ -42,7 +42,8 @@ Runs a review and emits artifacts.
 
 ## `review-agent models`
 
-Prints static built-in model IDs used as convenience presets.
+Prints provider-registry model presets, including default route markers and
+capability policy.
 
 ## `review-agent doctor`
 
@@ -68,8 +69,18 @@ Prints shell completion script for:
 ## Provider/Model Resolution Rules
 
 - `--provider codex` maps to `provider=codexDelegate`.
-- `--provider gateway` maps to `provider=openaiCompatible` with model prefix `gateway:` if omitted.
-- `--provider openrouter` maps to `provider=openaiCompatible` with model prefix `openrouter:` if omitted.
+- `--provider gateway` maps to `provider=openaiCompatible` and uses
+  `gateway:openai/gpt-5` when `--model` is omitted.
+- `--provider openrouter` maps to `provider=openaiCompatible` and uses
+  `openrouter:openai/gpt-5` when `--model` is omitted.
+- Unprefixed OpenAI-compatible model IDs are prefixed with the selected route.
+  For example, `--provider gateway --model openai/gpt-5` becomes
+  `gateway:openai/gpt-5`.
+- A routed model prefix must match the selected route. For example,
+  `--provider gateway --model openrouter:openai/gpt-5` fails as usage error.
+- `packages/review-provider-registry` is the only package that may own provider
+  construction, CLI route normalization, default model IDs, model catalog
+  presets, and route-specific doctor filtering.
 
 ## Exit Codes
 

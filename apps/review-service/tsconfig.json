@@ -14,10 +14,7 @@
       "path": "../../packages/review-core"
     },
     {
-      "path": "../../packages/review-provider-codex"
-    },
-    {
-      "path": "../../packages/review-provider-openai"
+      "path": "../../packages/review-provider-registry"
     },
     {
       "path": "../../packages/review-convex-bridge"

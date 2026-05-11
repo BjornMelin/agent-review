@@ -11,21 +11,41 @@ import {
 } from '@review-agent/review-types';
 import { generateText, Output } from 'ai';
 
-const DEFAULT_GATEWAY_MODEL_ID = 'gateway:openai/gpt-5';
-const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-
 export type OpenAICompatibleProviderOptions = {
   defaultModelId?: string;
-  gatewayApiKey?: string;
-  gatewayBaseURL?: string;
-  openRouterApiKey?: string;
-  openRouterBaseURL?: string;
-  openRouterHeaders?: Record<string, string>;
+  capabilities: ReviewProviderCapabilities;
+  routes: readonly OpenAICompatibleRouteConfig[];
 };
 
+export type GatewayRouteConfig = {
+  id: string;
+  kind: 'gateway';
+  displayName: string;
+  apiKeyEnv: string;
+  apiKey?: string | undefined;
+  baseURL?: string | undefined;
+};
+
+export type OpenAICompatibleChatRouteConfig = {
+  id: string;
+  kind: 'openaiCompatibleChat';
+  displayName: string;
+  apiKeyEnv: string;
+  apiKey?: string | undefined;
+  baseURL: string;
+  headers?: Record<string, string> | undefined;
+  supportsStructuredOutputs?: boolean | undefined;
+};
+
+export type OpenAICompatibleRouteConfig =
+  | GatewayRouteConfig
+  | OpenAICompatibleChatRouteConfig;
+
 type TextModel = Parameters<typeof generateText>[0]['model'];
-type ProviderId = 'gateway' | 'openrouter';
 type LanguageModelFactory = (modelId: string) => TextModel;
+type ResolvedRouteConfig = OpenAICompatibleRouteConfig & {
+  apiKey: string | undefined;
+};
 
 function buildReviewInput(input: ReviewProviderRunInput): string {
   const chunks = input.normalizedDiffChunks
@@ -43,60 +63,118 @@ function buildReviewInput(input: ReviewProviderRunInput): string {
   ].join('\n');
 }
 
+function nonEmptySecret(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function resolveRouteApiKey(
+  route: OpenAICompatibleRouteConfig
+): string | undefined {
+  return (
+    nonEmptySecret(route.apiKey) ?? nonEmptySecret(process.env[route.apiKeyEnv])
+  );
+}
+
 export class OpenAICompatibleReviewProvider implements ReviewProvider {
   id = 'openaiCompatible' as const;
-  private readonly defaultModelId: string;
-  private readonly registry: Record<ProviderId, LanguageModelFactory>;
-  private readonly options: OpenAICompatibleProviderOptions;
+  private readonly defaultModelId: string | undefined;
+  private readonly capabilitiesPolicy: ReviewProviderCapabilities;
+  private readonly factories = new Map<string, LanguageModelFactory>();
+  private readonly routes = new Map<string, ResolvedRouteConfig>();
 
-  constructor(options: OpenAICompatibleProviderOptions = {}) {
-    this.options = options;
-    this.defaultModelId = options.defaultModelId ?? DEFAULT_GATEWAY_MODEL_ID;
+  constructor(options: OpenAICompatibleProviderOptions) {
+    this.defaultModelId = options.defaultModelId;
+    this.capabilitiesPolicy = options.capabilities;
 
-    const gatewayOptions: { apiKey?: string; baseURL?: string } = {};
-    const gatewayApiKey =
-      this.options.gatewayApiKey ?? process.env.AI_GATEWAY_API_KEY;
-    if (gatewayApiKey !== undefined) {
-      gatewayOptions.apiKey = gatewayApiKey;
+    for (const route of options.routes) {
+      const apiKey = resolveRouteApiKey(route);
+      const resolvedRoute = { ...route, apiKey };
+      this.routes.set(route.id, resolvedRoute);
+      if (route.kind === 'gateway') {
+        const gatewayOptions: { apiKey?: string; baseURL?: string } = {};
+        if (apiKey) {
+          gatewayOptions.apiKey = apiKey;
+        }
+        if (route.baseURL) {
+          gatewayOptions.baseURL = route.baseURL;
+        }
+        const provider = createGateway(gatewayOptions);
+        this.factories.set(route.id, (modelId) => provider(modelId));
+      } else {
+        const providerOptions: {
+          baseURL: string;
+          name: string;
+          apiKey?: string;
+          headers?: Record<string, string>;
+          supportsStructuredOutputs: boolean;
+        } = {
+          baseURL: route.baseURL,
+          name: route.id,
+          supportsStructuredOutputs: route.supportsStructuredOutputs ?? true,
+        };
+        if (apiKey) {
+          providerOptions.apiKey = apiKey;
+        }
+        if (route.headers) {
+          providerOptions.headers = route.headers;
+        }
+        const provider = createOpenAICompatible(providerOptions);
+        this.factories.set(route.id, (modelId) => provider.chatModel(modelId));
+      }
     }
-    if (this.options.gatewayBaseURL) {
-      gatewayOptions.baseURL = this.options.gatewayBaseURL;
-    }
-
-    const openRouterOptions: {
-      baseURL: string;
-      name: string;
-      apiKey?: string;
-      headers?: Record<string, string>;
-      supportsStructuredOutputs: boolean;
-    } = {
-      baseURL: this.options.openRouterBaseURL ?? DEFAULT_OPENROUTER_BASE_URL,
-      name: 'openrouter',
-      supportsStructuredOutputs: true,
-    };
-    const openRouterApiKey =
-      this.options.openRouterApiKey ?? process.env.OPENROUTER_API_KEY;
-    if (openRouterApiKey !== undefined) {
-      openRouterOptions.apiKey = openRouterApiKey;
-    }
-    if (this.options.openRouterHeaders) {
-      openRouterOptions.headers = this.options.openRouterHeaders;
-    }
-
-    const gatewayProvider = createGateway(gatewayOptions);
-    const openRouterProvider = createOpenAICompatible(openRouterOptions);
-
-    this.registry = {
-      gateway: (modelId) => gatewayProvider(modelId),
-      openrouter: (modelId) => openRouterProvider.chatModel(modelId),
-    };
   }
 
   capabilities(): ReviewProviderCapabilities {
+    return { ...this.capabilitiesPolicy };
+  }
+
+  private parseModelId(modelId: string):
+    | {
+        route: ResolvedRouteConfig;
+        modelId: string;
+      }
+    | ProviderDiagnostic {
+    const separator = modelId.indexOf(':');
+    if (separator < 1 || separator === modelId.length - 1) {
+      return {
+        code: 'invalid_model_id',
+        ok: false,
+        severity: 'error',
+        detail: `invalid model id "${modelId}". Expected "provider:model".`,
+        remediation:
+          'Use routed model ids like "gateway:openai/gpt-5" or "openrouter:openai/gpt-5".',
+      };
+    }
+
+    const routeId = modelId.slice(0, separator);
+    const route = this.routes.get(routeId);
+    if (!route) {
+      return {
+        code: 'configuration_error',
+        ok: false,
+        severity: 'error',
+        scope: routeId,
+        detail: `unsupported provider "${routeId}" for openaiCompatible`,
+        remediation: `Use one of: ${[...this.routes.keys()].join('|')}.`,
+      };
+    }
+
+    const providerModelId = modelId.slice(separator + 1).trim();
+    if (!providerModelId) {
+      return {
+        code: 'invalid_model_id',
+        ok: false,
+        severity: 'error',
+        scope: routeId,
+        detail: `invalid model id "${modelId}". Model segment is empty.`,
+        remediation: `Use a non-empty ${routeId}:<model> identifier.`,
+      };
+    }
+
     return {
-      jsonSchemaOutput: true,
-      reasoningControl: false,
-      streaming: false,
+      route,
+      modelId: providerModelId,
     };
   }
 
@@ -116,52 +194,31 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
     }
 
     const resolvedModelId = input.request.model ?? this.defaultModelId;
-    const separator = resolvedModelId.indexOf(':');
-    if (separator < 1 || separator === resolvedModelId.length - 1) {
-      diagnostics.push({
-        code: 'invalid_model_id',
-        ok: false,
-        severity: 'error',
-        detail: `invalid model id "${resolvedModelId}". Expected "provider:model".`,
-        remediation:
-          'Use model ids like "gateway:openai/gpt-5" or "openrouter:openai/gpt-5".',
-      });
-      return diagnostics;
-    }
-    const providerId = resolvedModelId.slice(0, separator) as ProviderId;
-    if (providerId !== 'gateway' && providerId !== 'openrouter') {
+    if (!resolvedModelId) {
       diagnostics.push({
         code: 'configuration_error',
         ok: false,
         severity: 'error',
-        detail: `unsupported provider "${providerId}" for openaiCompatible`,
-        remediation: 'Use "gateway" or "openrouter" model prefixes.',
+        detail: 'openaiCompatible requires a routed model id',
+        remediation:
+          'Create providers through the provider registry or provide a defaultModelId option.',
       });
       return diagnostics;
     }
-    const hasGatewayKey = Boolean(
-      this.options.gatewayApiKey ?? process.env.AI_GATEWAY_API_KEY
-    );
-    const hasOpenRouterKey = Boolean(
-      this.options.openRouterApiKey ?? process.env.OPENROUTER_API_KEY
-    );
-    if (providerId === 'gateway' && !hasGatewayKey) {
-      diagnostics.push({
-        code: 'auth_missing',
-        ok: false,
-        severity: 'error',
-        detail: 'missing AI Gateway API key',
-        remediation: 'Set AI_GATEWAY_API_KEY or provide gatewayApiKey option.',
-      });
+    const parsed = this.parseModelId(resolvedModelId);
+    if ('code' in parsed) {
+      diagnostics.push(parsed);
+      return diagnostics;
     }
-    if (providerId === 'openrouter' && !hasOpenRouterKey) {
+
+    if (!parsed.route.apiKey) {
       diagnostics.push({
         code: 'auth_missing',
         ok: false,
         severity: 'error',
-        detail: 'missing OpenRouter API key',
-        remediation:
-          'Set OPENROUTER_API_KEY or provide openRouterApiKey option.',
+        scope: parsed.route.id,
+        detail: `missing ${parsed.route.displayName} API key`,
+        remediation: `Set ${parsed.route.apiKeyEnv} or provide an apiKey for ${parsed.route.id}.`,
       });
     }
     return diagnostics;
@@ -169,65 +226,47 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
 
   async doctor(): Promise<ProviderDiagnostic[]> {
     const diagnostics: ProviderDiagnostic[] = [];
-    const hasGatewayKey = Boolean(
-      this.options.gatewayApiKey ?? process.env.AI_GATEWAY_API_KEY
-    );
-    diagnostics.push(
-      hasGatewayKey
-        ? {
-            code: 'auth_available',
-            ok: true,
-            severity: 'info',
-            detail: 'gateway auth detected',
-          }
-        : {
-            code: 'auth_missing',
-            ok: false,
-            severity: 'error',
-            detail: 'AI_GATEWAY_API_KEY is not configured',
-            remediation: 'Set AI_GATEWAY_API_KEY for gateway:* model routing.',
-          }
-    );
-    const hasOpenRouterKey = Boolean(
-      this.options.openRouterApiKey ?? process.env.OPENROUTER_API_KEY
-    );
-    diagnostics.push(
-      hasOpenRouterKey
-        ? {
-            code: 'auth_available',
-            ok: true,
-            severity: 'info',
-            detail: 'openrouter auth detected',
-          }
-        : {
-            code: 'auth_missing',
-            ok: false,
-            severity: 'error',
-            detail: 'OPENROUTER_API_KEY is not configured',
-            remediation:
-              'Set OPENROUTER_API_KEY for openrouter:* model routing.',
-          }
-    );
+    for (const route of this.routes.values()) {
+      diagnostics.push(
+        route.apiKey
+          ? {
+              code: 'auth_available',
+              ok: true,
+              severity: 'info',
+              scope: route.id,
+              detail: `${route.displayName} auth detected`,
+            }
+          : {
+              code: 'auth_missing',
+              ok: false,
+              severity: 'error',
+              scope: route.id,
+              detail: `${route.apiKeyEnv} is not configured`,
+              remediation: `Set ${route.apiKeyEnv} for ${route.id}:* model routing.`,
+            }
+      );
+    }
     return diagnostics;
   }
 
   async run(input: ReviewProviderRunInput): Promise<ReviewProviderRunOutput> {
     const resolvedModelId = input.request.model ?? this.defaultModelId;
-    const separator = resolvedModelId.indexOf(':');
-    if (separator < 1 || separator === resolvedModelId.length - 1) {
+    if (!resolvedModelId) {
       throw new Error(
-        `invalid model id "${resolvedModelId}". Expected "provider:model".`
+        'openaiCompatible requires a routed model id. Create providers through the provider registry or provide defaultModelId.'
       );
     }
-    const providerId = resolvedModelId.slice(0, separator) as ProviderId;
-    const modelId = resolvedModelId.slice(separator + 1);
-    const provider = this.registry[providerId];
+    const parsed = this.parseModelId(resolvedModelId);
+    if ('code' in parsed) {
+      throw new Error(parsed.detail);
+    }
+    const provider = this.factories.get(parsed.route.id);
     if (!provider) {
       throw new Error(
-        `unsupported provider "${providerId}". Use "gateway" or "openrouter".`
+        `provider route "${parsed.route.id}" is not configured for execution.`
       );
     }
-    const model = provider(modelId);
+    const model = provider(parsed.modelId);
 
     const { output } = await generateText({
       model,
@@ -249,7 +288,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
 }
 
 export function createOpenAICompatibleReviewProvider(
-  options: OpenAICompatibleProviderOptions = {}
+  options: OpenAICompatibleProviderOptions
 ): ReviewProvider {
   return new OpenAICompatibleReviewProvider(options);
 }

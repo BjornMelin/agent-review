@@ -5,16 +5,16 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.json"],
   "references": [
     {
-      "path": "../../packages/review-types"
+      "path": "../review-types"
     },
     {
-      "path": "../../packages/review-core"
+      "path": "../review-provider-codex"
     },
     {
-      "path": "../../packages/review-provider-registry"
+      "path": "../review-provider-openai"
     }
   ]
 }
