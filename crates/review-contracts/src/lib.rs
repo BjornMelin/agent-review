@@ -141,6 +141,8 @@ where
             message: error.to_string(),
         })?;
 
+    // parse_contract accepts &Value for caller flexibility; input.clone() is
+    // intentional because serde_json::from_value consumes its Value.
     serde_json::from_value(input.clone()).map_err(|error| ContractParseError::InvalidShape {
         schema: schema_name,
         message: error.to_string(),
