@@ -15,7 +15,10 @@ pass parity, benchmark, and generated-contract gates.
 ### Applications
 
 - `apps/review-cli`: user-facing CLI to run reviews locally.
-- `apps/review-service`: HTTP API for orchestration and streaming lifecycle events.
+- `apps/review-service`: HTTP API for orchestration and streaming lifecycle
+  events. The route layer is constructed through `createReviewServiceApp(deps)`
+  so tests and future durable/auth integrations inject providers, worker, store,
+  clock, UUID, logger, auth, and runner dependencies without binding a TCP port.
 - `apps/review-worker`: detached execution adapter used by service.
 
 ### Core Packages
