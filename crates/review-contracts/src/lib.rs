@@ -20,6 +20,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/contracts.rs"));
 }
 
+/// Re-exported generated DTOs from the committed `review-types` JSON Schema set.
 pub use generated::*;
 
 /// Committed JSON Schema manifest consumed by the Rust contract generator.
@@ -40,20 +41,32 @@ static SANDBOX_AUDIT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> 
 /// Contract parsing error raised before a generated DTO crosses the Rust boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractParseError {
+    /// The embedded JSON Schema artifact could not be parsed or compiled.
     InvalidSchema {
+        /// Human-readable schema name.
         schema: &'static str,
+        /// Parser or compiler diagnostic.
         message: String,
     },
+    /// Input JSON failed validation against the committed schema artifact.
     InvalidJson {
+        /// Human-readable schema name.
         schema: &'static str,
+        /// JSON Schema validation diagnostic.
         message: String,
     },
+    /// Schema-valid JSON failed Serde deserialization into the generated DTO.
     InvalidShape {
+        /// Human-readable schema name.
         schema: &'static str,
+        /// Serde deserialization diagnostic.
         message: String,
     },
+    /// Input JSON failed an explicit semantic guard for a Zod refinement.
     InvalidSemantics {
+        /// Human-readable schema name.
         schema: &'static str,
+        /// Semantic validation diagnostic.
         message: String,
     },
 }

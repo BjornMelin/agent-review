@@ -162,7 +162,14 @@ fn normalize_schema_for_typify(value: &mut Value, title_hint: &str) {
                 }
             }
 
-            for child in object.values_mut() {
+            for (key, child) in object {
+                if matches!(
+                    key.as_str(),
+                    "properties" | "items" | "oneOf" | "anyOf" | "allOf"
+                ) {
+                    continue;
+                }
+
                 normalize_schema_for_typify(child, title_hint);
             }
         }
