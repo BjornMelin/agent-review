@@ -11,7 +11,9 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",
-    "dev": "tsx src/server.ts"
+    "dev": "tsx src/server.ts",
+    "db:generate": "drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "drizzle-kit migrate --config drizzle.config.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.2",
@@ -20,9 +22,14 @@
     "@review-agent/review-provider-registry": "workspace:*",
     "@review-agent/review-types": "workspace:*",
     "@review-agent/review-worker": "workspace:*",
-    "hono": "^4.12.18"
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.18",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.4.5",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "4.21.0"
   }
 }

@@ -91,7 +91,9 @@ describe('core determinism and lifecycle metadata', () => {
         },
         {
           providers,
-          onEvent: (event) => events.push(event),
+          onEvent: (event) => {
+            events.push(event);
+          },
         }
       );
 

@@ -29,6 +29,7 @@ This directory contains canonical product and architecture documentation for the
 - [ADR-0002 Provider Abstraction and Output Schema](./architecture/adr/0002-provider-abstraction-and-output-schema.md)
 - [ADR-0003 Detached Execution and Fallback](./architecture/adr/0003-detached-execution-and-fallback.md)
 - [ADR-0004 TypeScript Control Plane and Rust Helper Boundary](./architecture/adr/0004-typescript-control-plane-and-rust-helper-boundary.md)
+- [ADR-0005 Durable Review Storage](./architecture/adr/0005-durable-review-storage.md)
 
 ## Source of Truth
 

@@ -103,7 +103,9 @@ describe('codex parity conformance', () => {
         },
         {
           providers,
-          onEvent: (event) => events.push(event),
+          onEvent: (event) => {
+            events.push(event);
+          },
         }
       );
 

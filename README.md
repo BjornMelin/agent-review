@@ -10,6 +10,7 @@ The platform reviews code changes from git context and produces structured findi
 - HTTP service for inline or detached review execution
 - Detached worker path with Workflow API support and local fallback
 - Provider registry for Codex delegate and OpenAI-compatible model policy
+- Durable service storage with Drizzle/Postgres when a database URL is configured
 - Optional sandbox policy checks and optional Convex metadata mirroring
 
 ## Monorepo Layout
@@ -81,12 +82,16 @@ pnpm --filter @review-agent/review-service dev
 ```
 
 Service endpoints are documented in [docs/architecture/spec/review-service-api.md](docs/architecture/spec/review-service-api.md).
+When `DATABASE_URL` or `POSTGRES_URL` is set, run the service database migration
+before startup; startup does not apply migrations automatically.
 
 ## Environment Variables
 
 | Variable | Used By | Purpose |
 | --- | --- | --- |
 | `PORT` | `apps/review-service` | Service bind port (default `3042`) |
+| `DATABASE_URL` / `POSTGRES_URL` | `apps/review-service` | Enables durable Drizzle/Postgres review run, event, and artifact storage |
+| `REVIEW_SERVICE_STORAGE=memory` | `apps/review-service` | Explicitly allows volatile in-memory service storage when no database URL is set |
 | `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
 | `OPENROUTER_API_KEY` | `packages/review-provider-openai` via provider registry | API key for OpenRouter |

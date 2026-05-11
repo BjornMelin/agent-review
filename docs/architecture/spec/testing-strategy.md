@@ -49,6 +49,9 @@ published service/worker contracts. Current harness-backed invariants are:
   current status.
 - Detached worker cancellation keeps the accepted local fallback behavior when
   Workflow cancellation APIs are unavailable.
+- Durable service storage is exercised with PGlite-backed tests covering schema
+  migration, restart hydration, event sequence trimming, artifact metadata,
+  status transitions, and cascade deletion.
 
 ## Service and Worker Package Script Policy
 

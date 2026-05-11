@@ -8,14 +8,13 @@ import { runReview } from '@review-agent/review-core';
 import {
   ARTIFACT_CONTENT_TYPES,
   type CorrelationIds,
-  isTerminalReviewRunStatus,
   type LifecycleEvent,
   OutputFormatSchema,
   type ReviewCancelResponse,
   type ReviewErrorResponse,
+  ReviewEventCursorSchema,
   type ReviewProvider,
   type ReviewRequest,
-  type ReviewRunStatus,
   ReviewStartRequestSchema,
   type ReviewStartResponse,
   type ReviewStatusResponse,
@@ -23,32 +22,17 @@ import {
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { type Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import {
+  createInMemoryReviewStore,
+  type ReviewRecord,
+  type ReviewStoreAdapter,
+} from './storage/index.js';
 
-/**
- * Stores the mutable service state for one review request.
- */
-export type ReviewRecord = {
-  reviewId: string;
-  status: ReviewRunStatus;
-  request: ReviewRequest;
-  createdAt: number;
-  updatedAt: number;
-  result?: ReviewRunResult;
-  error?: string;
-  detachedRunId?: string;
-  events: LifecycleEvent[];
-};
-
-/**
- * Defines the service store boundary used by routes and future durable adapters.
- */
-export type ReviewStoreAdapter = {
-  get(reviewId: string): ReviewRecord | undefined;
-  set(record: ReviewRecord): void;
-  delete(reviewId: string): void;
-  entries(): Iterable<[string, ReviewRecord]>;
-  size(): number;
-};
+export type { ReviewRecord, ReviewStoreAdapter } from './storage/index.js';
+export {
+  createInMemoryReviewStore,
+  createReviewStoreFromEnv,
+} from './storage/index.js';
 
 /**
  * Defines the detached worker operations used by the review service.
@@ -86,7 +70,6 @@ export type ReviewServiceAuthPolicy = (
  * Defines tunable service limits that do not change the route contract.
  */
 export type ReviewServiceConfig = {
-  maxRecords: number;
   maxRecordAgeMs: number;
   maxRecordEvents: number;
   recordCleanupIntervalMs: number | false;
@@ -111,7 +94,6 @@ export type ReviewServiceDependencies = {
 };
 
 const DEFAULT_CONFIG: ReviewServiceConfig = {
-  maxRecords: 500,
   maxRecordAgeMs: 60 * 60 * 1000,
   maxRecordEvents: 200,
   recordCleanupIntervalMs: 60_000,
@@ -126,33 +108,8 @@ type LifecycleEventPayload = {
     'meta'
   >;
 }[LifecycleEvent['type']];
+type ReviewEventCursor = ReturnType<typeof ReviewEventCursorSchema.parse>;
 type ReviewLifecycleListener = (event: LifecycleEvent) => void | Promise<void>;
-
-/**
- * Creates a process-local review store for one service app instance.
- *
- * @returns A mutable in-memory store adapter scoped to the created app.
- */
-export function createInMemoryReviewStore(): ReviewStoreAdapter {
-  const records = new Map<string, ReviewRecord>();
-  return {
-    get(reviewId) {
-      return records.get(reviewId);
-    },
-    set(record) {
-      records.set(record.reviewId, record);
-    },
-    delete(reviewId) {
-      records.delete(reviewId);
-    },
-    entries() {
-      return records.entries();
-    },
-    size() {
-      return records.size;
-    },
-  };
-}
 
 function jsonError(
   context: Context,
@@ -195,6 +152,37 @@ function buildStatusResponse(record: ReviewRecord): ReviewStatusResponse {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
+}
+
+function parseEventCursor(
+  context: Context,
+  reviewId: string
+): ReviewEventCursor {
+  const limitRaw = context.req.query('limit');
+  return ReviewEventCursorSchema.parse({
+    reviewId,
+    afterEventId:
+      context.req.query('afterEventId') ??
+      context.req.header('last-event-id') ??
+      undefined,
+    ...(limitRaw === undefined ? {} : { limit: Number(limitRaw) }),
+  });
+}
+
+function selectReplayEvents(
+  events: LifecycleEvent[],
+  cursor: ReviewEventCursor
+): LifecycleEvent[] {
+  if (!cursor.afterEventId) {
+    return events.slice(0, cursor.limit);
+  }
+  const cursorIndex = events.findIndex(
+    (event) => event.meta.eventId === cursor.afterEventId
+  );
+  if (cursorIndex === -1) {
+    return [];
+  }
+  return events.slice(cursorIndex + 1, cursorIndex + 1 + cursor.limit);
 }
 
 /**
@@ -243,51 +231,48 @@ export function createReviewServiceApp(
     liveListeners.delete(reviewId);
   }
 
-  function cleanupReviewRecords(): void {
-    const now = nowMs();
-    for (const [reviewId, record] of store.entries()) {
-      if (
-        isTerminalReviewRunStatus(record.status) &&
-        now - record.updatedAt > config.maxRecordAgeMs
-      ) {
-        record.events.length = 0;
-        clearLiveListeners(reviewId);
-        store.delete(reviewId);
-      }
-    }
+  function setTerminalRetention(record: ReviewRecord): void {
+    record.retentionExpiresAt = record.updatedAt + config.maxRecordAgeMs;
+  }
 
-    if (store.size() <= config.maxRecords) {
-      return;
+  async function cleanupReviewRecords(): Promise<void> {
+    const deletedReviewIds = await store.cleanup({
+      nowMs: nowMs(),
+    });
+    for (const reviewId of deletedReviewIds) {
+      clearLiveListeners(reviewId);
     }
+  }
 
-    const evictOrder = [...store.entries()].sort(
-      (a, b) => a[1].updatedAt - b[1].updatedAt
-    );
-    for (const [reviewId, record] of evictOrder) {
-      if (store.size() <= config.maxRecords) {
-        break;
-      }
-      if (isTerminalReviewRunStatus(record.status)) {
-        record.events.length = 0;
-        clearLiveListeners(reviewId);
-        store.delete(reviewId);
-      }
+  async function loadRecord(
+    context: Context,
+    reviewId: string,
+    notFoundMessage: string,
+    failureMessage: string
+  ): Promise<ReviewRecord | Response> {
+    try {
+      const record = await store.get(reviewId);
+      return record ?? jsonError(context, notFoundMessage, 404);
+    } catch (error) {
+      logger.error(`[review-service] ${failureMessage}`, error);
+      return jsonError(context, failureMessage, 502);
     }
   }
 
   if (config.recordCleanupIntervalMs !== false) {
-    const cleanupInterval = setInterval(
-      cleanupReviewRecords,
-      config.recordCleanupIntervalMs
-    );
+    const cleanupInterval = setInterval(() => {
+      cleanupReviewRecords().catch((error) => {
+        logger.error('[review-service] cleanup failed', error);
+      });
+    }, config.recordCleanupIntervalMs);
     cleanupInterval.unref?.();
   }
 
-  function emit(
+  async function emit(
     record: ReviewRecord,
     event: LifecycleEvent | LifecycleEventPayload,
     correlationOverride?: Partial<CorrelationIds>
-  ): LifecycleEvent {
+  ): Promise<LifecycleEvent> {
     const enriched: LifecycleEvent =
       'meta' in event
         ? {
@@ -316,11 +301,10 @@ export function createReviewServiceApp(
             },
           };
 
-    if (record.events.length >= config.maxRecordEvents) {
-      record.events.shift();
-    }
-    record.events.push(enriched);
-    store.set(record);
+    await store.appendEvent(record, enriched, {
+      maxEvents: config.maxRecordEvents,
+      reason: 'lifecycle event',
+    });
 
     const listeners = liveListeners.get(record.reviewId);
     if (!listeners) {
@@ -354,7 +338,7 @@ export function createReviewServiceApp(
     try {
       record.status = 'running';
       record.updatedAt = nowMs();
-      emit(record, {
+      await emit(record, {
         type: 'progress',
         message: 'starting inline review run',
       });
@@ -367,7 +351,9 @@ export function createReviewServiceApp(
         record.request,
         {
           providers: dependencies.providers,
-          onEvent: (event) => emit(record, event),
+          onEvent: async (event) => {
+            await emit(record, event);
+          },
           now: () => new Date(nowMs()),
           correlation: {
             workflowRunId: record.detachedRunId,
@@ -378,13 +364,15 @@ export function createReviewServiceApp(
       record.result = review;
       record.status = 'completed';
       record.updatedAt = nowMs();
-      store.set(record);
+      setTerminalRetention(record);
+      await store.set(record, { reason: 'inline completed' });
     } catch (error) {
       record.status = 'failed';
       record.error = error instanceof Error ? error.message : String(error);
       record.updatedAt = nowMs();
-      emit(record, { type: 'failed', message: record.error });
-      store.set(record);
+      setTerminalRetention(record);
+      await emit(record, { type: 'failed', message: record.error });
+      await store.set(record, { reason: 'inline failed' });
     }
   }
 
@@ -419,21 +407,39 @@ export function createReviewServiceApp(
     if (record.status !== previousStatus) {
       changed = true;
       record.updatedAt = nowMs();
+      if (
+        record.status === 'completed' ||
+        record.status === 'failed' ||
+        record.status === 'cancelled'
+      ) {
+        setTerminalRetention(record);
+      }
       if (record.status === 'failed') {
-        emit(record, {
+        await emit(record, {
           type: 'failed',
           message: record.error ?? 'detached run failed',
         });
       }
+      if (record.status === 'completed' && record.result) {
+        await emit(record, {
+          type: 'exitedReviewMode',
+          review: record.result.result.overallExplanation,
+        });
+        for (const format of Object.keys(record.result.artifacts) as Array<
+          keyof ReviewRunResult['artifacts']
+        >) {
+          await emit(record, { type: 'artifactReady', format });
+        }
+      }
       if (record.status === 'cancelled') {
-        emit(record, { type: 'cancelled' });
+        await emit(record, { type: 'cancelled' });
       }
     } else if (changed) {
       record.updatedAt = nowMs();
     }
 
     if (changed) {
-      store.set(record);
+      await store.set(record, { reason: 'detached sync' });
     }
   }
 
@@ -446,25 +452,33 @@ export function createReviewServiceApp(
   });
 
   app.post('/v1/review/start', async (context) => {
+    let parsed: ReturnType<typeof ReviewStartRequestSchema.parse>;
     try {
-      const { request, delivery } = await parseJsonBody(context, (body) =>
+      parsed = await parseJsonBody(context, (body) =>
         ReviewStartRequestSchema.parse(body)
       );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return jsonError(context, message, 400);
+    }
+
+    try {
+      const { request, delivery } = parsed;
       if (request.executionMode === 'remoteSandbox') {
         return jsonError(context, config.unsupportedRemoteSandboxError, 400);
       }
 
       const reviewId = uuid();
       const record = createReviewRecord(request, reviewId, nowMs());
-      cleanupReviewRecords();
+      await cleanupReviewRecords();
 
       if (delivery === 'detached' || request.detached) {
         const detached = await dependencies.worker.startDetached(request);
         record.detachedRunId = detached.runId;
         record.status = detached.status === 'running' ? 'running' : 'queued';
         record.updatedAt = nowMs();
-        store.set(record);
-        emit(record, {
+        await store.set(record, { reason: 'detached started' });
+        await emit(record, {
           type: 'enteredReviewMode',
           review: 'review requested',
         });
@@ -476,7 +490,7 @@ export function createReviewServiceApp(
         return context.json(response, 202);
       }
 
-      store.set(record);
+      await store.set(record, { reason: 'inline queued' });
       await runInline(record);
       const response: ReviewStartResponse = {
         reviewId,
@@ -485,15 +499,20 @@ export function createReviewServiceApp(
       };
       return context.json(response, 200);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return jsonError(context, message, 400);
+      logger.error('[review-service] failed to start review', error);
+      return jsonError(context, 'failed to start review', 502);
     }
   });
 
   app.get('/v1/review/:reviewId', async (context) => {
-    const record = store.get(context.req.param('reviewId'));
-    if (!record) {
-      return jsonError(context, 'review not found', 404);
+    const record = await loadRecord(
+      context,
+      context.req.param('reviewId'),
+      'review not found',
+      'failed to fetch run status'
+    );
+    if (record instanceof Response) {
+      return record;
     }
 
     try {
@@ -506,9 +525,23 @@ export function createReviewServiceApp(
   });
 
   app.get('/v1/review/:reviewId/events', async (context) => {
-    const record = store.get(context.req.param('reviewId'));
-    if (!record) {
-      return jsonError(context, 'review not found', 404);
+    const reviewId = context.req.param('reviewId');
+    const record = await loadRecord(
+      context,
+      reviewId,
+      'review not found',
+      'failed to fetch event stream status'
+    );
+    if (record instanceof Response) {
+      return record;
+    }
+
+    let cursor: ReviewEventCursor;
+    try {
+      cursor = parseEventCursor(context, reviewId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return jsonError(context, message, 400);
     }
 
     try {
@@ -558,7 +591,7 @@ export function createReviewServiceApp(
 
       getLiveListeners(record.reviewId).add(send);
 
-      for (const event of record.events) {
+      for (const event of selectReplayEvents(record.events, cursor)) {
         await send(event);
       }
 
@@ -580,7 +613,7 @@ export function createReviewServiceApp(
           if (!streaming) {
             break;
           }
-          const latestRecord = store.get(record.reviewId);
+          const latestRecord = await store.get(record.reviewId);
           if (!latestRecord) {
             cleanup();
             break;
@@ -603,9 +636,14 @@ export function createReviewServiceApp(
   });
 
   app.get('/v1/review/:reviewId/artifacts/:format', async (context) => {
-    const record = store.get(context.req.param('reviewId'));
-    if (!record) {
-      return jsonError(context, 'artifact not ready', 404);
+    const record = await loadRecord(
+      context,
+      context.req.param('reviewId'),
+      'artifact not ready',
+      'failed to fetch artifact status'
+    );
+    if (record instanceof Response) {
+      return record;
     }
 
     try {
@@ -640,9 +678,14 @@ export function createReviewServiceApp(
 
   app.post('/v1/review/:reviewId/cancel', async (context) => {
     const reviewId = context.req.param('reviewId');
-    const record = store.get(reviewId);
-    if (!record) {
-      return jsonError(context, 'review not found', 404);
+    const record = await loadRecord(
+      context,
+      reviewId,
+      'review not found',
+      'failed to cancel run'
+    );
+    if (record instanceof Response) {
+      return record;
     }
 
     if (record.detachedRunId) {
@@ -653,9 +696,10 @@ export function createReviewServiceApp(
         if (cancelled) {
           record.status = 'cancelled';
           record.updatedAt = nowMs();
-          emit(record, { type: 'cancelled' });
-          store.set(record);
-          cleanupReviewRecords();
+          setTerminalRetention(record);
+          await emit(record, { type: 'cancelled' });
+          await store.set(record, { reason: 'cancelled' });
+          await cleanupReviewRecords();
           const response: ReviewCancelResponse = {
             reviewId,
             status: record.status,

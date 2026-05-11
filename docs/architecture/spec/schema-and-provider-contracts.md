@@ -119,10 +119,11 @@ The review service uses `review-types` for request parsing and response DTOs.
 Artifact route parsing uses `OutputFormatSchema`. Content types are centralized
 in `ARTIFACT_CONTENT_TYPES`.
 
-## Durable Store DTO Contracts
+## Durable Store DTO and Database Contracts
 
-The durable-store target uses `review-types` DTOs before a database schema is
-introduced:
+The service durable store uses `review-types` DTOs at route boundaries and a
+Drizzle/Postgres schema in `apps/review-service/src/storage/schema.ts` for
+queryable persistence:
 
 - `ReviewRunStoreRecordSchema`: run metadata keyed by `reviewId` and `runId`
   with status, request, timestamps, optional workflow/sandbox IDs, and optional
@@ -135,6 +136,19 @@ introduced:
 - `ReviewEventCursorSchema`: event replay cursor with bounded `limit` default.
 - `SandboxAuditSchema`: sandbox policy, budget consumption, redaction counters,
   and per-command audit records.
+
+The initial service database migration creates:
+
+- `review_runs`: canonical run status, request, summary, result, workflow and
+  sandbox IDs, retention, and deletion markers.
+- `review_events`: lifecycle events keyed by `(review_id, sequence)` with a
+  unique event ID.
+- `review_artifacts`: artifact metadata, checksum, storage key, content type,
+  byte length, and current artifact content.
+- `review_status_transitions`: append-only status transition audit rows.
+
+Endpoint payloads continue to be shaped by `review-types`; database rows are an
+implementation detail behind `ReviewStoreAdapter`.
 
 ## Provider Interface Contract
 
