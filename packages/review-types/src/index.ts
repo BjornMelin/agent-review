@@ -213,6 +213,7 @@ export const ProviderDiagnosticSchema = z.strictObject({
   code: ProviderDiagnosticCodeSchema,
   ok: z.boolean(),
   severity: ProviderDiagnosticSeveritySchema,
+  scope: z.string().min(1).optional(),
   detail: z.string().min(1),
   remediation: z.string().min(1).optional(),
 });

@@ -39,12 +39,9 @@ importers:
       '@review-agent/review-core':
         specifier: workspace:*
         version: link:../../packages/review-core
-      '@review-agent/review-provider-codex':
+      '@review-agent/review-provider-registry':
         specifier: workspace:*
-        version: link:../../packages/review-provider-codex
-      '@review-agent/review-provider-openai':
-        specifier: workspace:*
-        version: link:../../packages/review-provider-openai
+        version: link:../../packages/review-provider-registry
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../../packages/review-types
@@ -67,12 +64,9 @@ importers:
       '@review-agent/review-core':
         specifier: workspace:*
         version: link:../../packages/review-core
-      '@review-agent/review-provider-codex':
+      '@review-agent/review-provider-registry':
         specifier: workspace:*
-        version: link:../../packages/review-provider-codex
-      '@review-agent/review-provider-openai':
-        specifier: workspace:*
-        version: link:../../packages/review-provider-openai
+        version: link:../../packages/review-provider-registry
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../../packages/review-types
@@ -92,12 +86,9 @@ importers:
       '@review-agent/review-core':
         specifier: workspace:*
         version: link:../../packages/review-core
-      '@review-agent/review-provider-codex':
+      '@review-agent/review-provider-registry':
         specifier: workspace:*
-        version: link:../../packages/review-provider-codex
-      '@review-agent/review-provider-openai':
-        specifier: workspace:*
-        version: link:../../packages/review-provider-openai
+        version: link:../../packages/review-provider-registry
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../../packages/review-types
@@ -183,6 +174,18 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  packages/review-provider-registry:
+    dependencies:
+      '@review-agent/review-provider-codex':
+        specifier: workspace:*
+        version: link:../review-provider-codex
+      '@review-agent/review-provider-openai':
+        specifier: workspace:*
+        version: link:../review-provider-openai
+      '@review-agent/review-types':
+        specifier: workspace:*
+        version: link:../review-types
 
   packages/review-reporters:
     dependencies:

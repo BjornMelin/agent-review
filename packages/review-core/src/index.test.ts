@@ -1,14 +1,9 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type {
-  ProviderDiagnostic,
-  ReviewProvider,
-} from '@review-agent/review-types';
 import { describe, expect, it } from 'vitest';
 import {
   computeExitCode,
   InvalidFindingLocationError,
-  runDoctorChecks,
   runReview,
 } from './index.js';
 import { makeProvider, makeRepo } from './test-helpers.js';
@@ -149,52 +144,5 @@ describe('runReview', () => {
     } finally {
       await repo.cleanup();
     }
-  });
-
-  it('continues doctor checks when one provider throws', async () => {
-    const throwingProvider: ReviewProvider = {
-      id: 'codexDelegate',
-      capabilities: () => ({
-        jsonSchemaOutput: true,
-        reasoningControl: false,
-        streaming: false,
-      }),
-      doctor: async () => {
-        throw new Error('doctor failure');
-      },
-      run: async () => ({ raw: null, text: '' }),
-    };
-
-    const healthyProvider: ReviewProvider = {
-      id: 'openaiCompatible',
-      capabilities: () => ({
-        jsonSchemaOutput: true,
-        reasoningControl: false,
-        streaming: false,
-      }),
-      doctor: async () => [
-        {
-          code: 'provider_unavailable',
-          ok: true,
-          severity: 'info',
-          detail: 'openai available',
-        } satisfies ProviderDiagnostic,
-      ],
-      run: async () => ({ raw: null, text: '' }),
-    };
-
-    const checks = await runDoctorChecks({
-      codexDelegate: throwingProvider,
-      openaiCompatible: healthyProvider,
-    });
-
-    const keys = checks.map((check) => check.name);
-    expect(keys).toContain('provider.codexDelegate.doctor');
-    expect(keys).toContain('provider.openaiCompatible.provider_unavailable');
-    const doctorFailure = checks.find(
-      (check) => check.name === 'provider.codexDelegate.doctor'
-    );
-    expect(doctorFailure?.ok).toBe(false);
-    expect(doctorFailure?.detail).toContain('doctor failure');
   });
 });

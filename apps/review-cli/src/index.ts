@@ -2,15 +2,15 @@
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ConvexMetadataBridge } from '@review-agent/review-convex-bridge';
+import { computeExitCode, runReview } from '@review-agent/review-core';
 import {
-  computeExitCode,
+  createReviewProviders,
   type DoctorCheck,
-  listStaticModels,
-  runDoctorChecks,
-  runReview,
-} from '@review-agent/review-core';
-import { createCodexDelegateProvider } from '@review-agent/review-provider-codex';
-import { createOpenAICompatibleReviewProvider } from '@review-agent/review-provider-openai';
+  filterDoctorChecks,
+  listModelCatalog,
+  normalizeCliProviderModel,
+  runProviderDoctorChecks,
+} from '@review-agent/review-provider-registry';
 import {
   type LifecycleEvent,
   type OutputFormat,
@@ -87,45 +87,6 @@ function parseTarget(options: RunCliOptions): ReviewTarget {
   );
 }
 
-function parseProviderModel(options: RunCliOptions): {
-  provider: ReviewRequest['provider'];
-  model: string | undefined;
-} {
-  switch (options.provider) {
-    case 'codex':
-      return {
-        provider: 'codexDelegate',
-        model: options.model,
-      };
-    case 'gateway': {
-      const model = options.model
-        ? options.model.startsWith('gateway:')
-          ? options.model
-          : `gateway:${options.model}`
-        : 'gateway:openai/gpt-5';
-      return {
-        provider: 'openaiCompatible',
-        model,
-      };
-    }
-    case 'openrouter': {
-      const model = options.model
-        ? options.model.startsWith('openrouter:')
-          ? options.model
-          : `openrouter:${options.model}`
-        : 'openrouter:openai/gpt-5';
-      return {
-        provider: 'openaiCompatible',
-        model,
-      };
-    }
-    default:
-      throw new Error(
-        `invalid provider "${String(options.provider)}"; expected codex|gateway|openrouter`
-      );
-  }
-}
-
 function printDoctorChecks(checks: DoctorCheck[]): void {
   for (const check of checks) {
     const status = check.ok ? 'OK' : 'FAIL';
@@ -151,44 +112,20 @@ function parsePositiveIntOption(
   return parsed;
 }
 
-function filterDoctorChecks(
-  checks: DoctorCheck[],
-  provider: string
-): DoctorCheck[] {
-  if (provider === 'all') {
-    return checks;
+function parseDoctorProviderFilter(
+  value: string
+): Parameters<typeof filterDoctorChecks>[1] {
+  if (
+    value === 'codex' ||
+    value === 'gateway' ||
+    value === 'openrouter' ||
+    value === 'all'
+  ) {
+    return value;
   }
-  const providerPrefix =
-    provider === 'codex'
-      ? 'provider.codexDelegate.'
-      : provider === 'gateway' || provider === 'openrouter'
-        ? 'provider.openaiCompatible.'
-        : '';
-  if (!providerPrefix) {
-    throw new Error(`invalid provider filter "${provider}"`);
-  }
-  const providerChecks = checks.filter((check) =>
-    check.name.startsWith(providerPrefix)
+  throw new Error(
+    `invalid provider filter "${value}"; expected codex|gateway|openrouter|all`
   );
-  if (provider === 'gateway' || provider === 'openrouter') {
-    const providerToken = provider === 'gateway' ? 'gateway' : 'openrouter';
-    const envToken = provider === 'gateway' ? 'AI_GATEWAY' : 'OPENROUTER';
-    return providerChecks.filter((check) => {
-      if (check.name.endsWith('.available')) {
-        return true;
-      }
-      const searchable = [
-        check.name,
-        check.detail,
-        check.remediation ?? '',
-      ].join(' ');
-      return (
-        searchable.toLowerCase().includes(providerToken) ||
-        searchable.includes(envToken)
-      );
-    });
-  }
-  return providerChecks;
 }
 
 function mapErrorToExitCode(error: unknown): number {
@@ -199,7 +136,11 @@ function mapErrorToExitCode(error: unknown): number {
   if (/sandbox|budget|runtime|command/i.test(message)) {
     return 4;
   }
-  if (/target|usage|invalid|schema|format/i.test(message)) {
+  if (
+    /target|usage|invalid|schema|format|--provider|model id|model route/i.test(
+      message
+    )
+  ) {
     return 2;
   }
   return 4;
@@ -229,7 +170,10 @@ async function writeOutput(outputPath: string, payload: string): Promise<void> {
 
 async function runCommand(options: RunCliOptions): Promise<number> {
   const target = parseTarget(options);
-  const providerConfig = parseProviderModel(options);
+  const providerConfig = normalizeCliProviderModel(
+    options.provider,
+    options.model
+  );
   const maxFiles = parsePositiveIntOption(options.maxFiles, 'max-files');
   const maxDiffBytes = parsePositiveIntOption(
     options.maxDiffBytes,
@@ -253,10 +197,7 @@ async function runCommand(options: RunCliOptions): Promise<number> {
     detached: Boolean(options.detached),
   });
 
-  const providers = {
-    codexDelegate: createCodexDelegateProvider(),
-    openaiCompatible: createOpenAICompatibleReviewProvider(),
-  };
+  const providers = createReviewProviders();
   const bridge = options.convexMirror ? new ConvexMetadataBridge() : undefined;
   const onEvent = options.quiet
     ? undefined
@@ -341,9 +282,9 @@ async function main(): Promise<void> {
 
   program
     .command('models')
-    .description('List built-in model IDs')
+    .description('List provider-registry model presets')
     .action(() => {
-      const models = listStaticModels();
+      const models = listModelCatalog();
       process.stdout.write(`${JSON.stringify(models, null, 2)}\n`);
     });
 
@@ -353,39 +294,42 @@ async function main(): Promise<void> {
     .option('--provider <provider>', 'codex|gateway|openrouter|all', 'all')
     .option('--json', 'emit machine-readable diagnostics')
     .action(async (options: { provider: string; json?: boolean }) => {
-      const providers = {
-        codexDelegate: createCodexDelegateProvider(),
-        openaiCompatible: createOpenAICompatibleReviewProvider(),
-      };
-      const checks = filterDoctorChecks(
-        await runDoctorChecks(providers),
-        options.provider
-      );
-      if (checks.length === 0) {
-        throw new Error(
-          `no doctor checks matched provider "${options.provider}"`
+      try {
+        const provider = parseDoctorProviderFilter(options.provider);
+        const checks = filterDoctorChecks(
+          await runProviderDoctorChecks(createReviewProviders()),
+          provider
         );
-      }
+        if (checks.length === 0) {
+          throw new Error(
+            `no doctor checks matched provider "${options.provider}"`
+          );
+        }
 
-      if (options.json) {
-        process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
-      } else {
-        printDoctorChecks(checks);
-      }
+        if (options.json) {
+          process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
+        } else {
+          printDoctorChecks(checks);
+        }
 
-      const hasFailures = checks.some((check) => !check.ok);
-      if (!hasFailures) {
-        process.exitCode = 0;
-        return;
+        const hasFailures = checks.some((check) => !check.ok);
+        if (!hasFailures) {
+          process.exitCode = 0;
+          return;
+        }
+        const hasAuthOrProviderFailure = checks.some(
+          (check) =>
+            !check.ok &&
+            (check.name.includes('auth_missing') ||
+              check.name.includes('binary_missing') ||
+              check.name.includes('provider_unavailable'))
+        );
+        process.exitCode = hasAuthOrProviderFailure ? 3 : 2;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(message);
+        process.exitCode = mapErrorToExitCode(error);
       }
-      const hasAuthOrProviderFailure = checks.some(
-        (check) =>
-          !check.ok &&
-          (check.name.includes('auth_missing') ||
-            check.name.includes('binary_missing') ||
-            check.name.includes('provider_unavailable'))
-      );
-      process.exitCode = hasAuthOrProviderFailure ? 3 : 2;
     });
 
   program

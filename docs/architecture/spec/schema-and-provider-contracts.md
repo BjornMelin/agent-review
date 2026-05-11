@@ -161,6 +161,23 @@ Optional provider diagnostics hooks:
 - `validateRequest(input)` for deterministic preflight validation
 - `doctor()` for runtime/provider/auth diagnostics
 
+## Provider Registry Contract
+
+`packages/review-provider-registry` is the canonical owner for provider
+construction and model policy. CLI, service, and worker entrypoints consume
+`createReviewProviders()` instead of constructing providers directly.
+
+The registry owns:
+
+- route normalization for CLI providers (`codex`, `gateway`, `openrouter`)
+- default OpenAI-compatible model IDs
+- model catalog presets and capability policy
+- provider doctor execution and route-specific doctor filtering
+
+OpenAI-compatible provider implementations require a routed model ID from the
+request or a registry-supplied `defaultModelId`. They do not own fallback model
+defaults.
+
 ## Provider Implementations
 
 ### Codex Delegate Provider
@@ -185,8 +202,12 @@ Optional provider diagnostics hooks:
 
 Provider diagnostics use stable shape:
 
-- `code`: `binary_missing|auth_missing|invalid_model_id|unsupported_reasoning_effort|provider_unavailable|configuration_error`
+- `code`: `binary_missing|auth_missing|auth_available|invalid_model_id|unsupported_reasoning_effort|provider_unavailable|configuration_error`
 - `ok`: boolean
 - `severity`: `info|warning|error`
+- `scope`: optional route/provider scope such as `gateway` or `openrouter`
 - `detail`: human-readable reason
 - `remediation`: optional action hint
+
+Doctor check names include diagnostic scope when present, for example
+`provider.openaiCompatible.gateway.auth_missing`.

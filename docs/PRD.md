@@ -27,6 +27,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Provider modes:
   - Codex delegate (`codexDelegate`)
   - OpenAI-compatible (`gateway:*`, `openrouter:*`)
+- Provider construction, model defaults, model catalog presets, and doctor
+  filtering are owned by `packages/review-provider-registry`.
 - Optional sandbox preflight for remote execution mode
 - Optional Convex metadata mirror writes
 

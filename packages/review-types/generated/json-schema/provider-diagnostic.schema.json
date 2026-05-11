@@ -21,6 +21,10 @@
       "type": "string",
       "enum": ["info", "warning", "error"]
     },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
     "detail": {
       "type": "string",
       "minLength": 1

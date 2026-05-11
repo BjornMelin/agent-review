@@ -29,21 +29,28 @@ pass parity, benchmark, and generated-contract gates.
 - `review-prompts`: builds target-specific prompt text and shared rubric.
 - `review-provider-codex`: invokes Codex CLI delegate.
 - `review-provider-openai`: invokes AI SDK gateway/openrouter models.
+- `review-provider-registry`: owns provider construction, CLI provider/model
+  normalization, default model policy, model catalog presets, and doctor
+  filtering.
 - `review-reporters`: renders `json`, `markdown`, and `sarif`.
 - `review-sandbox-vercel`: policy-driven command execution wrapper for remote sandbox mode.
 - `review-convex-bridge`: optional metadata write bridge.
 
 ## Core Data Flow
 
-1. Request is parsed with `ReviewRequestSchema`.
-2. Prompt is resolved from target (`review-prompts`).
-3. Diff context is collected (`review-git`) and filtered (`review-core`) by include/exclude path and byte/file budgets.
-4. Selected provider executes using prompt + rubric + normalized diff chunks.
-5. Provider output is normalized to `ReviewResult` shape.
-6. Finding locations are normalized to absolute paths and validated against changed line index.
-7. Artifacts are rendered for requested formats.
-8. Optional mirror write is attempted.
-9. Result and artifacts are returned.
+1. Runtime entrypoints normalize provider/model policy through
+   `review-provider-registry` before calling core.
+2. Core receives canonical `ReviewRequest` fields plus injected provider
+   instances.
+3. Request is parsed with `ReviewRequestSchema`.
+4. Prompt is resolved from target (`review-prompts`).
+5. Diff context is collected (`review-git`) and filtered (`review-core`) by include/exclude path and byte/file budgets.
+6. Selected provider executes using prompt + rubric + normalized diff chunks.
+7. Provider output is normalized to `ReviewResult` shape.
+8. Finding locations are normalized to absolute paths and validated against changed line index.
+9. Artifacts are rendered for requested formats.
+10. Optional mirror write is attempted.
+11. Result and artifacts are returned.
 
 ## Persistence Model
 

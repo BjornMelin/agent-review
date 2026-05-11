@@ -29,6 +29,7 @@ Implementation contracts are defined in code and mirrored here:
 
 - Shared schemas/types: `packages/review-types/src/index.ts`
 - Core orchestration: `packages/review-core/src/index.ts`
+- Provider construction/model policy: `packages/review-provider-registry/src/index.ts`
 - CLI surface: `apps/review-cli/src/index.ts`
 - Service surface: `apps/review-service/src/app.ts` and runtime entrypoint:
   `apps/review-service/src/server.ts`

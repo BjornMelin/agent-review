@@ -30,6 +30,9 @@
       "path": "./packages/review-provider-openai"
     },
     {
+      "path": "./packages/review-provider-registry"
+    },
+    {
       "path": "./packages/review-sandbox-vercel"
     },
     {

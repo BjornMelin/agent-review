@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { type ReviewRunResult, runReview } from '@review-agent/review-core';
-import { createCodexDelegateProvider } from '@review-agent/review-provider-codex';
-import { createOpenAICompatibleReviewProvider } from '@review-agent/review-provider-openai';
+import { createReviewProviders } from '@review-agent/review-provider-registry';
 import {
   isTerminalReviewRunStatus,
   type ReviewRequest,
@@ -19,10 +18,7 @@ export type DetachedRunRecord = {
   workflowRunId?: string;
 };
 
-const providers = {
-  codexDelegate: createCodexDelegateProvider(),
-  openaiCompatible: createOpenAICompatibleReviewProvider(),
-};
+const providers = createReviewProviders();
 
 const localRunStore = new Map<string, DetachedRunRecord>();
 const MAX_LOCAL_RUNS = 500;

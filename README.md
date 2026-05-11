@@ -9,7 +9,7 @@ The platform reviews code changes from git context and produces structured findi
 - CLI entrypoint for direct usage (`review-agent`)
 - HTTP service for inline or detached review execution
 - Detached worker path with Workflow API support and local fallback
-- Provider abstraction for Codex delegate and OpenAI-compatible models
+- Provider registry for Codex delegate and OpenAI-compatible model policy
 - Optional sandbox policy checks and optional Convex metadata mirroring
 
 ## Monorepo Layout
@@ -27,6 +27,7 @@ packages/
   review-prompts/
   review-provider-codex/
   review-provider-openai/
+  review-provider-registry/
   review-reporters/
   review-sandbox-vercel/
   review-types/
@@ -59,7 +60,7 @@ Run the CLI in dev mode:
 pnpm --filter @review-agent/review-cli dev -- run --uncommitted --provider codex --format json
 ```
 
-List built-in static models:
+List provider-registry model presets:
 
 ```bash
 pnpm --filter @review-agent/review-cli dev -- models
@@ -86,9 +87,9 @@ Service endpoints are documented in [docs/architecture/spec/review-service-api.m
 | Variable | Used By | Purpose |
 | --- | --- | --- |
 | `PORT` | `apps/review-service` | Service bind port (default `3042`) |
-| `CODEX_BIN` | `packages/review-provider-codex` | Override codex executable path (default `codex`) |
-| `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` | API key for gateway models |
-| `OPENROUTER_API_KEY` | `packages/review-provider-openai` | API key for OpenRouter |
+| `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
+| `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
+| `OPENROUTER_API_KEY` | `packages/review-provider-openai` via provider registry | API key for OpenRouter |
 | `CONVEX_URL` | `packages/review-convex-bridge` | Enables optional metadata mirror mutation |
 
 ## Build and CI
