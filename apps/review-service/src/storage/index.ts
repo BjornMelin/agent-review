@@ -770,7 +770,7 @@ export function createPostgresReviewStore(
  * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
  * @param options - Runtime fallback policy.
  * @returns A Postgres store when configured, otherwise an in-memory store.
- * @throws When neither `DATABASE_URL` nor `POSTGRES_URL` is set and in-memory fallback is disallowed.
+ * @throws Error - When neither `DATABASE_URL` nor `POSTGRES_URL` is set and in-memory fallback is disallowed.
  */
 export function createReviewStoreFromEnv(
   env: NodeJS.ProcessEnv = process.env,

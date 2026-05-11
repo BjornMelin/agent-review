@@ -41,7 +41,9 @@ async function createTestStore() {
 
 async function readInitialMigrationSql(): Promise<string> {
   return readFile(
-    new URL('../../drizzle/0000_initial_review_storage.sql', import.meta.url),
+    fileURLToPath(
+      new URL('../../drizzle/0000_initial_review_storage.sql', import.meta.url)
+    ),
     'utf8'
   );
 }
