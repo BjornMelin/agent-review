@@ -151,6 +151,148 @@ describe('runReview', () => {
     }
   });
 
+  it('redacts provider output, command events, and generated artifacts', async () => {
+    const repo = await makeRepo();
+    try {
+      const secret =
+        'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 Bearer abc.def.ghi';
+      const raw = {
+        findings: [
+          {
+            title: 'Secret leak',
+            body: `The provider included ${secret}`,
+            confidence_score: 0.9,
+            priority: 1,
+            code_location: {
+              absolute_file_path: join(repo.cwd, 'file.ts'),
+              line_range: { start: 1, end: 1 },
+            },
+          },
+        ],
+        overall_correctness: 'patch is incorrect',
+        overall_explanation: `Summary includes ${secret}`,
+        overall_confidence_score: 0.9,
+      };
+      const events: LifecycleEvent[] = [];
+      const provider = {
+        ...makeProvider(raw, 'codexDelegate'),
+        run: vi.fn(async () => ({
+          raw,
+          text: JSON.stringify(raw),
+          commandRun: {
+            commandId: 'codex-review',
+            cmd: 'codex',
+            args: ['review'],
+            cwd: repo.cwd,
+            status: 'completed' as const,
+            exitCode: 0,
+            stdout: secret,
+            stderr: `stderr ${secret}`,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            startedAtMs: 1,
+            endedAtMs: 2,
+            durationMs: 1,
+            outputBytes: 0,
+            redactions: { apiKeyLike: 0, bearer: 0 },
+            events: [
+              {
+                type: 'exited' as const,
+                commandId: 'codex-review',
+                timestampMs: 2,
+                message: secret,
+              },
+            ],
+            files: [
+              {
+                key: 'lastMessage',
+                path: 'last-message.txt',
+                content: secret,
+                byteLength: secret.length,
+                truncated: false,
+                redactions: { apiKeyLike: 0, bearer: 0 },
+              },
+            ],
+          },
+        })),
+      };
+
+      const review = await runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          outputFormats: ['json', 'markdown', 'sarif'],
+        },
+        {
+          providers: {
+            codexDelegate: provider,
+            openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+          },
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }
+      );
+
+      const serialized = JSON.stringify({ review, events });
+      expect(serialized).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+      expect(serialized).not.toContain('abc.def.ghi');
+      expect(serialized).toContain('[REDACTED_SECRET]');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('enforces prompt and artifact byte budgets', async () => {
+    const repo = await makeRepo();
+    try {
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'custom', instructions: 'review this change' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: makeProvider({}, 'codexDelegate'),
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+            limits: { maxPromptBytes: 4 },
+          }
+        )
+      ).rejects.toThrow(/prompt/);
+
+      const raw = {
+        findings: [],
+        overall_correctness: 'patch is correct',
+        overall_explanation: 'x'.repeat(256),
+        overall_confidence_score: 1,
+      };
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: makeProvider(raw, 'codexDelegate'),
+              openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+            },
+            limits: { maxArtifactBytes: 64 },
+          }
+        )
+      ).rejects.toThrow(/artifact/);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('emits provider command-run telemetry before rethrowing provider failures', async () => {
     const repo = await makeRepo();
     try {

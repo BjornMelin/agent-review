@@ -1,15 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type {
   MirrorWriteBridge,
   ReviewRunResult,
   RunReviewOptions,
 } from '@review-agent/review-core';
-import { ReviewRunCancelledError, runReview } from '@review-agent/review-core';
+import {
+  ReviewRunCancelledError,
+  redactReviewRequest,
+  redactReviewRunResult,
+  runReview,
+} from '@review-agent/review-core';
 import {
   ARTIFACT_CONTENT_TYPES,
   type CorrelationIds,
+  DEFAULT_REVIEW_SECURITY_LIMITS,
   isTerminalReviewRunStatus,
   type LifecycleEvent,
   OutputFormatSchema,
@@ -18,12 +24,19 @@ import {
   ReviewEventCursorSchema,
   type ReviewProvider,
   type ReviewRequest,
+  type ReviewSecurityLimits,
   ReviewStartRequestSchema,
   type ReviewStartResponse,
   type ReviewStatusResponse,
+  redactErrorMessage,
+  redactLifecycleEvent,
+  redactReviewResult,
+  resolveReviewSecurityLimits,
+  withReviewRequestSecurityDefaults,
 } from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { type Context, Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import {
   createInMemoryReviewStore,
@@ -79,6 +92,8 @@ export type ReviewServiceAuthPolicy = (
  * Defines tunable service limits that do not change the route contract.
  */
 export type ReviewServiceConfig = {
+  allowedCwdRoots: string[];
+  maxRequestBodyBytes: number;
   maxRecordAgeMs: number;
   maxRecordEvents: number;
   maxQueuedRuns: number;
@@ -88,6 +103,17 @@ export type ReviewServiceConfig = {
   recordCleanupIntervalMs: number | false;
   eventStreamPollIntervalMs: number;
   remoteSandboxInlineError: string;
+  reviewLimits: ReviewSecurityLimits;
+};
+
+/**
+ * Defines partial service config accepted by the app factory.
+ */
+export type ReviewServiceConfigInput = Omit<
+  Partial<ReviewServiceConfig>,
+  'reviewLimits'
+> & {
+  reviewLimits?: Partial<ReviewSecurityLimits>;
 };
 
 /**
@@ -102,11 +128,13 @@ export type ReviewServiceDependencies = {
   uuid?: () => string;
   logger?: ReviewServiceLogger;
   authPolicy?: ReviewServiceAuthPolicy;
-  config?: Partial<ReviewServiceConfig>;
+  config?: ReviewServiceConfigInput;
   runner?: ReviewServiceRunner;
 };
 
 const DEFAULT_CONFIG: ReviewServiceConfig = {
+  allowedCwdRoots: [process.cwd()],
+  maxRequestBodyBytes: 256 * 1024,
   maxRecordAgeMs: 60 * 60 * 1000,
   maxRecordEvents: 200,
   maxQueuedRuns: 100,
@@ -117,6 +145,7 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
   eventStreamPollIntervalMs: 15_000,
   remoteSandboxInlineError:
     'executionMode "remoteSandbox" requires detached delivery',
+  reviewLimits: DEFAULT_REVIEW_SECURITY_LIMITS,
 };
 
 const REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR =
@@ -139,10 +168,17 @@ class RuntimeBackpressureError extends Error {
   }
 }
 
+class ReviewRequestPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReviewRequestPolicyError';
+  }
+}
+
 function jsonError(
   context: Context,
   message: string,
-  status: 400 | 404 | 409 | 429 | 502,
+  status: 400 | 404 | 409 | 413 | 429 | 502,
   headers: Record<string, string> = {}
 ): Response {
   const response: ReviewErrorResponse = { error: message };
@@ -159,6 +195,57 @@ async function parseJsonBody<T>(
 ): Promise<T> {
   const body = await context.req.json();
   return parse(body);
+}
+
+function canonicalizePath(path: string): string {
+  const resolved = resolve(path);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function pathContains(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(root, candidate);
+  return (
+    pathFromRoot === '' ||
+    (pathFromRoot !== '..' &&
+      !pathFromRoot.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromRoot))
+  );
+}
+
+function prepareReviewRequestForService(
+  request: ReviewRequest,
+  config: ReviewServiceConfig
+): ReviewRequest {
+  if (!isAbsolute(request.cwd)) {
+    throw new ReviewRequestPolicyError('cwd must be an absolute path');
+  }
+  const canonicalCwd = canonicalizePath(request.cwd);
+  const allowedRoots = config.allowedCwdRoots.map(canonicalizePath);
+  const allowed = allowedRoots.some((root) => pathContains(root, canonicalCwd));
+  if (!allowed) {
+    throw new ReviewRequestPolicyError(
+      'cwd is outside configured review roots'
+    );
+  }
+  return withReviewRequestSecurityDefaults(
+    {
+      ...request,
+      cwd: canonicalCwd,
+    },
+    config.reviewLimits
+  );
+}
+
+function logError(
+  logger: ReviewServiceLogger,
+  message: string,
+  error: unknown
+): void {
+  logger.error(message, redactErrorMessage(error));
 }
 
 function createReviewRecord(
@@ -197,8 +284,10 @@ function buildStatusResponse(record: ReviewRecord): ReviewStatusResponse {
   return {
     reviewId: record.reviewId,
     status: record.status,
-    ...(record.error ? { error: record.error } : {}),
-    ...(record.result ? { result: record.result.result } : {}),
+    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
+    ...(record.result
+      ? { result: redactReviewResult(record.result.result).result }
+      : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -247,6 +336,10 @@ export function createReviewServiceApp(
   const config: ReviewServiceConfig = {
     ...DEFAULT_CONFIG,
     ...(dependencies.config ?? {}),
+    reviewLimits: resolveReviewSecurityLimits({
+      ...DEFAULT_CONFIG.reviewLimits,
+      ...(dependencies.config?.reviewLimits ?? {}),
+    }),
   };
   const store = dependencies.store ?? createInMemoryReviewStore();
   const nowMs = dependencies.nowMs ?? Date.now;
@@ -395,7 +488,7 @@ export function createReviewServiceApp(
       const record = await store.get(reviewId);
       return record ?? jsonError(context, notFoundMessage, 404);
     } catch (error) {
-      logger.error(`[review-service] ${failureMessage}`, error);
+      logError(logger, `[review-service] ${failureMessage}`, error);
       return jsonError(context, failureMessage, 502);
     }
   }
@@ -403,7 +496,7 @@ export function createReviewServiceApp(
   if (config.recordCleanupIntervalMs !== false) {
     const cleanupInterval = setInterval(() => {
       cleanupReviewRecords().catch((error) => {
-        logger.error('[review-service] cleanup failed', error);
+        logError(logger, '[review-service] cleanup failed', error);
       });
     }, config.recordCleanupIntervalMs);
     cleanupInterval.unref?.();
@@ -451,7 +544,9 @@ export function createReviewServiceApp(
             },
           };
 
-    await store.appendEvent(record, enriched, {
+    const sanitized = redactLifecycleEvent(enriched);
+
+    await store.appendEvent(record, sanitized, {
       maxEvents: config.maxRecordEvents,
       reason: 'lifecycle event',
     });
@@ -463,10 +558,11 @@ export function createReviewServiceApp(
 
     for (const listener of [...listeners]) {
       try {
-        const result = listener(enriched);
+        const result = listener(sanitized);
         if (result instanceof Promise) {
           result.catch(() => {
-            logger.error(
+            logError(
+              logger,
               `[review-service] dropping failed lifecycle listener for ${record.reviewId}:`,
               'listener promise rejected'
             );
@@ -474,18 +570,20 @@ export function createReviewServiceApp(
           });
         }
       } catch (error) {
-        logger.error(
+        logError(
+          logger,
           `[review-service] dropping failed lifecycle listener for ${record.reviewId}:`,
           error
         );
         removeLiveListener(record.reviewId, listener);
       }
     }
-    return enriched;
+    return sanitized;
   }
 
   async function runInline(
     record: ReviewRecord,
+    request: ReviewRequest,
     signal?: AbortSignal
   ): Promise<void> {
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -511,7 +609,7 @@ export function createReviewServiceApp(
       );
       heartbeatTimer = setInterval(() => {
         void persistInlineHeartbeat().catch((error) => {
-          logger.error('[review-service] inline heartbeat failed', error);
+          logError(logger, '[review-service] inline heartbeat failed', error);
         });
       }, heartbeatIntervalMs);
       heartbeatTimer.unref?.();
@@ -527,13 +625,13 @@ export function createReviewServiceApp(
       });
       await store.set(record, { reason: 'inline running' });
 
-      if (record.request.executionMode === 'remoteSandbox') {
+      if (request.executionMode === 'remoteSandbox') {
         throw new Error(config.remoteSandboxInlineError);
       }
 
       startInlineHeartbeat();
       const review = await runner(
-        record.request,
+        request,
         {
           providers: dependencies.providers,
           onEvent: async (event) => {
@@ -544,12 +642,13 @@ export function createReviewServiceApp(
           correlation: {
             workflowRunId: record.workflowRunId ?? record.detachedRunId,
           },
+          limits: config.reviewLimits,
           ...(signal ? { signal } : {}),
         },
         dependencies.bridge
       );
       stopInlineHeartbeat();
-      record.result = review;
+      record.result = redactReviewRunResult(review);
       record.status = 'completed';
       record.updatedAt = nowMs();
       setTerminalRetention(record);
@@ -558,7 +657,10 @@ export function createReviewServiceApp(
       stopInlineHeartbeat();
       const cancelled = error instanceof ReviewRunCancelledError;
       record.status = cancelled ? 'cancelled' : 'failed';
-      record.error = error instanceof Error ? error.message : String(error);
+      record.error = redactErrorMessage(
+        error,
+        cancelled ? 'review run cancelled' : 'review run failed'
+      );
       record.updatedAt = nowMs();
       setTerminalRetention(record);
       await emit(
@@ -673,11 +775,14 @@ export function createReviewServiceApp(
       changed = true;
     }
     if (detached.status === 'completed' && detached.result) {
-      record.result = detached.result;
+      record.result = redactReviewRunResult(detached.result);
       changed = true;
     }
     if (detached.status === 'failed') {
-      record.error = detached.error ?? 'detached run failed';
+      record.error = redactErrorMessage(
+        detached.error ?? 'detached run failed',
+        'detached run failed'
+      );
       if (record.error !== previousError) {
         changed = true;
       }
@@ -713,124 +818,145 @@ export function createReviewServiceApp(
     await next();
   });
 
-  app.post('/v1/review/start', async (context) => {
-    let parsed: ReturnType<typeof ReviewStartRequestSchema.parse>;
-    try {
-      parsed = await parseJsonBody(context, (body) =>
-        ReviewStartRequestSchema.parse(body)
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return jsonError(context, message, 400);
-    }
-
-    try {
-      const { request, delivery } = parsed;
-      if (
-        request.executionMode === 'remoteSandbox' &&
-        delivery !== 'detached' &&
-        !request.detached
-      ) {
-        return jsonError(context, config.remoteSandboxInlineError, 400);
-      }
-      if (
-        request.executionMode === 'remoteSandbox' &&
-        request.target.type !== 'custom'
-      ) {
-        return jsonError(
+  app.post(
+    '/v1/review/start',
+    bodyLimit({
+      maxSize: config.maxRequestBodyBytes,
+      onError: (context) =>
+        jsonError(
           context,
-          `${REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR}; received target "${request.target.type}"`,
-          400
+          'review start request body exceeds configured byte limit',
+          413
+        ),
+    }),
+    async (context) => {
+      let parsed: ReturnType<typeof ReviewStartRequestSchema.parse>;
+      try {
+        parsed = await parseJsonBody(context, (body) =>
+          ReviewStartRequestSchema.parse(body)
         );
+      } catch {
+        return jsonError(context, 'invalid review start request', 400);
       }
 
-      const reviewId = uuid();
-      const record = createReviewRecord(request, reviewId, nowMs());
-      attachRuntimeLease(record, runtimeScopeKeyForRequest(request));
-      assertRuntimeLeaseAttached(record);
-      await cleanupReviewRecords();
-      const reservation = await store.reserve(record, {
-        nowMs: nowMs(),
-        legacyUnleasedActiveTtlMs: config.maxRecordAgeMs,
-        scopeKeyForRequest: runtimeScopeKeyForRequest,
-        maxQueuedRuns: config.maxQueuedRuns,
-        maxRunningRuns: config.maxRunningRuns,
-        maxActiveRunsPerScope: config.maxActiveRunsPerScope,
-        reason: 'runtime reserved',
-      });
-      if (!reservation.reserved) {
-        throw new RuntimeBackpressureError(reservation.message);
-      }
+      try {
+        const { delivery } = parsed;
+        const request = prepareReviewRequestForService(parsed.request, config);
+        if (
+          request.executionMode === 'remoteSandbox' &&
+          delivery !== 'detached' &&
+          !request.detached
+        ) {
+          return jsonError(context, config.remoteSandboxInlineError, 400);
+        }
+        if (
+          request.executionMode === 'remoteSandbox' &&
+          request.target.type !== 'custom'
+        ) {
+          return jsonError(
+            context,
+            `${REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR}; received target "${request.target.type}"`,
+            400
+          );
+        }
 
-      if (delivery === 'detached' || request.detached) {
-        let detached: DetachedRunRecord;
-        try {
-          detached = await dependencies.worker.startDetached(request);
-        } catch (error) {
-          record.status = 'failed';
-          record.error = error instanceof Error ? error.message : String(error);
-          record.updatedAt = nowMs();
-          setTerminalRetention(record);
-          await emit(record, {
-            type: 'failed',
-            message: record.error,
-            meta: detachedTerminalMeta(record, 'start:failed'),
-          });
-          await store.set(record, { reason: 'detached start failed' });
-          throw error;
-        }
-        record.detachedRunId = detached.runId;
-        record.workflowRunId = detached.workflowRunId ?? detached.runId;
-        const detachedSandboxId =
-          detached.sandboxId ?? detached.result?.sandboxAudit?.sandboxId;
-        if (detachedSandboxId) {
-          record.sandboxId = detachedSandboxId;
-        }
-        record.status = detached.status;
-        if (detached.result) {
-          record.result = detached.result;
-        }
-        if (detached.error) {
-          record.error = detached.error;
-        }
-        record.updatedAt = nowMs();
-        heartbeatRuntimeLease(record);
-        if (isTerminalReviewRunStatus(record.status)) {
-          setTerminalRetention(record);
-        }
-        await store.set(record, { reason: 'detached started' });
-        await emit(record, {
-          type: 'enteredReviewMode',
-          review: 'review requested',
+        const reviewId = uuid();
+        const record = createReviewRecord(
+          redactReviewRequest(request),
+          reviewId,
+          nowMs()
+        );
+        attachRuntimeLease(record, runtimeScopeKeyForRequest(request));
+        assertRuntimeLeaseAttached(record);
+        await cleanupReviewRecords();
+        const reservation = await store.reserve(record, {
+          nowMs: nowMs(),
+          legacyUnleasedActiveTtlMs: config.maxRecordAgeMs,
+          scopeKeyForRequest: runtimeScopeKeyForRequest,
+          maxQueuedRuns: config.maxQueuedRuns,
+          maxRunningRuns: config.maxRunningRuns,
+          maxActiveRunsPerScope: config.maxActiveRunsPerScope,
+          reason: 'runtime reserved',
         });
-        if (isTerminalReviewRunStatus(record.status)) {
-          await emitDetachedTerminalEvents(record);
+        if (!reservation.reserved) {
+          throw new RuntimeBackpressureError(reservation.message);
         }
+
+        if (delivery === 'detached' || request.detached) {
+          let detached: DetachedRunRecord;
+          try {
+            detached = await dependencies.worker.startDetached(request);
+          } catch (error) {
+            record.status = 'failed';
+            record.error = redactErrorMessage(error, 'detached start failed');
+            record.updatedAt = nowMs();
+            setTerminalRetention(record);
+            await emit(record, {
+              type: 'failed',
+              message: record.error,
+              meta: detachedTerminalMeta(record, 'start:failed'),
+            });
+            await store.set(record, { reason: 'detached start failed' });
+            throw error;
+          }
+          record.detachedRunId = detached.runId;
+          record.workflowRunId = detached.workflowRunId ?? detached.runId;
+          const detachedSandboxId =
+            detached.sandboxId ?? detached.result?.sandboxAudit?.sandboxId;
+          if (detachedSandboxId) {
+            record.sandboxId = detachedSandboxId;
+          }
+          record.status = detached.status;
+          if (detached.result) {
+            record.result = redactReviewRunResult(detached.result);
+          }
+          if (detached.error) {
+            record.error = redactErrorMessage(detached.error);
+          }
+          record.updatedAt = nowMs();
+          heartbeatRuntimeLease(record);
+          if (isTerminalReviewRunStatus(record.status)) {
+            setTerminalRetention(record);
+          }
+          await store.set(record, { reason: 'detached started' });
+          await emit(record, {
+            type: 'enteredReviewMode',
+            review: 'review requested',
+          });
+          if (isTerminalReviewRunStatus(record.status)) {
+            await emitDetachedTerminalEvents(record);
+          }
+          const response: ReviewStartResponse = {
+            reviewId,
+            status: record.status,
+            detachedRunId: detached.runId,
+          };
+          return context.json(response, 202);
+        }
+
+        await runInline(record, request, context.req.raw.signal);
         const response: ReviewStartResponse = {
           reviewId,
           status: record.status,
-          detachedRunId: detached.runId,
+          ...(record.result
+            ? { result: redactReviewResult(record.result.result).result }
+            : {}),
         };
-        return context.json(response, 202);
+        return context.json(response, 200);
+      } catch (error) {
+        if (error instanceof ReviewRequestPolicyError) {
+          return jsonError(context, redactErrorMessage(error), 400);
+        }
+        if (error instanceof RuntimeBackpressureError) {
+          return jsonError(context, error.message, 429, {
+            'Retry-After': '1',
+          });
+        }
+        logError(logger, '[review-service] failed to start review', error);
+        return jsonError(context, 'failed to start review', 502);
       }
-
-      await runInline(record, context.req.raw.signal);
-      const response: ReviewStartResponse = {
-        reviewId,
-        status: record.status,
-        ...(record.result ? { result: record.result.result } : {}),
-      };
-      return context.json(response, 200);
-    } catch (error) {
-      if (error instanceof RuntimeBackpressureError) {
-        return jsonError(context, error.message, 429, {
-          'Retry-After': '1',
-        });
-      }
-      logger.error('[review-service] failed to start review', error);
-      return jsonError(context, 'failed to start review', 502);
     }
-  });
+  );
 
   app.get('/v1/review/:reviewId', async (context) => {
     const record = await loadRecord(
@@ -848,7 +974,7 @@ export function createReviewServiceApp(
       await failExpiredRuntimeLease(record);
       return context.json(buildStatusResponse(record));
     } catch (error) {
-      logger.error('[review-service] failed to fetch run status', error);
+      logError(logger, '[review-service] failed to fetch run status', error);
       return jsonError(context, 'failed to fetch run status', 502);
     }
   });
@@ -868,16 +994,16 @@ export function createReviewServiceApp(
     let cursor: ReviewEventCursor;
     try {
       cursor = parseEventCursor(context, reviewId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return jsonError(context, message, 400);
+    } catch {
+      return jsonError(context, 'invalid event cursor', 400);
     }
 
     try {
       await syncDetachedRecord(record);
       await failExpiredRuntimeLease(record);
     } catch (error) {
-      logger.error(
+      logError(
+        logger,
         '[review-service] failed to sync event stream status',
         error
       );
@@ -933,7 +1059,7 @@ export function createReviewServiceApp(
         onError?: (callback: (error: unknown) => void) => void;
       };
       streamWithError.onError?.((error) => {
-        logger.error('[review-service] events stream error', error);
+        logError(logger, '[review-service] events stream error', error);
         cleanup();
       });
 
@@ -959,7 +1085,7 @@ export function createReviewServiceApp(
           });
         }
       } catch (error) {
-        logger.error('[review-service] events stream error', error);
+        logError(logger, '[review-service] events stream error', error);
       } finally {
         cleanup();
       }
@@ -981,7 +1107,11 @@ export function createReviewServiceApp(
       await syncDetachedRecord(record);
       await failExpiredRuntimeLease(record);
     } catch (error) {
-      logger.error('[review-service] failed to sync artifact status', error);
+      logError(
+        logger,
+        '[review-service] failed to sync artifact status',
+        error
+      );
       return jsonError(context, 'failed to fetch artifact status', 502);
     }
 
@@ -992,7 +1122,7 @@ export function createReviewServiceApp(
     const formatRaw = context.req.param('format');
     const formatResult = OutputFormatSchema.safeParse(formatRaw);
     if (!formatResult.success) {
-      return jsonError(context, `invalid artifact format ${formatRaw}`, 400);
+      return jsonError(context, 'invalid artifact format', 400);
     }
 
     const format = formatResult.data;
@@ -1080,7 +1210,7 @@ export function createReviewServiceApp(
         }
         await syncDetachedRecord(record);
       } catch (error) {
-        logger.error('[review-service] failed to cancel run', error);
+        logError(logger, '[review-service] failed to cancel run', error);
         return jsonError(context, 'failed to cancel run', 502);
       }
     }

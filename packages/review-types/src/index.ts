@@ -1,19 +1,233 @@
+import { Buffer } from 'node:buffer';
 import { z } from 'zod';
+
+/**
+ * Centralizes hosted and local review safety limits that bound request, diff,
+ * prompt, artifact, and user-visible string surfaces.
+ */
+export type ReviewSecurityLimits = {
+  maxCwdBytes: number;
+  maxCustomInstructionsBytes: number;
+  maxGitRefBytes: number;
+  maxCommitTitleBytes: number;
+  maxModelBytes: number;
+  maxPathFilters: number;
+  maxPathFilterBytes: number;
+  maxOutputFormats: number;
+  defaultMaxFiles: number;
+  maxMaxFiles: number;
+  defaultMaxDiffBytes: number;
+  maxMaxDiffBytes: number;
+  maxPromptBytes: number;
+  maxArtifactBytes: number;
+};
+
+/**
+ * Default review safety limits used when callers do not supply stricter caps.
+ */
+export const DEFAULT_REVIEW_SECURITY_LIMITS: ReviewSecurityLimits = {
+  maxCwdBytes: 4096,
+  maxCustomInstructionsBytes: 16 * 1024,
+  maxGitRefBytes: 256,
+  maxCommitTitleBytes: 512,
+  maxModelBytes: 256,
+  maxPathFilters: 100,
+  maxPathFilterBytes: 256,
+  maxOutputFormats: 3,
+  defaultMaxFiles: 200,
+  maxMaxFiles: 1000,
+  defaultMaxDiffBytes: 1024 * 1024,
+  maxMaxDiffBytes: 4 * 1024 * 1024,
+  maxPromptBytes: 256 * 1024,
+  maxArtifactBytes: 2 * 1024 * 1024,
+};
+
+/**
+ * Reports redactions by category for audit records and command telemetry.
+ */
+export type RedactionCounts = {
+  apiKeyLike: number;
+  bearer: number;
+};
+
+/**
+ * Returned by redaction helpers with sanitized text and aggregate counts.
+ */
+export type RedactedText = {
+  text: string;
+  redactions: RedactionCounts;
+};
+
+const SECRET_REPLACEMENT = '[REDACTED_SECRET]';
+const BEARER_REPLACEMENT = 'Bearer [REDACTED]';
+const URL_CREDENTIAL_REPLACEMENT = '$1[REDACTED]@';
+
+const BEARER_PATTERN = /\bBearer\s+[a-zA-Z0-9._~+/=-]+/gi;
+const SECRET_LIKE_PATTERNS = [
+  /\bsk-[a-zA-Z0-9_-]{20,}\b/g,
+  /\bsk-or-v1-[a-zA-Z0-9_-]{20,}\b/g,
+  /\bsk-ant-[a-zA-Z0-9_-]{20,}\b/g,
+  /\bgh[pousr]_[a-zA-Z0-9_]{20,}\b/g,
+  /\bgithub_pat_[a-zA-Z0-9_]{20,}\b/g,
+  /\bxox[baprs]-[a-zA-Z0-9-]{10,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+] as const;
+const KEY_VALUE_SECRET_PATTERN =
+  /((["']?)([A-Z0-9_-]+)\2\s*=\s*)((?:"[^"]*"|'[^']*'|[^\r\n,}]+))/gi;
+const COLON_SECRET_PATTERN =
+  /((["']?)([A-Z0-9_-]+)\2\s*:\s*)((?:"[^"]*"|'[^']*'|[^\r\n,}]+))/gi;
+const URI_CREDENTIALS_PATTERN =
+  /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s@]+)@/gi;
+const EXACT_SECRET_KEY_NAMES = new Set([
+  'apikey',
+  'api_key',
+  'auth',
+  'authorization',
+  'authtoken',
+  'auth_token',
+  'clientsecret',
+  'client_secret',
+  'credential',
+  'credentials',
+  'databaseurl',
+  'database_url',
+  'idtoken',
+  'id_token',
+  'password',
+  'pass',
+  'privatekey',
+  'private_key',
+  'refreshtoken',
+  'refresh_token',
+  'secret',
+  'token',
+]);
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+type BoundedStringOptions = {
+  allowMultiline?: boolean;
+};
+
+function noControlCharacters(
+  value: string,
+  options: BoundedStringOptions = {}
+): boolean {
+  for (const character of value) {
+    if (
+      options.allowMultiline &&
+      (character === '\n' || character === '\r' || character === '\t')
+    ) {
+      continue;
+    }
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || codePoint === 0x7f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function boundedString(
+  label: string,
+  maxBytes: number,
+  options: BoundedStringOptions = {}
+): z.ZodString {
+  const controlCharacterMessage = options.allowMultiline
+    ? `${label} must not contain control characters other than tab or newline`
+    : `${label} must not contain control characters`;
+  return z
+    .string()
+    .min(1)
+    .max(maxBytes)
+    .refine((value) => utf8ByteLength(value) <= maxBytes, {
+      message: `${label} must be <= ${maxBytes} UTF-8 bytes`,
+    })
+    .refine((value) => noControlCharacters(value, options), {
+      message: controlCharacterMessage,
+    });
+}
+
+const SafeGitRefSchema = boundedString(
+  'git ref',
+  DEFAULT_REVIEW_SECURITY_LIMITS.maxGitRefBytes
+).superRefine((value, context) => {
+  const invalidReasons = [
+    value.startsWith('-') ? 'must not start with "-"' : undefined,
+    value.startsWith('/') || value.endsWith('/')
+      ? 'must not start or end with "/"'
+      : undefined,
+    value.includes('..') ? 'must not contain ".."' : undefined,
+    value.includes('@{') ? 'must not contain "@{"' : undefined,
+    value === '@' ? 'must not be "@"' : undefined,
+    value.endsWith('.') ? 'must not end with "."' : undefined,
+    value.includes('.lock') ? 'must not contain ".lock"' : undefined,
+    value.includes('//') ? 'must not contain "//"' : undefined,
+    /[\s~^:?*[\\]/.test(value)
+      ? 'must not contain whitespace or Git ref control characters'
+      : undefined,
+  ].filter(Boolean);
+
+  for (const reason of invalidReasons) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `git ref ${reason}`,
+    });
+  }
+});
+
+const CommitObjectIdSchema = boundedString(
+  'commit sha',
+  DEFAULT_REVIEW_SECURITY_LIMITS.maxGitRefBytes
+).regex(/^[0-9a-fA-F]{7,64}$/, 'commit sha must be a Git object id');
+
+const PathFilterSchema = boundedString(
+  'path filter',
+  DEFAULT_REVIEW_SECURITY_LIMITS.maxPathFilterBytes
+).superRefine((value, context) => {
+  const segments = value.split('/');
+  const invalidReasons = [
+    value.startsWith('/') ? 'must be repository-relative' : undefined,
+    value.startsWith('~') ? 'must not start with "~"' : undefined,
+    value.startsWith('!') ? 'must not use negation syntax' : undefined,
+    value.startsWith(':(') ? 'must not use Git pathspec magic' : undefined,
+    value.includes('\\') ? 'must use POSIX path separators' : undefined,
+    value.includes('//') ? 'must not contain empty path segments' : undefined,
+    segments.includes('..') ? 'must not contain ".." segments' : undefined,
+    value === '.' ? 'must not target the repository root by "."' : undefined,
+  ].filter(Boolean);
+
+  for (const reason of invalidReasons) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `path filter ${reason}`,
+    });
+  }
+});
 
 export const ReviewTargetSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('uncommittedChanges') }),
   z.strictObject({
     type: z.literal('baseBranch'),
-    branch: z.string().min(1),
+    branch: SafeGitRefSchema,
   }),
   z.strictObject({
     type: z.literal('commit'),
-    sha: z.string().min(1),
-    title: z.string().min(1).optional(),
+    sha: CommitObjectIdSchema,
+    title: boundedString(
+      'commit title',
+      DEFAULT_REVIEW_SECURITY_LIMITS.maxCommitTitleBytes
+    ).optional(),
   }),
   z.strictObject({
     type: z.literal('custom'),
-    instructions: z.string().min(1),
+    instructions: boundedString(
+      'custom instructions',
+      DEFAULT_REVIEW_SECURITY_LIMITS.maxCustomInstructionsBytes,
+      { allowMultiline: true }
+    ),
   }),
 ]);
 
@@ -40,6 +254,23 @@ export const ReasoningEffortSchema = z.enum([
   'xhigh',
 ]);
 export const OutputFormatSchema = z.enum(['sarif', 'json', 'markdown']);
+const OutputFormatListSchema = z
+  .array(OutputFormatSchema)
+  .min(1)
+  .max(DEFAULT_REVIEW_SECURITY_LIMITS.maxOutputFormats)
+  .superRefine((formats, context) => {
+    const seen = new Set<string>();
+    for (const [index, format] of formats.entries()) {
+      if (seen.has(format)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'outputFormats must not contain duplicates',
+          path: [index],
+        });
+      }
+      seen.add(format);
+    }
+  });
 /**
  * Maps generated artifact formats to canonical HTTP content type headers with charset.
  */
@@ -73,17 +304,36 @@ export const ProviderDiagnosticCodeSchema = z.enum([
 ]);
 
 export const ReviewRequestSchema = z.strictObject({
-  cwd: z.string().min(1),
+  cwd: boundedString('cwd', DEFAULT_REVIEW_SECURITY_LIMITS.maxCwdBytes),
   target: ReviewTargetSchema,
   provider: ReviewProviderKindSchema,
   executionMode: ExecutionModeSchema.default('localTrusted'),
-  model: z.string().min(1).optional(),
+  model: boundedString(
+    'model',
+    DEFAULT_REVIEW_SECURITY_LIMITS.maxModelBytes
+  ).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
-  includePaths: z.array(z.string().min(1)).optional(),
-  excludePaths: z.array(z.string().min(1)).optional(),
-  maxFiles: z.number().int().positive().optional(),
-  maxDiffBytes: z.number().int().positive().optional(),
-  outputFormats: z.array(OutputFormatSchema).min(1),
+  includePaths: z
+    .array(PathFilterSchema)
+    .max(DEFAULT_REVIEW_SECURITY_LIMITS.maxPathFilters)
+    .optional(),
+  excludePaths: z
+    .array(PathFilterSchema)
+    .max(DEFAULT_REVIEW_SECURITY_LIMITS.maxPathFilters)
+    .optional(),
+  maxFiles: z
+    .number()
+    .int()
+    .positive()
+    .max(DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxFiles)
+    .optional(),
+  maxDiffBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxDiffBytes)
+    .optional(),
+  outputFormats: OutputFormatListSchema,
   severityThreshold: SeverityThresholdSchema.optional(),
   detached: z.boolean().optional(),
 });
@@ -593,6 +843,320 @@ export interface ReviewProvider {
   validateRequest?(input: ReviewProviderValidationInput): ProviderDiagnostic[];
   doctor?(): Promise<ProviderDiagnostic[]>;
   run(input: ReviewProviderRunInput): Promise<ReviewProviderRunOutput>;
+}
+
+function replaceAndCount(
+  input: string,
+  pattern: RegExp,
+  replacement: string
+): { text: string; count: number } {
+  const count = input.match(pattern)?.length ?? 0;
+  return {
+    text: input.replaceAll(pattern, replacement),
+    count,
+  };
+}
+
+function isSecretKeyName(rawKey: string): boolean {
+  const key = rawKey.replaceAll(/['"]/g, '').toLowerCase();
+  const compact = key.replaceAll(/[^a-z0-9]/g, '');
+  const tokens = key.split(/[^a-z0-9]+/).filter(Boolean);
+  return (
+    EXACT_SECRET_KEY_NAMES.has(key) ||
+    EXACT_SECRET_KEY_NAMES.has(compact) ||
+    compact.includes('apikey') ||
+    compact.endsWith('token') ||
+    compact.endsWith('secret') ||
+    compact.endsWith('password') ||
+    compact.endsWith('credential') ||
+    tokens.includes('token') ||
+    tokens.includes('secret') ||
+    tokens.includes('password') ||
+    tokens.includes('credential') ||
+    tokens.includes('credentials')
+  );
+}
+
+function redactedValueWithOriginalQuoting(value: string): string {
+  const leadingWhitespace = value.match(/^\s*/)?.[0] ?? '';
+  const trimmed = value.slice(leadingWhitespace.length);
+  if (trimmed.startsWith('"')) {
+    return `${leadingWhitespace}"${SECRET_REPLACEMENT}"`;
+  }
+  if (trimmed.startsWith("'")) {
+    return `${leadingWhitespace}'${SECRET_REPLACEMENT}'`;
+  }
+  return `${leadingWhitespace}${SECRET_REPLACEMENT}`;
+}
+
+function redactDelimitedSecretValues(
+  input: string,
+  pattern: RegExp
+): { text: string; count: number } {
+  let count = 0;
+  const text = input.replace(
+    pattern,
+    (
+      match: string,
+      prefix: string,
+      _quote: string,
+      key: string,
+      value: string
+    ) => {
+      if (!isSecretKeyName(key)) {
+        return match;
+      }
+      count += 1;
+      return `${prefix}${redactedValueWithOriginalQuoting(value)}`;
+    }
+  );
+  return { text, count };
+}
+
+/**
+ * Adds redaction counts together without mutating either input object.
+ *
+ * @param left - Existing redaction counts.
+ * @param right - Additional redaction counts.
+ * @returns Combined redaction counts.
+ */
+export function mergeRedactionCounts(
+  left: RedactionCounts,
+  right: RedactionCounts
+): RedactionCounts {
+  return {
+    apiKeyLike: left.apiKeyLike + right.apiKeyLike,
+    bearer: left.bearer + right.bearer,
+  };
+}
+
+/**
+ * Redacts common secret forms from text before it is logged, persisted, or
+ * included in generated review artifacts.
+ *
+ * @param input - Text that may contain provider, VCS, cloud, or credential values.
+ * @returns Sanitized text with aggregate redaction counts.
+ */
+export function redactSensitiveText(input: string): RedactedText {
+  const bearer = replaceAndCount(input, BEARER_PATTERN, BEARER_REPLACEMENT);
+  let text = bearer.text;
+  let apiKeyLike = 0;
+  for (const pattern of SECRET_LIKE_PATTERNS) {
+    const result = replaceAndCount(text, pattern, SECRET_REPLACEMENT);
+    text = result.text;
+    apiKeyLike += result.count;
+  }
+  const keyValue = redactDelimitedSecretValues(text, KEY_VALUE_SECRET_PATTERN);
+  text = keyValue.text;
+  apiKeyLike += keyValue.count;
+  const colon = redactDelimitedSecretValues(text, COLON_SECRET_PATTERN);
+  text = colon.text;
+  apiKeyLike += colon.count;
+  const uri = replaceAndCount(
+    text,
+    URI_CREDENTIALS_PATTERN,
+    URL_CREDENTIAL_REPLACEMENT
+  );
+  text = uri.text;
+  apiKeyLike += uri.count;
+  return {
+    text,
+    redactions: {
+      apiKeyLike,
+      bearer: bearer.count,
+    },
+  };
+}
+
+/**
+ * Redacts the human-facing message for an unknown error value.
+ *
+ * @param error - Error-like value from a catch block.
+ * @param fallback - Safe message to use when the error has no message.
+ * @returns Redacted error message.
+ */
+export function redactErrorMessage(
+  error: unknown,
+  fallback = 'internal error'
+): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : fallback;
+  return redactSensitiveText(message || fallback).text || fallback;
+}
+
+/**
+ * Redacts secret-bearing text fields in a lifecycle event.
+ *
+ * @param event - Lifecycle event before persistence or streaming.
+ * @returns A copy with user-visible text fields redacted.
+ */
+export function redactLifecycleEvent(event: LifecycleEvent): LifecycleEvent {
+  switch (event.type) {
+    case 'enteredReviewMode':
+    case 'exitedReviewMode':
+      return {
+        ...event,
+        review: redactSensitiveText(event.review).text,
+      };
+    case 'progress':
+    case 'failed':
+      return {
+        ...event,
+        message: redactSensitiveText(event.message).text,
+      };
+    case 'artifactReady':
+    case 'cancelled':
+      return event;
+  }
+}
+
+/**
+ * Redacts secret-bearing fields inside a normalized review result.
+ *
+ * @param result - Review result before artifact rendering or service response.
+ * @returns Redacted review result and aggregate counts.
+ */
+export function redactReviewResult(result: ReviewResult): {
+  result: ReviewResult;
+  redactions: RedactionCounts;
+} {
+  let redactions: RedactionCounts = { apiKeyLike: 0, bearer: 0 };
+  const redact = (value: string): string => {
+    const sanitized = redactSensitiveText(value);
+    redactions = mergeRedactionCounts(redactions, sanitized.redactions);
+    return sanitized.text;
+  };
+  const sanitized: ReviewResult = {
+    ...result,
+    findings: result.findings.map((finding) => ({
+      ...finding,
+      title: redact(finding.title),
+      body: redact(finding.body),
+      codeLocation: {
+        ...finding.codeLocation,
+        absoluteFilePath: redact(finding.codeLocation.absoluteFilePath),
+      },
+      fingerprint: redact(finding.fingerprint),
+    })),
+    overallExplanation: redact(result.overallExplanation),
+    metadata: {
+      ...result.metadata,
+      modelResolved: redact(result.metadata.modelResolved),
+      promptPack: redact(result.metadata.promptPack),
+      gitContext: {
+        ...result.metadata.gitContext,
+        ...(result.metadata.gitContext.baseRef
+          ? { baseRef: redact(result.metadata.gitContext.baseRef) }
+          : {}),
+        ...(result.metadata.gitContext.mergeBaseSha
+          ? { mergeBaseSha: redact(result.metadata.gitContext.mergeBaseSha) }
+          : {}),
+        ...(result.metadata.gitContext.commitSha
+          ? { commitSha: redact(result.metadata.gitContext.commitSha) }
+          : {}),
+      },
+      ...(result.metadata.sandboxId
+        ? { sandboxId: redact(result.metadata.sandboxId) }
+        : {}),
+    },
+  };
+  return { result: sanitized, redactions };
+}
+
+/**
+ * Redacts secret-bearing text fields in structured command-run telemetry.
+ *
+ * @param commandRun - Command-run output before persistence or event rendering.
+ * @returns A copy with stdout, stderr, event messages, files, and arguments redacted.
+ */
+export function redactCommandRunOutput(
+  commandRun: CommandRunOutput
+): CommandRunOutput {
+  let redactions = { ...commandRun.redactions };
+  const redact = (value: string): string => {
+    const sanitized = redactSensitiveText(value);
+    redactions = mergeRedactionCounts(redactions, sanitized.redactions);
+    return sanitized.text;
+  };
+  const cmd = redact(commandRun.cmd);
+  const args = commandRun.args.map(redact);
+  const cwd = redact(commandRun.cwd);
+  const stdout = redact(commandRun.stdout);
+  const stderr = redact(commandRun.stderr);
+  const events = commandRun.events.map((event) => ({
+    ...event,
+    ...(event.message ? { message: redact(event.message) } : {}),
+  }));
+  const files = commandRun.files.map((file) => {
+    const key = redact(file.key);
+    const path = redact(file.path);
+    const content = redactSensitiveText(file.content);
+    redactions = mergeRedactionCounts(redactions, content.redactions);
+    return {
+      ...file,
+      key,
+      path,
+      content: content.text,
+      redactions: mergeRedactionCounts(file.redactions, content.redactions),
+    };
+  });
+  return {
+    ...commandRun,
+    cmd,
+    args,
+    cwd,
+    stdout,
+    stderr,
+    redactions,
+    events,
+    files,
+  };
+}
+
+/**
+ * Resolves partial limit overrides on top of the default review security caps.
+ *
+ * @param overrides - Optional stricter or environment-specific limits.
+ * @returns Fully populated limit object.
+ */
+export function resolveReviewSecurityLimits(
+  overrides: Partial<ReviewSecurityLimits> = {}
+): ReviewSecurityLimits {
+  return {
+    ...DEFAULT_REVIEW_SECURITY_LIMITS,
+    ...overrides,
+  };
+}
+
+/**
+ * Adds default diff caps to a parsed review request without changing explicit
+ * caller-provided values.
+ *
+ * @param request - Parsed review request.
+ * @param limits - Fully resolved security limits.
+ * @returns Request with bounded diff defaults.
+ */
+export function withReviewRequestSecurityDefaults(
+  request: ReviewRequest,
+  limits: ReviewSecurityLimits = DEFAULT_REVIEW_SECURITY_LIMITS
+): ReviewRequest {
+  const maxFiles = Math.min(
+    request.maxFiles ?? limits.defaultMaxFiles,
+    limits.maxMaxFiles
+  );
+  const maxDiffBytes = Math.min(
+    request.maxDiffBytes ?? limits.defaultMaxDiffBytes,
+    limits.maxMaxDiffBytes
+  );
+  return {
+    ...request,
+    maxFiles,
+    maxDiffBytes,
+  };
 }
 
 /**

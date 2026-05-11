@@ -12,10 +12,25 @@ import {
   createInMemoryReviewStore,
   createReviewServiceApp,
   type ReviewRecord,
+  type ReviewServiceDependencies,
   type ReviewServiceRunner,
   type ReviewServiceWorker,
   type ReviewStoreAdapter,
 } from './index.js';
+
+const TEST_ALLOWED_CWD_ROOTS = [process.cwd(), '/repo'];
+
+function createTestReviewServiceApp(
+  dependencies: ReviewServiceDependencies
+): ReturnType<typeof createReviewServiceApp> {
+  return createReviewServiceApp({
+    ...dependencies,
+    config: {
+      allowedCwdRoots: TEST_ALLOWED_CWD_ROOTS,
+      ...(dependencies.config ?? {}),
+    },
+  });
+}
 
 function createRequest(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
   return {
@@ -485,14 +500,14 @@ describe('createReviewServiceApp', () => {
   it('runs detached reviews through injected worker without sharing state', async () => {
     const providers = createProviders();
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers,
       worker,
       nowMs: () => 1_000,
       uuid: createUuid(['review-1', 'event-1']),
       config: { recordCleanupIntervalMs: false },
     });
-    const isolatedApp = createReviewServiceApp({
+    const isolatedApp = createTestReviewServiceApp({
       providers,
       worker: createWorker(),
       nowMs: () => 1_000,
@@ -559,7 +574,7 @@ describe('createReviewServiceApp', () => {
         return true;
       },
     };
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -592,10 +607,11 @@ describe('createReviewServiceApp', () => {
   it('marks detached start failures as durable failed records', async () => {
     const store = createStore();
     const worker = createWorker();
+    const secret = 'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456';
     worker.startDetached = vi.fn(async () => {
-      throw new Error('workflow start unavailable');
+      throw new Error(`workflow start unavailable ${secret}`);
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -619,9 +635,12 @@ describe('createReviewServiceApp', () => {
     const failedRecord = await store.get('review-start-failed');
     expect(failedRecord).toMatchObject({
       status: 'failed',
-      error: 'workflow start unavailable',
+      error: expect.stringContaining('[REDACTED_SECRET]'),
       retentionExpiresAt: 3_601_500,
     });
+    expect(JSON.stringify(failedRecord)).not.toContain(
+      'sk-abcdefghijklmnopqrstuvwxyz123456'
+    );
     expect(failedRecord?.events.map((event) => event.type)).toEqual(['failed']);
   });
 
@@ -639,7 +658,7 @@ describe('createReviewServiceApp', () => {
       })
     );
     const store = createStore();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -680,7 +699,7 @@ describe('createReviewServiceApp', () => {
     const worker = createWorker();
     const store = createStore();
     const request = createRequest();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -759,13 +778,20 @@ describe('createReviewServiceApp', () => {
     const providers = createProviders();
     const worker = createWorker();
     const store = createStore();
+    const secret = 'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456';
+    const request = createRequest({
+      target: {
+        type: 'custom',
+        instructions: `review this fixture\n${secret}`,
+      },
+    });
     const bridge = {
       mirrorWrite: vi.fn(async () => true),
     };
     const runner = vi.fn<ReviewServiceRunner>(async (request) =>
       createReviewResult(request)
     );
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers,
       worker,
       bridge,
@@ -780,7 +806,7 @@ describe('createReviewServiceApp', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        request: createRequest(),
+        request,
       }),
     });
 
@@ -794,8 +820,18 @@ describe('createReviewServiceApp', () => {
       },
     });
     expect(runner).toHaveBeenCalledTimes(1);
+    expect(runner.mock.calls[0]?.[0].target).toMatchObject({
+      type: 'custom',
+      instructions: expect.stringContaining(secret),
+    });
     expect(runner.mock.calls[0]?.[1].providers).toBe(providers);
     expect(runner.mock.calls[0]?.[2]).toBe(bridge);
+    const stored = await store.get('review-inline');
+    const serializedStored = JSON.stringify(stored);
+    expect(serializedStored).not.toContain(
+      'sk-abcdefghijklmnopqrstuvwxyz123456'
+    );
+    expect(serializedStored).toContain('[REDACTED_SECRET]');
 
     const artifact = await app.request(
       '/v1/review/review-inline/artifacts/json'
@@ -821,7 +857,7 @@ describe('createReviewServiceApp', () => {
     );
     expect(invalidArtifact.status).toBe(400);
     expect(await invalidArtifact.json()).toEqual({
-      error: 'invalid artifact format xml',
+      error: 'invalid artifact format',
     });
   });
 
@@ -853,7 +889,7 @@ describe('createReviewServiceApp', () => {
       await runnerReleased;
       return createReviewResult(request);
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       store,
@@ -893,7 +929,7 @@ describe('createReviewServiceApp', () => {
     const runner = vi.fn<ReviewServiceRunner>(async () => {
       throw new ReviewRunCancelledError('user requested cancellation');
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       runner,
@@ -930,7 +966,7 @@ describe('createReviewServiceApp', () => {
     const runner = vi.fn<ReviewServiceRunner>(async () => {
       throw new Error('provider fixture failed');
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       runner,
@@ -978,11 +1014,52 @@ describe('createReviewServiceApp', () => {
     });
   });
 
+  it('redacts inline failure details before storing status and events', async () => {
+    const secret =
+      'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 Bearer abc.def.ghi';
+    const runner = vi.fn<ReviewServiceRunner>(async () => {
+      throw new Error(`provider fixture failed ${secret}`);
+    });
+    const store = createStore();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      runner,
+      nowMs: () => 3_100,
+      uuid: createUuid([
+        'review-redacted-failed',
+        'event-progress',
+        'event-failed',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+
+    expect(start.status).toBe(200);
+    const record = await store.get('review-redacted-failed');
+    const serialized = JSON.stringify(record);
+    expect(serialized).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+    expect(serialized).not.toContain('abc.def.ghi');
+    expect(record?.error).toContain('[REDACTED_SECRET]');
+    expect(record?.events.at(-1)).toMatchObject({
+      type: 'failed',
+      message: expect.stringContaining('[REDACTED_SECRET]'),
+    });
+  });
+
   it('replays lifecycle events after the requested cursor', async () => {
     const runner = vi.fn<ReviewServiceRunner>(async () => {
       throw new Error('provider fixture failed');
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       runner,
@@ -1025,7 +1102,7 @@ describe('createReviewServiceApp', () => {
   it('syncs detached failures into status and lifecycle replay', async () => {
     const worker = createWorker();
     const store = createStore();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1087,7 +1164,7 @@ describe('createReviewServiceApp', () => {
 
   it('streams detached terminal events to already-open SSE connections', async () => {
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store: createStore(),
@@ -1148,7 +1225,7 @@ describe('createReviewServiceApp', () => {
 
   it('cancels detached runs and replays terminal lifecycle state', async () => {
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       nowMs: () => 4_000,
@@ -1216,7 +1293,7 @@ describe('createReviewServiceApp', () => {
       return true;
     });
     const store = createStore();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1267,7 +1344,7 @@ describe('createReviewServiceApp', () => {
       return true;
     });
     const store = createStore();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1328,7 +1405,7 @@ describe('createReviewServiceApp', () => {
       worker.cancelledRunIds.push(runId);
       return true;
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       nowMs: () => 4_200,
@@ -1382,7 +1459,7 @@ describe('createReviewServiceApp', () => {
       })
     );
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1434,7 +1511,7 @@ describe('createReviewServiceApp', () => {
       worker.runs.set(run.runId, run);
       return run;
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1489,7 +1566,7 @@ describe('createReviewServiceApp', () => {
       });
       return createReviewResult(request);
     });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       store: createInMemoryReviewStore(),
@@ -1543,7 +1620,7 @@ describe('createReviewServiceApp', () => {
       })
     );
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1588,7 +1665,7 @@ describe('createReviewServiceApp', () => {
       })
     );
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1620,7 +1697,7 @@ describe('createReviewServiceApp', () => {
       createDetachedRun({ status: 'queued', runId: 'detached-queued-run' })
     );
     const request = createRequest({ cwd: '/repo/detached-scope' });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store: createStore(),
@@ -1690,7 +1767,7 @@ describe('createReviewServiceApp', () => {
       return run;
     });
     const request = createRequest({ cwd: '/repo/concurrent-scope' });
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store: createInMemoryReviewStore(),
@@ -1738,7 +1815,7 @@ describe('createReviewServiceApp', () => {
     const worker = createWorker();
     const store = createStore();
     let currentTime = 1_000;
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1792,7 +1869,7 @@ describe('createReviewServiceApp', () => {
     const worker = createWorker();
     const store = createStore();
     let currentTime = 1_000;
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1854,7 +1931,7 @@ describe('createReviewServiceApp', () => {
   it('fails detached reviews immediately when their worker run disappears', async () => {
     const worker = createWorker();
     const store = createStore();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -1915,7 +1992,7 @@ describe('createReviewServiceApp', () => {
         },
       })
     );
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       store,
@@ -1943,7 +2020,7 @@ describe('createReviewServiceApp', () => {
   it('syncs terminal worker state before returning cancel conflicts', async () => {
     const worker = createWorker();
     const request = createRequest();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       nowMs: () => 4_500,
@@ -1993,7 +2070,7 @@ describe('createReviewServiceApp', () => {
 
   it('applies injected auth policy before route work begins', async () => {
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       authPolicy: () =>
@@ -2017,7 +2094,7 @@ describe('createReviewServiceApp', () => {
 
   it('returns canonical storage errors for start and read routes', async () => {
     const logger = { error: vi.fn() };
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
       store: createThrowingStore(),
@@ -2066,7 +2143,7 @@ describe('createReviewServiceApp', () => {
 
   it('requires detached delivery for remote sandbox requests', async () => {
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       config: { recordCleanupIntervalMs: false },
@@ -2126,7 +2203,7 @@ describe('createReviewServiceApp', () => {
       })
     );
     const store = createStore();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       store,
@@ -2152,7 +2229,13 @@ describe('createReviewServiceApp', () => {
       status: 'completed',
       detachedRunId: 'detached-run-1',
     });
-    expect(worker.started).toEqual([request]);
+    expect(worker.started).toEqual([
+      expect.objectContaining({
+        ...request,
+        maxFiles: 200,
+        maxDiffBytes: 1048576,
+      }),
+    ]);
     expect(store.records.get(body.reviewId)?.sandboxId).toBe(
       'sbx-service-test'
     );
@@ -2170,7 +2253,7 @@ describe('createReviewServiceApp', () => {
 
   it('rejects detached git-backed remote sandbox requests before dispatch', async () => {
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       config: { recordCleanupIntervalMs: false },
@@ -2198,7 +2281,7 @@ describe('createReviewServiceApp', () => {
 
   it('returns a validation error for invalid start payloads', async () => {
     const worker = createWorker();
-    const app = createReviewServiceApp({
+    const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
       config: { recordCleanupIntervalMs: false },
@@ -2219,10 +2302,89 @@ describe('createReviewServiceApp', () => {
     });
 
     expect(response.status).toBe(400);
-    const body = await response.json();
-    expect(body).toEqual({
-      error: expect.stringContaining('Too small'),
+    expect(await response.json()).toEqual({
+      error: 'invalid review start request',
     });
     expect(worker.started).toEqual([]);
+  });
+
+  it('rejects oversized start bodies and cwd values outside allowed roots', async () => {
+    const worker = createWorker();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      config: {
+        maxRequestBodyBytes: 128,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const oversized = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest({
+          target: { type: 'custom', instructions: 'x'.repeat(256) },
+        }),
+      }),
+    });
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toEqual({
+      error: 'review start request body exceeds configured byte limit',
+    });
+
+    const cwdEscapeApp = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      config: { recordCleanupIntervalMs: false },
+    });
+    const cwdEscape = await cwdEscapeApp.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest({ cwd: '/etc' }),
+      }),
+    });
+    expect(cwdEscape.status).toBe(400);
+    expect(await cwdEscape.json()).toEqual({
+      error: 'cwd is outside configured review roots',
+    });
+    expect(worker.started).toEqual([]);
+  });
+
+  it('clamps explicit request budgets to configured service limits', async () => {
+    const runner = vi.fn<ReviewServiceRunner>(async (request) =>
+      createReviewResult(request)
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      runner,
+      uuid: createUuid(['review-budget-clamp', 'event-progress']),
+      config: {
+        recordCleanupIntervalMs: false,
+        reviewLimits: {
+          maxMaxFiles: 5,
+          maxMaxDiffBytes: 1024,
+        },
+      },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest({
+          maxFiles: 100,
+          maxDiffBytes: 65_536,
+        }),
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(runner.mock.calls[0]?.[0]).toMatchObject({
+      maxFiles: 5,
+      maxDiffBytes: 1024,
+    });
   });
 });

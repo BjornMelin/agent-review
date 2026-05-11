@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import {
   access,
   chmod,
+  mkdir,
   mkdtemp,
   rm,
   symlink,
@@ -171,6 +172,18 @@ describe('collectDiffForTarget', () => {
           branch: `--output=${outputPath}`,
         })
       ).rejects.toThrow('target.branch must not start with "-"');
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'baseBranch',
+          branch: 'main..HEAD',
+        })
+      ).rejects.toThrow('target.branch must be a simple Git ref name');
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'baseBranch',
+          branch: 'main:path',
+        })
+      ).rejects.toThrow('target.branch must be a simple Git ref name');
       await expect(access(outputPath)).rejects.toThrow();
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -247,6 +260,101 @@ describe('collectDiffForTarget', () => {
 
       expect(diff.gitContext.mode).toBe('commit');
       expect(diff.patch).toContain('+changed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects blob object ids for commit targets', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'file.txt'), 'base\n');
+      await runGit(cwd, ['add', 'file.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+      const blobSha = await runGit(cwd, ['hash-object', '-w', 'file.txt']);
+
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'commit',
+          sha: blobSha,
+        })
+      ).rejects.toThrow('git command failed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces untracked file count and byte budgets before reading files', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'tracked.txt'), 'base\n');
+      await runGit(cwd, ['add', 'tracked.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+
+      await writeFile(join(cwd, 'one.txt'), 'one\n');
+      await writeFile(join(cwd, 'two.txt'), 'two\n');
+      await expect(
+        collectDiffForTarget(
+          cwd,
+          { type: 'uncommittedChanges' },
+          { maxFiles: 1 }
+        )
+      ).rejects.toThrow('untracked file count exceeds maxFiles');
+
+      await rm(join(cwd, 'two.txt'), { force: true });
+      await writeFile(join(cwd, 'one.txt'), 'x'.repeat(64));
+      await expect(
+        collectDiffForTarget(
+          cwd,
+          { type: 'uncommittedChanges' },
+          { maxDiffBytes: 8 }
+        )
+      ).rejects.toThrow('untracked file exceeds maxDiffBytes');
+
+      await rm(join(cwd, 'one.txt'), { force: true });
+      await writeFile(join(cwd, 'one.txt'), 'one\n');
+      await writeFile(join(cwd, 'two.txt'), 'two\n');
+      await expect(
+        collectDiffForTarget(
+          cwd,
+          { type: 'uncommittedChanges' },
+          { maxDiffBytes: 160 }
+        )
+      ).rejects.toThrow(/maxDiffBytes/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('applies path filters before enforcing untracked file count budgets', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'tracked.txt'), 'base\n');
+      await runGit(cwd, ['add', 'tracked.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+
+      await mkdir(join(cwd, 'src'));
+      await mkdir(join(cwd, 'tmp'));
+      await writeFile(join(cwd, 'src', 'one.txt'), 'one\n');
+      await writeFile(join(cwd, 'tmp', 'ignored.txt'), 'ignored\n');
+
+      const diff = await collectDiffForTarget(
+        cwd,
+        { type: 'uncommittedChanges' },
+        { includePaths: ['src/**'], maxFiles: 1 }
+      );
+
+      expect(diff.patch).toContain('+++ b/src/one.txt');
+      expect(diff.patch).not.toContain('tmp/ignored.txt');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

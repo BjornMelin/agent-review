@@ -133,6 +133,25 @@ describe('sandbox policy and budget enforcement', () => {
     expect(stopMock).toHaveBeenCalledTimes(1);
   });
 
+  it('enforces output budget against raw text before redaction', async () => {
+    const policy = createDefaultPolicy();
+    policy.budget.maxOutputBytes = 32;
+    runCommandMock.mockResolvedValue(
+      createFinishedCommand({
+        stdout: `TOKEN=${'x'.repeat(80)}`,
+        stderr: '',
+      })
+    );
+
+    await expect(
+      runInSandbox({
+        commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+        policy,
+      })
+    ).rejects.toThrow('sandbox output budget exceeded');
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves the primary failure when cleanup fails', async () => {
     const policy = createDefaultPolicy();
     policy.budget.maxOutputBytes = 4;

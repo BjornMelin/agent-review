@@ -12,7 +12,11 @@ import type {
   ReviewProviderValidationInput,
   ReviewTarget,
 } from '@review-agent/review-types';
-import { ReviewProviderCommandRunError } from '@review-agent/review-types';
+import {
+  ReviewProviderCommandRunError,
+  redactErrorMessage,
+  redactSensitiveText,
+} from '@review-agent/review-types';
 
 const CODEX_DOCTOR_TIMEOUT_MS = 10_000;
 const CODEX_REVIEW_TIMEOUT_MS = 5 * 60_000;
@@ -62,13 +66,13 @@ export type CodexProviderOptions = {
 };
 
 function commandText(output: CommandRunOutput): string {
-  return (
+  return redactSensitiveText(
     output.files
       .find((file) => file.key === LAST_MESSAGE_KEY)
       ?.content.trim() ||
-    output.stdout.trim() ||
-    output.stderr.trim()
-  );
+      output.stdout.trim() ||
+      output.stderr.trim()
+  ).text;
 }
 
 function codexEnv(): Record<string, string> {
@@ -161,12 +165,11 @@ export class CodexDelegateProvider implements ReviewProvider {
         detail: `codex binary is available at "${this.codexBin}"`,
       });
     } catch (error) {
-      const err = error as Error;
       diagnostics.push({
         code: 'provider_unavailable',
         ok: false,
         severity: 'error',
-        detail: `codex binary check failed: ${err.message}`,
+        detail: `codex binary check failed: ${redactErrorMessage(error)}`,
         remediation:
           'Verify codex CLI installation and executable permissions.',
       });
@@ -239,7 +242,7 @@ export class CodexDelegateProvider implements ReviewProvider {
     const text = commandText(output);
     if (output.status !== 'completed' || output.exitCode !== 0) {
       throw new ReviewProviderCommandRunError(
-        `codex delegate failed: ${text || output.status}`,
+        `codex delegate failed: ${redactSensitiveText(text || output.status).text}`,
         output
       );
     }

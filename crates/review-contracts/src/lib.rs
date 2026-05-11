@@ -40,6 +40,13 @@ const COMMAND_RUN_OUTPUT_SCHEMA: &str = include_str!(
 const SANDBOX_AUDIT_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/sandbox-audit.schema.json");
 
+const MAX_CWD_BYTES: usize = 4096;
+const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 16 * 1024;
+const MAX_GIT_REF_BYTES: usize = 256;
+const MAX_COMMIT_TITLE_BYTES: usize = 512;
+const MAX_MODEL_BYTES: usize = 256;
+const MAX_PATH_FILTER_BYTES: usize = 256;
+
 static REVIEW_REQUEST_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
 static REVIEW_RESULT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
 static COMMAND_RUN_INPUT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> =
@@ -104,12 +111,14 @@ impl Error for ContractParseError {}
 
 /// Validate and parse a `ReviewRequest` JSON value through the committed schema.
 pub fn parse_review_request(input: &Value) -> Result<ReviewRequest, ContractParseError> {
-    parse_contract(
+    let request = parse_contract(
         "ReviewRequest",
         REVIEW_REQUEST_SCHEMA,
         &REVIEW_REQUEST_VALIDATOR,
         input,
-    )
+    )?;
+    validate_review_request_semantics(input)?;
+    Ok(request)
 }
 
 /// Validate and parse a `ReviewResult` JSON value through the committed schema.
@@ -198,6 +207,149 @@ fn schema_validator(
             message: message.clone(),
         }),
     }
+}
+
+fn validate_review_request_semantics(input: &Value) -> Result<(), ContractParseError> {
+    validate_string_field(input.get("cwd"), "cwd", MAX_CWD_BYTES, false)?;
+    validate_string_field(input.get("model"), "model", MAX_MODEL_BYTES, false)?;
+
+    if let Some(target) = input.get("target").and_then(Value::as_object) {
+        match target.get("type").and_then(Value::as_str) {
+            Some("baseBranch") => {
+                let branch = target.get("branch").and_then(Value::as_str).unwrap_or("");
+                validate_git_ref(branch, "target.branch")?;
+            }
+            Some("commit") => {
+                validate_string_field(target.get("sha"), "target.sha", MAX_GIT_REF_BYTES, false)?;
+                validate_string_field(
+                    target.get("title"),
+                    "target.title",
+                    MAX_COMMIT_TITLE_BYTES,
+                    false,
+                )?;
+            }
+            Some("custom") => validate_string_field(
+                target.get("instructions"),
+                "target.instructions",
+                MAX_CUSTOM_INSTRUCTIONS_BYTES,
+                true,
+            )?,
+            _ => {}
+        }
+    }
+
+    validate_path_filters(input.get("includePaths"), "includePaths")?;
+    validate_path_filters(input.get("excludePaths"), "excludePaths")?;
+    validate_unique_output_formats(input)?;
+    Ok(())
+}
+
+fn validate_unique_output_formats(input: &Value) -> Result<(), ContractParseError> {
+    let Some(formats) = input.get("outputFormats").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let mut seen = std::collections::HashSet::new();
+    for format in formats.iter().filter_map(Value::as_str) {
+        if !seen.insert(format) {
+            return Err(ContractParseError::InvalidSemantics {
+                schema: "ReviewRequest",
+                message: "outputFormats must not contain duplicates".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_string_field(
+    value: Option<&Value>,
+    label: &str,
+    max_bytes: usize,
+    allow_multiline: bool,
+) -> Result<(), ContractParseError> {
+    let Some(text) = value.and_then(Value::as_str) else {
+        return Ok(());
+    };
+    validate_string_value(text, label, max_bytes, allow_multiline)
+}
+
+fn validate_string_value(
+    value: &str,
+    label: &str,
+    max_bytes: usize,
+    allow_multiline: bool,
+) -> Result<(), ContractParseError> {
+    if value.len() > max_bytes {
+        return Err(ContractParseError::InvalidSemantics {
+            schema: "ReviewRequest",
+            message: format!("{label} must be <= {max_bytes} UTF-8 bytes"),
+        });
+    }
+    if value.chars().any(|character| {
+        if allow_multiline && matches!(character, '\n' | '\r' | '\t') {
+            return false;
+        }
+        let code_point = character as u32;
+        code_point <= 0x1f || code_point == 0x7f
+    }) {
+        return Err(ContractParseError::InvalidSemantics {
+            schema: "ReviewRequest",
+            message: if allow_multiline {
+                format!("{label} must not contain control characters other than tab or newline")
+            } else {
+                format!("{label} must not contain control characters")
+            },
+        });
+    }
+    Ok(())
+}
+
+fn validate_git_ref(value: &str, label: &str) -> Result<(), ContractParseError> {
+    validate_string_value(value, label, MAX_GIT_REF_BYTES, false)?;
+    let invalid = value.starts_with('-')
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.contains("..")
+        || value.contains("@{")
+        || value == "@"
+        || value.ends_with('.')
+        || value.contains(".lock")
+        || value.contains("//")
+        || value
+            .chars()
+            .any(|character| character.is_ascii_whitespace() || "~^:?*[\\".contains(character));
+    if invalid {
+        return Err(ContractParseError::InvalidSemantics {
+            schema: "ReviewRequest",
+            message: format!("{label} must be a simple Git ref name"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_path_filters(value: Option<&Value>, label: &str) -> Result<(), ContractParseError> {
+    let Some(filters) = value.and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for (index, filter) in filters.iter().filter_map(Value::as_str).enumerate() {
+        let item_label = format!("{label}[{index}]");
+        validate_string_value(filter, &item_label, MAX_PATH_FILTER_BYTES, false)?;
+        let segments = filter.split('/').collect::<Vec<_>>();
+        let invalid = filter.starts_with('/')
+            || filter.starts_with('~')
+            || filter.starts_with('!')
+            || filter.starts_with(":(")
+            || filter.contains('\\')
+            || filter.contains("//")
+            || filter == "."
+            || segments.contains(&"..");
+        if invalid {
+            return Err(ContractParseError::InvalidSemantics {
+                schema: "ReviewRequest",
+                message: format!("{item_label} must be a repository-relative path filter"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_review_result_semantics(result: &ReviewResult) -> Result<(), ContractParseError> {

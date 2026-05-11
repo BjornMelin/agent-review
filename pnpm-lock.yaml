@@ -157,6 +157,9 @@ importers:
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../review-types
+      minimatch:
+        specifier: 10.2.5
+        version: 10.2.5
 
   packages/review-prompts:
     dependencies:
@@ -220,6 +223,9 @@ importers:
 
   packages/review-sandbox-vercel:
     dependencies:
+      '@review-agent/review-types':
+        specifier: workspace:*
+        version: link:../review-types
       '@vercel/sandbox':
         specifier: ^1.10.1
         version: 1.10.1

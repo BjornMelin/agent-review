@@ -3,7 +3,14 @@ import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import type { ReviewRequest, ReviewTarget } from '@review-agent/review-types';
+import {
+  DEFAULT_REVIEW_SECURITY_LIMITS,
+  type ReviewRequest,
+  type ReviewTarget,
+  redactErrorMessage,
+  withReviewRequestSecurityDefaults,
+} from '@review-agent/review-types';
+import { minimatch } from 'minimatch';
 import {
   type DiffChunk,
   type DiffIndexOptions,
@@ -36,6 +43,7 @@ export type DiffContext = {
 
 type GitExecOptions = {
   allowExitCodes?: number[];
+  maxBufferBytes?: number;
 };
 
 const SAFE_GIT_ENV = {
@@ -55,6 +63,19 @@ function assertSafeGitRevisionArgument(value: string, label: string): void {
   }
   if (value.includes('\0')) {
     throw new Error(`${label} must not contain NUL bytes`);
+  }
+  if (
+    value.startsWith('/') ||
+    value.endsWith('/') ||
+    value.includes('..') ||
+    value.includes('@{') ||
+    value === '@' ||
+    value.endsWith('.') ||
+    value.includes('.lock') ||
+    value.includes('//') ||
+    /[\s~^:?*[\\]/.test(value)
+  ) {
+    throw new Error(`${label} must be a simple Git ref name`);
   }
 }
 
@@ -78,7 +99,7 @@ async function runGit(
         ...process.env,
         ...SAFE_GIT_ENV,
       },
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: options.maxBufferBytes ?? 16 * 1024 * 1024,
       encoding: 'utf8',
     });
     return stdout.trimEnd();
@@ -94,7 +115,7 @@ async function runGit(
     }
     const stderr = String(err.stderr ?? '').trim();
     throw new Error(
-      `git --no-pager ${args.join(' ')} failed: ${stderr || err.message}`
+      `git command failed: ${redactErrorMessage(stderr || err.message)}`
     );
   }
 }
@@ -324,7 +345,8 @@ function buildUntrackedSymlinkPatch(
 
 async function buildUntrackedFilePatch(
   cwd: string,
-  relativePath: string
+  relativePath: string,
+  maxFileBytes: number | undefined
 ): Promise<string> {
   const root = await realpath(cwd);
   const absolutePath = resolve(root, relativePath);
@@ -340,6 +362,9 @@ async function buildUntrackedFilePatch(
 
   if (!stats.isFile()) {
     return '';
+  }
+  if (maxFileBytes !== undefined && stats.size > maxFileBytes) {
+    throw new Error('untracked file exceeds maxDiffBytes');
   }
 
   const resolvedPath = await realpath(absolutePath);
@@ -375,31 +400,132 @@ async function buildUntrackedFilePatch(
   ].join('\n');
 }
 
-async function buildUncommittedPatch(cwd: string): Promise<string> {
+function assertPatchWithinBudget(
+  patch: string,
+  maxDiffBytes: number | undefined
+): void {
+  if (
+    maxDiffBytes !== undefined &&
+    Buffer.byteLength(patch, 'utf8') > maxDiffBytes
+  ) {
+    throw new Error('git diff exceeds maxDiffBytes');
+  }
+}
+
+function joinedPatchByteLength(chunks: string[]): number {
+  return chunks.reduce(
+    (total, chunk, index) =>
+      total + Buffer.byteLength(chunk, 'utf8') + (index === 0 ? 0 : 1),
+    0
+  );
+}
+
+function gitBufferOptions(options: DiffIndexOptions): GitExecOptions {
+  return options.maxDiffBytes === undefined
+    ? {}
+    : { maxBufferBytes: options.maxDiffBytes };
+}
+
+function pathMatchesAnyFilter(
+  relativePath: string,
+  patterns: string[]
+): boolean {
+  return patterns.some((pattern) =>
+    minimatch(relativePath, pattern, {
+      dot: true,
+      nonegate: true,
+      nocomment: true,
+      optimizationLevel: 0,
+    })
+  );
+}
+
+function untrackedPathMatchesFilters(
+  relativePath: string,
+  options: DiffIndexOptions
+): boolean {
+  if (
+    options.includePaths?.length &&
+    !pathMatchesAnyFilter(relativePath, options.includePaths)
+  ) {
+    return false;
+  }
+  if (
+    options.excludePaths?.length &&
+    pathMatchesAnyFilter(relativePath, options.excludePaths)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function buildUncommittedPatch(
+  cwd: string,
+  options: DiffIndexOptions = {}
+): Promise<string> {
+  const gitOptions = gitBufferOptions(options);
   const [staged, unstaged, untrackedListRaw] = await Promise.all([
-    runGit(cwd, [
-      'diff',
-      ...SAFE_DIFF_ARGS,
-      '--no-color',
-      '--binary',
-      '--staged',
-    ]),
-    runGit(cwd, ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary']),
+    runGit(
+      cwd,
+      ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary', '--staged'],
+      gitOptions
+    ),
+    runGit(
+      cwd,
+      ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary'],
+      gitOptions
+    ),
     runGit(cwd, ['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
 
   const untrackedFiles = untrackedListRaw
     .split('\0')
-    .filter((line) => line.length > 0);
-  const untrackedPatches = await Promise.all(
-    untrackedFiles.map((relativePath) =>
-      buildUntrackedFilePatch(cwd, relativePath)
-    )
+    .filter((line) => line.length > 0)
+    .filter((relativePath) =>
+      untrackedPathMatchesFilters(relativePath, options)
+    );
+  if (
+    options.maxFiles !== undefined &&
+    untrackedFiles.length > options.maxFiles
+  ) {
+    throw new Error('untracked file count exceeds maxFiles');
+  }
+  const patchChunks = [staged, unstaged].filter(
+    (chunk) => chunk.trim().length > 0
   );
+  let patchBytes = joinedPatchByteLength(patchChunks);
+  for (const relativePath of untrackedFiles) {
+    const remainingBytes =
+      options.maxDiffBytes === undefined
+        ? undefined
+        : options.maxDiffBytes - patchBytes - (patchChunks.length > 0 ? 1 : 0);
+    if (remainingBytes !== undefined && remainingBytes <= 0) {
+      throw new Error('git diff exceeds maxDiffBytes');
+    }
+    const untrackedPatch = await buildUntrackedFilePatch(
+      cwd,
+      relativePath,
+      remainingBytes
+    );
+    if (untrackedPatch.trim().length === 0) {
+      continue;
+    }
+    const separatorBytes = patchChunks.length > 0 ? 1 : 0;
+    const nextPatchBytes =
+      patchBytes + separatorBytes + Buffer.byteLength(untrackedPatch, 'utf8');
+    if (
+      options.maxDiffBytes !== undefined &&
+      nextPatchBytes > options.maxDiffBytes
+    ) {
+      throw new Error('git diff exceeds maxDiffBytes');
+    }
+    patchChunks.push(untrackedPatch);
+    patchBytes = nextPatchBytes;
+  }
 
-  return [staged, unstaged, ...untrackedPatches]
-    .filter((chunk) => chunk.trim().length > 0)
-    .join('\n');
+  const patch = patchChunks.join('\n');
+  assertPatchWithinBudget(patch, options.maxDiffBytes);
+  return patch;
 }
 
 export async function collectDiffForTarget(
@@ -412,7 +538,7 @@ export async function collectDiffForTarget(
 
   switch (target.type) {
     case 'uncommittedChanges': {
-      patch = await buildUncommittedPatch(cwd);
+      patch = await buildUncommittedPatch(cwd, options);
       gitContext = { mode: 'uncommitted' };
       break;
     }
@@ -420,24 +546,33 @@ export async function collectDiffForTarget(
       assertSafeGitRevisionArgument(target.branch, 'target.branch');
       const mergeBaseSha = await mergeBaseWithHead(cwd, target.branch);
       if (mergeBaseSha) {
-        patch = await runGit(cwd, [
-          'diff',
-          ...SAFE_DIFF_ARGS,
-          '--no-color',
-          '--binary',
-          '--end-of-options',
-          mergeBaseSha,
-        ]);
+        patch = await runGit(
+          cwd,
+          [
+            'diff',
+            ...SAFE_DIFF_ARGS,
+            '--no-color',
+            '--binary',
+            '--end-of-options',
+            mergeBaseSha,
+          ],
+          gitBufferOptions(options)
+        );
       } else {
-        patch = await runGit(cwd, [
-          'diff',
-          ...SAFE_DIFF_ARGS,
-          '--no-color',
-          '--binary',
-          '--end-of-options',
-          target.branch,
-        ]);
+        patch = await runGit(
+          cwd,
+          [
+            'diff',
+            ...SAFE_DIFF_ARGS,
+            '--no-color',
+            '--binary',
+            '--end-of-options',
+            target.branch,
+          ],
+          gitBufferOptions(options)
+        );
       }
+      assertPatchWithinBudget(patch, options.maxDiffBytes);
       const context: GitContext = {
         mode: 'baseBranch',
         baseRef: target.branch,
@@ -450,23 +585,34 @@ export async function collectDiffForTarget(
     }
     case 'commit': {
       assertSafeGitObjectId(target.sha, 'target.sha');
-      patch = await runGit(cwd, [
-        'show',
-        ...SAFE_DIFF_ARGS,
-        '--no-color',
-        '--binary',
-        '--format=',
+      const commitSha = await runGit(cwd, [
+        'rev-parse',
+        '--verify',
         '--end-of-options',
-        target.sha,
+        `${target.sha}^{commit}`,
       ]);
+      patch = await runGit(
+        cwd,
+        [
+          'show',
+          ...SAFE_DIFF_ARGS,
+          '--no-color',
+          '--binary',
+          '--format=',
+          '--end-of-options',
+          commitSha,
+        ],
+        gitBufferOptions(options)
+      );
+      assertPatchWithinBudget(patch, options.maxDiffBytes);
       gitContext = {
         mode: 'commit',
-        commitSha: target.sha,
+        commitSha,
       };
       break;
     }
     case 'custom': {
-      patch = await buildUncommittedPatch(cwd);
+      patch = await buildUncommittedPatch(cwd, options);
       gitContext = { mode: 'custom' };
       break;
     }
@@ -494,18 +640,26 @@ export async function collectDiffForTarget(
 export async function collectDiffForReviewRequest(
   request: ReviewRequest
 ): Promise<DiffContext> {
+  const boundedRequest = withReviewRequestSecurityDefaults(
+    request,
+    DEFAULT_REVIEW_SECURITY_LIMITS
+  );
   const options: DiffIndexOptions = {};
-  if (request.excludePaths) {
-    options.excludePaths = request.excludePaths;
+  if (boundedRequest.excludePaths) {
+    options.excludePaths = boundedRequest.excludePaths;
   }
-  if (request.includePaths) {
-    options.includePaths = request.includePaths;
+  if (boundedRequest.includePaths) {
+    options.includePaths = boundedRequest.includePaths;
   }
-  if (request.maxDiffBytes) {
-    options.maxDiffBytes = request.maxDiffBytes;
+  if (boundedRequest.maxDiffBytes) {
+    options.maxDiffBytes = boundedRequest.maxDiffBytes;
   }
-  if (request.maxFiles) {
-    options.maxFiles = request.maxFiles;
+  if (boundedRequest.maxFiles) {
+    options.maxFiles = boundedRequest.maxFiles;
   }
-  return collectDiffForTarget(request.cwd, request.target, options);
+  return collectDiffForTarget(
+    boundedRequest.cwd,
+    boundedRequest.target,
+    options
+  );
 }

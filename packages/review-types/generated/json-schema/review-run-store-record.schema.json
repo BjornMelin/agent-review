@@ -19,7 +19,8 @@
       "properties": {
         "cwd": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 4096
         },
         "target": {
           "oneOf": [
@@ -43,7 +44,8 @@
                 },
                 "branch": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "required": ["type", "branch"],
@@ -58,11 +60,14 @@
                 },
                 "sha": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[0-9a-fA-F]{7,64}$"
                 },
                 "title": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 512
                 }
               },
               "required": ["type", "sha"],
@@ -77,7 +82,8 @@
                 },
                 "instructions": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 16384
                 }
               },
               "required": ["type", "instructions"],
@@ -96,38 +102,44 @@
         },
         "model": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 256
         },
         "reasoningEffort": {
           "type": "string",
           "enum": ["minimal", "low", "medium", "high", "xhigh"]
         },
         "includePaths": {
+          "maxItems": 100,
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           }
         },
         "excludePaths": {
+          "maxItems": 100,
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           }
         },
         "maxFiles": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 1000
         },
         "maxDiffBytes": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 4194304
         },
         "outputFormats": {
           "minItems": 1,
+          "maxItems": 3,
           "type": "array",
           "items": {
             "type": "string",

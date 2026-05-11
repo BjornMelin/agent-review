@@ -44,7 +44,7 @@ fn schema_manifest_snapshot_matches_review_types() {
 fn generated_review_request_dto_round_trips_boundary_json() {
     let input = json!({
         "cwd": "/tmp/repo",
-        "target": { "type": "commit", "sha": "abc123", "title": "change" },
+        "target": { "type": "commit", "sha": "abc1234", "title": "change" },
         "provider": "codexDelegate",
         "executionMode": "remoteSandbox",
         "reasoningEffort": "high",
@@ -218,6 +218,72 @@ fn validated_review_request_rejects_schema_constraint_violations() {
     });
 
     assert_invalid_json(parse_review_request(&invalid_request));
+}
+
+#[test]
+fn validated_review_request_rejects_semantic_ref_and_path_violations() {
+    for invalid_request in [
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "baseBranch", "branch": "main..HEAD" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "uncommittedChanges" },
+            "provider": "codexDelegate",
+            "includePaths": ["../secrets"],
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "uncommittedChanges" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json", "json"]
+        }),
+    ] {
+        assert_invalid_semantics(parse_review_request(&invalid_request));
+    }
+}
+
+#[test]
+fn validated_review_request_preserves_multiline_custom_prompts() {
+    let request = json!({
+        "cwd": "/tmp/repo",
+        "target": { "type": "custom", "instructions": "line one\nline two\tok" },
+        "provider": "codexDelegate",
+        "executionMode": "localTrusted",
+        "outputFormats": ["json"]
+    });
+
+    let dto = parse_review_request(&request).expect("multiline custom request parses");
+
+    assert_eq!(
+        serde_json::to_value(dto).expect("request DTO serializes"),
+        request
+    );
+}
+
+#[test]
+fn validated_review_request_rejects_zod_byte_and_control_refinements() {
+    let oversized_multibyte_prompt = "é".repeat(8200);
+    for invalid_request in [
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "custom", "instructions": oversized_multibyte_prompt },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "custom", "instructions": "line one\u{0000}line two" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        }),
+    ] {
+        assert_invalid_semantics(parse_review_request(&invalid_request));
+    }
 }
 
 #[test]

@@ -21,6 +21,7 @@
     "benchmark": "pnpm run build:rust && node scripts/benchmark.mjs"
   },
   "dependencies": {
-    "@review-agent/review-types": "workspace:*"
+    "@review-agent/review-types": "workspace:*",
+    "minimatch": "10.2.5"
   }
 }
