@@ -5,6 +5,19 @@ Default bind: `PORT=3042`
 
 Base path: `/v1/review`
 
+## Runtime Construction
+
+`apps/review-service/src/app.ts` exports `createReviewServiceApp(deps)`.
+The app factory owns all route registration and accepts injected providers,
+worker client, optional bridge, store adapter, clock/UUID functions, logger,
+auth policy, config, and inline runner. The package entrypoint `src/index.ts`
+re-exports the factory, while `src/server.ts` constructs production
+dependencies and calls `serve()`.
+
+The default store remains process-local memory through
+`createInMemoryReviewStore()`. Future durable store adapters must satisfy the
+same service store boundary without changing endpoint payloads.
+
 ## Status Model
 
 Defined by `ReviewRunStatusSchema` in `@review-agent/review-types`.
@@ -107,7 +120,7 @@ Returns:
 
 ## Notes and Constraints
 
-- Service state is in-memory only.
-- No authentication layer is currently implemented.
+- Service state defaults to in-memory storage.
+- Authentication defaults to allow-all through an injected auth policy hook.
 - `remoteSandbox` execution mode is currently rejected with `400`.
 - Service error bodies follow `ReviewErrorResponseSchema`.
