@@ -142,9 +142,6 @@ importers:
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../review-types
-      minimatch:
-        specifier: ^10.2.5
-        version: 10.2.5
 
   packages/review-evals:
     dependencies:

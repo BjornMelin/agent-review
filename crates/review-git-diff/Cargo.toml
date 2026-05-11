@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+globset.workspace = true
+review-agent-contracts = { path = "../review-contracts" }
 serde.workspace = true
 serde_json.workspace = true
 

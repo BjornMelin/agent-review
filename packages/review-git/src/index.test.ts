@@ -8,12 +8,20 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { collectDiffForTarget, mergeBaseWithHead } from './index.js';
+import {
+  collectDiffForTarget,
+  ensureRustDiffIndexBinary,
+  mergeBaseWithHead,
+} from './index.js';
 
 const execFileAsync = promisify(execFile);
+const packageRoot = fileURLToPath(new URL('..', import.meta.url));
+const rustDiffBinaryName =
+  process.platform === 'win32' ? 'review-git-diff.exe' : 'review-git-diff';
 
 async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
@@ -56,6 +64,12 @@ describe('mergeBaseWithHead', () => {
 });
 
 describe('collectDiffForTarget', () => {
+  it('resolves the packaged Rust helper from the dist artifact', async () => {
+    await expect(ensureRustDiffIndexBinary()).resolves.toBe(
+      join(packageRoot, 'dist', 'bin', rustDiffBinaryName)
+    );
+  });
+
   it('disables external diff helpers for host-side diff collection', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
     try {
@@ -113,6 +127,128 @@ describe('collectDiffForTarget', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes absolute paths when cwd is relative', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'file.txt'), 'base\n');
+      await runGit(cwd, ['add', 'file.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+      await writeFile(join(cwd, 'file.txt'), 'changed\n');
+
+      const diff = await collectDiffForTarget(relative(process.cwd(), cwd), {
+        type: 'uncommittedChanges',
+      });
+
+      expect(diff.chunks[0]?.absoluteFilePath).toBe(join(cwd, 'file.txt'));
+      expect([...diff.changedLineIndex.keys()]).toEqual([
+        join(cwd, 'file.txt'),
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects branch refs that could be parsed as git options', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'file.txt'), 'base\n');
+      await runGit(cwd, ['add', 'file.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+
+      const outputPath = join(cwd, 'option-output.patch');
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'baseBranch',
+          branch: `--output=${outputPath}`,
+        })
+      ).rejects.toThrow('target.branch must not start with "-"');
+      await expect(access(outputPath)).rejects.toThrow();
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects commit targets that could be parsed as git options', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'file.txt'), 'base\n');
+      await runGit(cwd, ['add', 'file.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+
+      const outputPath = join(cwd, 'option-output.patch');
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'commit',
+          sha: `--output=${outputPath}`,
+        })
+      ).rejects.toThrow('target.sha must not start with "-"');
+      await expect(access(outputPath)).rejects.toThrow();
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('collects diffs for safe branch refs with option termination', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'base.txt'), 'base\n');
+      await runGit(cwd, ['add', 'base.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+      await runGit(cwd, ['checkout', '-b', 'feature']);
+      await writeFile(join(cwd, 'feature.txt'), 'feature\n');
+      await runGit(cwd, ['add', 'feature.txt']);
+      await runGit(cwd, ['commit', '-m', 'feature']);
+
+      const diff = await collectDiffForTarget(cwd, {
+        type: 'baseBranch',
+        branch: 'main',
+      });
+
+      expect(diff.gitContext.mode).toBe('baseBranch');
+      expect(diff.patch).toContain('+++ b/feature.txt');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('collects diffs for safe commit object ids with option termination', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'review-git-test-'));
+    try {
+      await runGit(cwd, ['init', '--initial-branch=main']);
+      await runGit(cwd, ['config', 'user.name', 'Tester']);
+      await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+      await writeFile(join(cwd, 'file.txt'), 'base\n');
+      await runGit(cwd, ['add', 'file.txt']);
+      await runGit(cwd, ['commit', '-m', 'base']);
+      await writeFile(join(cwd, 'file.txt'), 'changed\n');
+      await runGit(cwd, ['add', 'file.txt']);
+      await runGit(cwd, ['commit', '-m', 'change']);
+      const sha = await runGit(cwd, ['rev-parse', 'HEAD']);
+
+      const diff = await collectDiffForTarget(cwd, {
+        type: 'commit',
+        sha,
+      });
+
+      expect(diff.gitContext.mode).toBe('commit');
+      expect(diff.patch).toContain('+changed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 

@@ -22,7 +22,6 @@
     "@review-agent/review-git": "workspace:*",
     "@review-agent/review-prompts": "workspace:*",
     "@review-agent/review-reporters": "workspace:*",
-    "@review-agent/review-types": "workspace:*",
-    "minimatch": "^10.2.5"
+    "@review-agent/review-types": "workspace:*"
   }
 }
