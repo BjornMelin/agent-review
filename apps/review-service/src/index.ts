@@ -5,21 +5,26 @@ import { runReview } from '@review-agent/review-core';
 import { createCodexDelegateProvider } from '@review-agent/review-provider-codex';
 import { createOpenAICompatibleReviewProvider } from '@review-agent/review-provider-openai';
 import {
+  ARTIFACT_CONTENT_TYPES,
   type CorrelationIds,
+  isTerminalReviewRunStatus,
   type LifecycleEvent,
+  OutputFormatSchema,
+  type ReviewCancelResponse,
+  type ReviewErrorResponse,
   type ReviewRequest,
-  ReviewRequestSchema,
+  type ReviewRunStatus,
+  ReviewStartRequestSchema,
+  type ReviewStartResponse,
+  type ReviewStatusResponse,
 } from '@review-agent/review-types';
 import { ReviewWorker } from '@review-agent/review-worker';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { z } from 'zod';
-
-type ReviewStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 type ReviewRecord = {
   reviewId: string;
-  status: ReviewStatus;
+  status: ReviewRunStatus;
   request: ReviewRequest;
   createdAt: number;
   updatedAt: number;
@@ -44,17 +49,12 @@ const MAX_RECORDS = 500;
 const MAX_RECORD_AGE_MS = 60 * 60 * 1000;
 const MAX_RECORD_EVENTS = 200;
 const RECORD_CLEANUP_INTERVAL_MS = 60_000;
-const terminalReviewStatuses: Set<ReviewStatus> = new Set([
-  'completed',
-  'failed',
-  'cancelled',
-]);
 
 function cleanupReviewRecords(): void {
   const now = Date.now();
   for (const [reviewId, record] of records) {
     if (
-      terminalReviewStatuses.has(record.status) &&
+      isTerminalReviewRunStatus(record.status) &&
       now - record.updatedAt > MAX_RECORD_AGE_MS
     ) {
       record.listeners.clear();
@@ -74,7 +74,7 @@ function cleanupReviewRecords(): void {
     if (records.size <= MAX_RECORDS) {
       break;
     }
-    if (terminalReviewStatuses.has(record.status)) {
+    if (isTerminalReviewRunStatus(record.status)) {
       record.listeners.clear();
       record.events.length = 0;
       records.delete(reviewId);
@@ -87,11 +87,6 @@ const recordsCleanupInterval = setInterval(
   RECORD_CLEANUP_INTERVAL_MS
 );
 recordsCleanupInterval.unref?.();
-
-const StartRequestSchema = z.strictObject({
-  request: ReviewRequestSchema,
-  delivery: z.enum(['inline', 'detached']).default('inline'),
-});
 
 const app = new Hono();
 
@@ -206,9 +201,12 @@ async function runInline(record: ReviewRecord): Promise<void> {
 app.post('/v1/review/start', async (c) => {
   try {
     const body = await c.req.json();
-    const { request, delivery } = StartRequestSchema.parse(body);
+    const { request, delivery } = ReviewStartRequestSchema.parse(body);
     if (request.executionMode === 'remoteSandbox') {
-      return c.json({ error: UNSUPPORTED_REMOTE_SANDBOX_ERROR }, 400);
+      const response: ReviewErrorResponse = {
+        error: UNSUPPORTED_REMOTE_SANDBOX_ERROR,
+      };
+      return c.json(response, 400);
     }
 
     const reviewId = randomUUID();
@@ -230,29 +228,26 @@ app.post('/v1/review/start', async (c) => {
       record.updatedAt = Date.now();
       records.set(reviewId, record);
       emit(record, { type: 'enteredReviewMode', review: 'review requested' });
-      return c.json(
-        {
-          reviewId,
-          status: record.status,
-          detachedRunId: detached.runId,
-        },
-        202
-      );
+      const response: ReviewStartResponse = {
+        reviewId,
+        status: record.status,
+        detachedRunId: detached.runId,
+      };
+      return c.json(response, 202);
     }
 
     records.set(reviewId, record);
     await runInline(record);
-    return c.json(
-      {
-        reviewId,
-        status: record.status,
-        result: record.result?.result,
-      },
-      200
-    );
+    const response: ReviewStartResponse = {
+      reviewId,
+      status: record.status,
+      ...(record.result ? { result: record.result.result } : {}),
+    };
+    return c.json(response, 200);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return c.json({ error: message }, 400);
+    const response: ReviewErrorResponse = { error: message };
+    return c.json(response, 400);
   }
 });
 
@@ -287,23 +282,26 @@ app.get('/v1/review/:reviewId', async (c) => {
       }
     }
 
-    return c.json({
+    const response: ReviewStatusResponse = {
       reviewId: record.reviewId,
       status: record.status,
-      error: record.error,
-      result: record.result?.result,
+      ...(record.error ? { error: record.error } : {}),
+      ...(record.result ? { result: record.result.result } : {}),
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-    });
+    };
+    return c.json(response);
   } catch (error) {
-    return c.json({ error: String(error) }, 404);
+    const response: ReviewErrorResponse = { error: String(error) };
+    return c.json(response, 404);
   }
 });
 
 app.get('/v1/review/:reviewId/events', async (c) => {
   const record = records.get(c.req.param('reviewId'));
   if (!record) {
-    return c.json({ error: 'review not found' }, 404);
+    const response: ReviewErrorResponse = { error: 'review not found' };
+    return c.json(response, 404);
   }
 
   return streamSSE(c, async (stream) => {
@@ -356,33 +354,31 @@ app.get('/v1/review/:reviewId/events', async (c) => {
 app.get('/v1/review/:reviewId/artifacts/:format', (c) => {
   const record = records.get(c.req.param('reviewId'));
   if (!record?.result) {
-    return c.json({ error: 'artifact not ready' }, 404);
+    const response: ReviewErrorResponse = { error: 'artifact not ready' };
+    return c.json(response, 404);
   }
 
-  const allowedFormats = ['sarif', 'json', 'markdown'] as const;
   const formatRaw = c.req.param('format');
-  if (!allowedFormats.includes(formatRaw as (typeof allowedFormats)[number])) {
-    return c.json(
-      {
-        error: `invalid artifact format ${formatRaw}`,
-      },
-      400
-    );
+  const formatResult = OutputFormatSchema.safeParse(formatRaw);
+  if (!formatResult.success) {
+    const response: ReviewErrorResponse = {
+      error: `invalid artifact format ${formatRaw}`,
+    };
+    return c.json(response, 400);
   }
 
-  const format = formatRaw as 'sarif' | 'json' | 'markdown';
+  const format = formatResult.data;
   const artifact = record.result.artifacts[format];
   if (!artifact) {
-    return c.json({ error: `artifact format ${format} not generated` }, 404);
+    const response: ReviewErrorResponse = {
+      error: `artifact format ${format} not generated`,
+    };
+    return c.json(response, 404);
   }
 
-  const contentType =
-    format === 'markdown'
-      ? 'text/markdown; charset=utf-8'
-      : 'application/json; charset=utf-8';
   return new Response(artifact, {
     headers: {
-      'Content-Type': contentType,
+      'Content-Type': ARTIFACT_CONTENT_TYPES[format],
     },
   });
 });
@@ -391,7 +387,8 @@ app.post('/v1/review/:reviewId/cancel', async (c) => {
   const reviewId = c.req.param('reviewId');
   const record = records.get(reviewId);
   if (!record) {
-    return c.json({ error: 'review not found' }, 404);
+    const response: ReviewErrorResponse = { error: 'review not found' };
+    return c.json(response, 404);
   }
 
   if (record.detachedRunId) {
@@ -401,11 +398,20 @@ app.post('/v1/review/:reviewId/cancel', async (c) => {
       record.updatedAt = Date.now();
       emit(record, { type: 'cancelled' });
       cleanupReviewRecords();
-      return c.json({ reviewId, status: record.status });
+      const response: ReviewCancelResponse = {
+        reviewId,
+        status: record.status,
+      };
+      return c.json(response);
     }
   }
 
-  return c.json({ reviewId, status: record.status, cancelled: false }, 409);
+  const response: ReviewCancelResponse = {
+    reviewId,
+    status: record.status,
+    cancelled: false,
+  };
+  return c.json(response, 409);
 });
 
 const port = Number.parseInt(process.env.PORT ?? '3042', 10);

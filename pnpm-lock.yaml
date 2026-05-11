@@ -82,9 +82,6 @@ importers:
       hono:
         specifier: ^4.12.18
         version: 4.12.18
-      zod:
-        specifier: 4.4.3
-        version: 4.4.3
     devDependencies:
       tsx:
         specifier: 4.21.0

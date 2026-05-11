@@ -1,0 +1,321 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "enteredReviewMode"
+        },
+        "review": {
+          "type": "string"
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "correlation": {
+              "type": "object",
+              "properties": {
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workflowRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sandboxId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["reviewId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["eventId", "timestampMs", "correlation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "review", "meta"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "progress"
+        },
+        "message": {
+          "type": "string"
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "correlation": {
+              "type": "object",
+              "properties": {
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workflowRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sandboxId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["reviewId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["eventId", "timestampMs", "correlation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "message", "meta"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "exitedReviewMode"
+        },
+        "review": {
+          "type": "string"
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "correlation": {
+              "type": "object",
+              "properties": {
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workflowRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sandboxId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["reviewId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["eventId", "timestampMs", "correlation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "review", "meta"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "artifactReady"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["sarif", "json", "markdown"]
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "correlation": {
+              "type": "object",
+              "properties": {
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workflowRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sandboxId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["reviewId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["eventId", "timestampMs", "correlation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "format", "meta"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "failed"
+        },
+        "message": {
+          "type": "string"
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "correlation": {
+              "type": "object",
+              "properties": {
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workflowRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sandboxId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["reviewId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["eventId", "timestampMs", "correlation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "message", "meta"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "cancelled"
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "correlation": {
+              "type": "object",
+              "properties": {
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workflowRunId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sandboxId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["reviewId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["eventId", "timestampMs", "correlation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "meta"],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "schemaSetVersion": 1,
+  "source": "packages/review-types/src/index.ts",
+  "generator": "packages/review-types/scripts/generate-json-schema.mjs",
+  "schemas": [
+    {
+      "name": "lifecycleEvent",
+      "file": "lifecycle-event.schema.json"
+    },
+    {
+      "name": "outputFormat",
+      "file": "output-format.schema.json"
+    },
+    {
+      "name": "providerDiagnostic",
+      "file": "provider-diagnostic.schema.json"
+    },
+    {
+      "name": "rawModelOutput",
+      "file": "raw-model-output.schema.json"
+    },
+    {
+      "name": "reviewArtifactMetadata",
+      "file": "review-artifact-metadata.schema.json"
+    },
+    {
+      "name": "reviewArtifactStoreRecord",
+      "file": "review-artifact-store-record.schema.json"
+    },
+    {
+      "name": "reviewCancelResponse",
+      "file": "review-cancel-response.schema.json"
+    },
+    {
+      "name": "reviewErrorResponse",
+      "file": "review-error-response.schema.json"
+    },
+    {
+      "name": "reviewEventCursor",
+      "file": "review-event-cursor.schema.json"
+    },
+    {
+      "name": "reviewEventStoreRecord",
+      "file": "review-event-store-record.schema.json"
+    },
+    {
+      "name": "reviewFinding",
+      "file": "review-finding.schema.json"
+    },
+    {
+      "name": "reviewRequest",
+      "file": "review-request.schema.json"
+    },
+    {
+      "name": "reviewResult",
+      "file": "review-result.schema.json"
+    },
+    {
+      "name": "reviewRunStatus",
+      "file": "review-run-status.schema.json"
+    },
+    {
+      "name": "reviewRunStoreRecord",
+      "file": "review-run-store-record.schema.json"
+    },
+    {
+      "name": "reviewStartRequest",
+      "file": "review-start-request.schema.json"
+    },
+    {
+      "name": "reviewStartResponse",
+      "file": "review-start-response.schema.json"
+    },
+    {
+      "name": "reviewStatusResponse",
+      "file": "review-status-response.schema.json"
+    },
+    {
+      "name": "sandboxAudit",
+      "file": "sandbox-audit.schema.json"
+    }
+  ]
+}

@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "sandboxId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "networkProfile": {
+          "type": "string",
+          "enum": ["deny_all", "bootstrap_then_deny", "allowlist_only"]
+        },
+        "allowlistDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commandAllowlistSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "envAllowlistSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "networkProfile",
+        "allowlistDomains",
+        "commandAllowlistSize",
+        "envAllowlistSize"
+      ],
+      "additionalProperties": false
+    },
+    "consumed": {
+      "type": "object",
+      "properties": {
+        "commandCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "wallTimeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "outputBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "artifactBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "commandCount",
+        "wallTimeMs",
+        "outputBytes",
+        "artifactBytes"
+      ],
+      "additionalProperties": false
+    },
+    "redactions": {
+      "type": "object",
+      "properties": {
+        "apiKeyLike": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bearer": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["apiKeyLike", "bearer"],
+      "additionalProperties": false
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cmd": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1
+          },
+          "startedAtMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endedAtMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "outputBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "redactions": {
+            "type": "object",
+            "properties": {
+              "apiKeyLike": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "bearer": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["apiKeyLike", "bearer"],
+            "additionalProperties": false
+          },
+          "exitCode": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "commandId",
+          "cmd",
+          "args",
+          "cwd",
+          "startedAtMs",
+          "endedAtMs",
+          "durationMs",
+          "outputBytes",
+          "redactions",
+          "exitCode"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["sandboxId", "policy", "consumed", "redactions", "commands"],
+  "additionalProperties": false
+}
