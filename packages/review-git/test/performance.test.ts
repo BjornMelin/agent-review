@@ -4,12 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { parseUnifiedDiff } from '../src/diff-parser.js';
-import { buildChangedLineIndex, collectDiffForTarget } from '../src/index.js';
 import {
-  ensureRustDiffBinary,
-  parseWithRustDiffCandidate,
-} from '../test-support/rust-diff-candidate.js';
+  collectDiffForTarget,
+  ensureRustDiffIndexBinary,
+  indexDiffForReviewRequest,
+} from '../src/index.js';
+import {
+  buildChangedLineIndex,
+  parseUnifiedDiff as parseUnifiedDiffBaseline,
+} from '../test-support/ts-diff-baseline.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,12 +72,12 @@ describe('large diff performance suite', () => {
     }
   }, 30000);
 
-  it('benchmarks the parser/index path with an optional Rust candidate', async () => {
+  it('benchmarks the production Rust parser/index path against the TS baseline', async () => {
     const cwd = join(tmpdir(), 'review-git-benchmark-root');
     const patch = makeSyntheticPatch(240);
 
     const tsStartedAt = Date.now();
-    const tsChunks = parseUnifiedDiff(cwd, patch);
+    const tsChunks = parseUnifiedDiffBaseline(cwd, patch);
     const tsIndex = buildChangedLineIndex(tsChunks);
     const tsDurationMs = Date.now() - tsStartedAt;
 
@@ -84,17 +87,22 @@ describe('large diff performance suite', () => {
       expect(tsDurationMs).toBeLessThan(1500);
     }
 
-    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH !== '1') {
-      return;
-    }
-
-    await ensureRustDiffBinary();
+    await ensureRustDiffIndexBinary();
     const rustStartedAt = Date.now();
-    const rustChunks = await parseWithRustDiffCandidate(cwd, patch);
+    const rust = await indexDiffForReviewRequest(
+      {
+        cwd,
+        target: { type: 'uncommittedChanges' },
+        provider: 'codexDelegate',
+        executionMode: 'localTrusted',
+        outputFormats: ['json'],
+      },
+      patch
+    );
     const rustDurationMs = Date.now() - rustStartedAt;
 
     expect(
-      rustChunks.map((chunk) => ({
+      rust.chunks.map((chunk) => ({
         file: chunk.file,
         absoluteFilePath: chunk.absoluteFilePath,
         changedLines: chunk.changedLines,
@@ -108,6 +116,7 @@ describe('large diff performance suite', () => {
         patch: chunk.patch,
       }))
     );
+    expect(rust.changedLineIndex.size).toBe(tsIndex.size);
     if (process.env.REVIEW_AGENT_STRICT_PERF === '1') {
       expect(rustDurationMs).toBeLessThan(Math.max(1000, tsDurationMs * 20));
     }

@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  buildChangedLineIndex,
-  collectDiffForTarget,
-  type DiffChunk,
+  collectDiffForReviewRequest,
   type DiffContext,
   normalizeFilePath,
 } from '@review-agent/review-git';
@@ -35,7 +33,6 @@ import {
   type SandboxAudit,
   severityToPriority,
 } from '@review-agent/review-types';
-import { minimatch } from 'minimatch';
 
 export class InvalidFindingLocationError extends Error {
   constructor(public readonly invalidFindings: ReviewFinding[]) {
@@ -259,63 +256,6 @@ function validateFindingsAgainstDiff(
   return findings;
 }
 
-function shouldIncludeChunk(
-  chunk: DiffChunk,
-  includePaths: string[] | undefined,
-  excludePaths: string[] | undefined
-): boolean {
-  const includeAllowed =
-    !includePaths || includePaths.length === 0
-      ? true
-      : includePaths.some((pattern) =>
-          minimatch(chunk.file, pattern, { dot: true })
-        );
-  if (!includeAllowed) {
-    return false;
-  }
-  if (!excludePaths || excludePaths.length === 0) {
-    return true;
-  }
-  return !excludePaths.some((pattern) =>
-    minimatch(chunk.file, pattern, { dot: true })
-  );
-}
-
-function filterDiffContext(
-  request: ReviewRequest,
-  diff: DiffContext
-): DiffContext {
-  const maxFiles = request.maxFiles ?? Number.POSITIVE_INFINITY;
-  const maxDiffBytes = request.maxDiffBytes ?? Number.POSITIVE_INFINITY;
-
-  const filteredChunks: DiffChunk[] = [];
-  let totalBytes = 0;
-  for (const chunk of diff.chunks) {
-    if (
-      !shouldIncludeChunk(chunk, request.includePaths, request.excludePaths)
-    ) {
-      continue;
-    }
-
-    const chunkSize = Buffer.byteLength(chunk.patch, 'utf8');
-    if (filteredChunks.length >= maxFiles) {
-      break;
-    }
-    if (totalBytes + chunkSize > maxDiffBytes) {
-      break;
-    }
-    totalBytes += chunkSize;
-    filteredChunks.push(chunk);
-  }
-
-  return {
-    ...diff,
-    chunks: filteredChunks,
-    patch: filteredChunks.map((chunk) => chunk.patch).join('\n'),
-    changedLineIndex: buildChangedLineIndex(filteredChunks),
-  };
-}
-
 function createRemoteSandboxDiffContext(request: ReviewRequest): DiffContext {
   if (request.target.type !== 'custom') {
     throw new UnsupportedRemoteSandboxTargetError(request.target.type);
@@ -452,10 +392,7 @@ export async function runReview(
   const diff =
     request.executionMode === 'remoteSandbox'
       ? createRemoteSandboxDiffContext(request)
-      : filterDiffContext(
-          request,
-          await collectDiffForTarget(request.cwd, request.target)
-        );
+      : await collectDiffForReviewRequest(request);
   const normalizedDiffChunks = diff.chunks.map((chunk) => ({
     file: chunk.file,
     patch: chunk.patch,

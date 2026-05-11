@@ -95,7 +95,7 @@ Coverage expectations:
 - Run `pnpm rust:check` or the equivalent Cargo format, clippy, and test ladder
   for any change touching `Cargo.toml`, `Cargo.lock`, or `crates/*`.
 
-## Git Diff Corpus and Rust Candidate Gate
+## Git Diff Corpus and Rust Diff-Index Gate
 
 `packages/review-git/test/fixtures/diff-corpus/expected.json` is the stable
 diff/index corpus. The Vitest corpus builds real temporary Git repositories and
@@ -109,32 +109,49 @@ Coverage expectations:
 - Expected chunk file names, normalized absolute paths, changed-line indexes,
   Git context, and metadata flags for binary/rename/delete/new-file/submodule
   behavior.
-- Path-filter fixtures assert the `chunk.file` values consumed by
-  `review-core` include/exclude filtering, even though filtering remains owned
-  by `review-core`.
+- Path-filter fixtures assert the `chunk.file` values consumed by the Rust
+  include/exclude filtering path used by production `review-git`.
 
-`crates/review-git-diff` is the Rust candidate helper. It exposes a narrow
-`review-git-diff parse --cwd <repo>` stdin/stdout contract for benchmarks and
-fixtures only; production diff collection still calls the TypeScript parser.
+`crates/review-git-diff` is the production Rust diff-index helper. It exposes a
+narrow `review-git-diff index` stdin/stdout JSON contract:
+
+- input: `{ request, patch }`, where `request` is validated through generated
+  `ReviewRequest` DTO parsing and `patch` is unified git diff text collected by
+  TypeScript.
+- output: `{ patch, chunks, changedLineIndex }`, where `patch` is the filtered
+  per-file patch text, `chunks` are normalized diff chunks, and
+  `changedLineIndex` is an array of absolute-path/line-list tuples converted
+  back to the TypeScript `Map<string, Set<number>>` shape.
+
+The legacy TypeScript parser is retained only as `packages/review-git`
+test-support baseline code for parity checks; production `review-git` no longer
+ships a second parser/filter owner.
+`packages/review-git` package build/test scripts prebuild the Rust helper. The
+build script copies the helper into `dist/bin/review-git-diff`, which is part of
+the declared Turbo `dist/**` build output. The runtime adapter resolves
+`REVIEW_AGENT_DIFF_INDEX_BIN`, the packaged `dist/bin` helper, `target/debug`,
+or `target/release`; it does not run Cargo during production request handling
+unless the development-only `REVIEW_AGENT_DIFF_INDEX_ALLOW_BUILD=1` escape hatch
+is explicitly set. `packages/review-git/turbo.json` adds `Cargo.toml`,
+`Cargo.lock`, `crates/review-contracts/**`, and `crates/review-git-diff/**` to
+the package build inputs so cached `dist/bin` helpers cannot drift from Rust
+source changes.
 
 Pass/fail gates:
 
 - `pnpm --filter @review-agent/review-git test` must pass the corpus and the
-  default parser/index performance suite.
+  default Rust parser/index performance suite.
 - `pnpm git:benchmark` runs the strict corpus/benchmark gate used by CI.
 - `REVIEW_AGENT_STRICT_PERF=1` turns parser budgets into hard assertions:
   collecting/parsing the real large uncommitted suite must stay under 15s, and
-  the synthetic 240-file parser/index path must stay under 1.5s.
-- `REVIEW_AGENT_RUST_DIFF_BENCH=1` runs the Rust candidate comparison. The Rust
-  output must match the full corpus and synthetic benchmark chunks for file,
-  absolute path, changed lines, and metadata flags. The benchmark prebuilds the
-  candidate binary before timing parser work. In strict mode the CLI parser
-  comparison must stay under `max(1000ms, TypeScript duration * 20)`.
+  the synthetic 240-file Rust parser/index path must stay under
+  `max(1000ms, TypeScript baseline duration * 20)`.
+- The Rust output must match the full corpus and synthetic benchmark chunks for
+  file, absolute path, changed lines, filtered patch text, and metadata flags.
+  Tests prebuild the helper before timing parser work.
 
 Kill-switch criteria:
 
-- If the Rust candidate fails corpus parity, regresses benchmark gates, or adds
-  more maintenance weight than it removes, keep `packages/review-git` as the
-  canonical parser and remove the Rust candidate from the migration branch.
-- A later cutover PR must delete the TypeScript parser path it replaces; this
-  issue permits dual code only inside fixtures, tests, and benchmarks.
+- If the Rust helper fails corpus parity, regresses benchmark gates, or adds
+  more maintenance weight than it removes, remove the helper from the branch
+  rather than preserving a permanent TypeScript fallback.

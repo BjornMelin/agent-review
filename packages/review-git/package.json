@@ -12,12 +12,13 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm run build:rust && tsc -p tsconfig.json",
+    "build:rust": "node scripts/build-rust-helper.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "vitest run --passWithNoTests",
-    "benchmark": "node scripts/benchmark.mjs"
+    "test": "pnpm run build:rust && vitest run --passWithNoTests",
+    "benchmark": "pnpm run build:rust && node scripts/benchmark.mjs"
   },
   "dependencies": {
     "@review-agent/review-types": "workspace:*"

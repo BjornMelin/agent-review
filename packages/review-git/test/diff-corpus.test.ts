@@ -11,12 +11,13 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { parseUnifiedDiff } from '../src/diff-parser.js';
-import { collectDiffForTarget, type DiffContext } from '../src/index.js';
 import {
-  ensureRustDiffBinary,
-  parseWithRustDiffCandidate,
-} from '../test-support/rust-diff-candidate.js';
+  collectDiffForTarget,
+  type DiffContext,
+  ensureRustDiffIndexBinary,
+  indexDiffForReviewRequest,
+} from '../src/index.js';
+import { parseUnifiedDiff as parseUnifiedDiffBaseline } from '../test-support/ts-diff-baseline.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -293,6 +294,20 @@ function normalizeRustChunks(
   }));
 }
 
+function makeReviewRequest(
+  cwd: string,
+  filters: CorpusFixture['filters'] = {}
+) {
+  return {
+    cwd,
+    target: { type: 'uncommittedChanges' as const },
+    provider: 'codexDelegate' as const,
+    executionMode: 'localTrusted' as const,
+    outputFormats: ['json' as const],
+    ...filters,
+  };
+}
+
 function matchesFixturePattern(file: string, pattern: string): boolean {
   if (pattern.endsWith('/**')) {
     return file.startsWith(pattern.slice(0, -2));
@@ -333,9 +348,7 @@ const corpus = await readCorpus();
 
 describe('diff corpus conformance', () => {
   beforeAll(async () => {
-    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
-      await ensureRustDiffBinary();
-    }
+    await ensureRustDiffIndexBinary();
   }, 60000);
 
   it('decodes raw non-BMP characters in quoted paths', async () => {
@@ -352,19 +365,17 @@ describe('diff corpus conformance', () => {
       '+export const value = 2;',
     ].join('\n');
 
-    const chunks = parseUnifiedDiff(cwd, patch);
+    const chunks = parseUnifiedDiffBaseline(cwd, patch);
     expect(chunks.map((chunk) => chunk.file)).toEqual([file]);
     expect(chunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
       `${cwd}/${file}`,
     ]);
 
-    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
-      const rustChunks = await parseWithRustDiffCandidate(cwd, patch);
-      expect(rustChunks.map((chunk) => chunk.file)).toEqual([file]);
-      expect(rustChunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
-        `${cwd}/${file}`,
-      ]);
-    }
+    const rust = await indexDiffForReviewRequest(makeReviewRequest(cwd), patch);
+    expect(rust.chunks.map((chunk) => chunk.file)).toEqual([file]);
+    expect(rust.chunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
+      `${cwd}/${file}`,
+    ]);
   });
 
   it('preserves invalid quoted octal escapes without truncating path bytes', async () => {
@@ -380,19 +391,17 @@ describe('diff corpus conformance', () => {
       '+export const value = 2;',
     ].join('\n');
 
-    const chunks = parseUnifiedDiff(cwd, patch);
+    const chunks = parseUnifiedDiffBaseline(cwd, patch);
     expect(chunks.map((chunk) => chunk.file)).toEqual([file]);
     expect(chunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
       `${cwd}/${file}`,
     ]);
 
-    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
-      const rustChunks = await parseWithRustDiffCandidate(cwd, patch);
-      expect(rustChunks.map((chunk) => chunk.file)).toEqual([file]);
-      expect(rustChunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
-        `${cwd}/${file}`,
-      ]);
-    }
+    const rust = await indexDiffForReviewRequest(makeReviewRequest(cwd), patch);
+    expect(rust.chunks.map((chunk) => chunk.file)).toEqual([file]);
+    expect(rust.chunks.map((chunk) => chunk.absoluteFilePath)).toEqual([
+      `${cwd}/${file}`,
+    ]);
   });
 
   for (const fixture of corpus) {
@@ -409,21 +418,34 @@ describe('diff corpus conformance', () => {
           gitContext: fixture.expected.gitContext,
           chunks: fixture.expected.chunks,
         });
-        expect(
-          applyFixtureFilters(
-            actual.chunks.map((chunk) => chunk.file),
-            fixture.filters
-          )
-        ).toEqual(
+        const filtered = await collectDiffForTarget(
+          cwd,
+          {
+            type: 'uncommittedChanges',
+          },
+          fixture.filters
+        );
+        expect(filtered.chunks.map((chunk) => chunk.file)).toEqual(
           fixture.expected.filteredFiles ?? actual.chunks.map((c) => c.file)
         );
+        expect(filtered.patch).toBe(
+          filtered.chunks.map((chunk) => chunk.patch).join('\n')
+        );
+        expect(filtered.changedLineIndex.size).toBe(filtered.chunks.length);
 
-        if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
-          const rustChunks = await parseWithRustDiffCandidate(cwd, diff.patch);
-          expect(normalizeRustChunks(cwd, rustChunks)).toEqual(
-            fixture.expected.chunks
-          );
-        }
+        const rust = await indexDiffForReviewRequest(
+          makeReviewRequest(cwd, fixture.filters),
+          diff.patch
+        );
+        expect(normalizeRustChunks(cwd, rust.chunks)).toEqual(
+          fixture.expected.filteredFiles
+            ? fixture.expected.chunks.filter((chunk) =>
+                applyFixtureFilters([chunk.file], fixture.filters).includes(
+                  chunk.file
+                )
+              )
+            : fixture.expected.chunks
+        );
       } finally {
         await rm(cwd, { recursive: true, force: true });
       }

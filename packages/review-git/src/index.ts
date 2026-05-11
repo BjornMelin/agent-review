@@ -3,18 +3,20 @@ import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import type { ReviewTarget } from '@review-agent/review-types';
+import type { ReviewRequest, ReviewTarget } from '@review-agent/review-types';
 import {
-  buildChangedLineIndex,
   type DiffChunk,
-  parseUnifiedDiff,
-} from './diff-parser.js';
+  type DiffIndexOptions,
+  indexDiffForReviewRequest,
+} from './rust-diff-index.js';
 
 export {
-  buildChangedLineIndex,
   type DiffChunk,
+  type DiffIndexOptions,
+  ensureRustDiffIndexBinary,
+  indexDiffForReviewRequest,
   normalizeFilePath,
-} from './diff-parser.js';
+} from './rust-diff-index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +48,22 @@ const SAFE_GIT_ENV = {
 } as const;
 
 const SAFE_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+
+function assertSafeGitRevisionArgument(value: string, label: string): void {
+  if (value.startsWith('-')) {
+    throw new Error(`${label} must not start with "-"`);
+  }
+  if (value.includes('\0')) {
+    throw new Error(`${label} must not contain NUL bytes`);
+  }
+}
+
+function assertSafeGitObjectId(value: string, label: string): void {
+  assertSafeGitRevisionArgument(value, label);
+  if (!/^[0-9a-fA-F]{7,64}$/.test(value)) {
+    throw new Error(`${label} must be a Git object id`);
+  }
+}
 
 async function runGit(
   cwd: string,
@@ -92,9 +110,14 @@ export async function resolveBranchRef(
   cwd: string,
   branch: string
 ): Promise<string | null> {
-  const out = await runGit(cwd, ['rev-parse', '--verify', branch], {
-    allowExitCodes: [0, 128],
-  });
+  assertSafeGitRevisionArgument(branch, 'branch');
+  const out = await runGit(
+    cwd,
+    ['rev-parse', '--verify', '--end-of-options', branch],
+    {
+      allowExitCodes: [0, 128],
+    }
+  );
   return out.length > 0 ? out : null;
 }
 
@@ -102,12 +125,14 @@ export async function resolveUpstreamIfRemoteAhead(
   cwd: string,
   branch: string
 ): Promise<string | null> {
+  assertSafeGitRevisionArgument(branch, 'branch');
   const upstream = await runGit(
     cwd,
     [
       'rev-parse',
       '--abbrev-ref',
       '--symbolic-full-name',
+      '--end-of-options',
       `${branch}@{upstream}`,
     ],
     { allowExitCodes: [0, 128] }
@@ -140,6 +165,7 @@ export async function mergeBaseWithHead(
   cwd: string,
   branch: string
 ): Promise<string | null> {
+  assertSafeGitRevisionArgument(branch, 'branch');
   const head = await resolveHead(cwd);
   if (!head) {
     return null;
@@ -157,7 +183,7 @@ export async function mergeBaseWithHead(
 
   const mergeBase = await runGit(
     cwd,
-    ['merge-base', head, preferredBranchRef],
+    ['merge-base', '--end-of-options', head, preferredBranchRef],
     {
       allowExitCodes: [0, 1, 128],
     }
@@ -378,7 +404,8 @@ async function buildUncommittedPatch(cwd: string): Promise<string> {
 
 export async function collectDiffForTarget(
   cwd: string,
-  target: ReviewTarget
+  target: ReviewTarget,
+  options: DiffIndexOptions = {}
 ): Promise<DiffContext> {
   let patch = '';
   let gitContext: GitContext;
@@ -390,6 +417,7 @@ export async function collectDiffForTarget(
       break;
     }
     case 'baseBranch': {
+      assertSafeGitRevisionArgument(target.branch, 'target.branch');
       const mergeBaseSha = await mergeBaseWithHead(cwd, target.branch);
       if (mergeBaseSha) {
         patch = await runGit(cwd, [
@@ -397,6 +425,7 @@ export async function collectDiffForTarget(
           ...SAFE_DIFF_ARGS,
           '--no-color',
           '--binary',
+          '--end-of-options',
           mergeBaseSha,
         ]);
       } else {
@@ -405,6 +434,7 @@ export async function collectDiffForTarget(
           ...SAFE_DIFF_ARGS,
           '--no-color',
           '--binary',
+          '--end-of-options',
           target.branch,
         ]);
       }
@@ -419,12 +449,14 @@ export async function collectDiffForTarget(
       break;
     }
     case 'commit': {
+      assertSafeGitObjectId(target.sha, 'target.sha');
       patch = await runGit(cwd, [
         'show',
         ...SAFE_DIFF_ARGS,
         '--no-color',
         '--binary',
         '--format=',
+        '--end-of-options',
         target.sha,
       ]);
       gitContext = {
@@ -440,11 +472,40 @@ export async function collectDiffForTarget(
     }
   }
 
-  const chunks = parseUnifiedDiff(cwd, patch);
+  const indexed = await indexDiffForReviewRequest(
+    {
+      cwd,
+      target,
+      provider: 'codexDelegate',
+      executionMode: 'localTrusted',
+      outputFormats: ['json'],
+      ...options,
+    },
+    patch
+  );
   return {
-    patch,
-    chunks,
-    changedLineIndex: buildChangedLineIndex(chunks),
+    patch: indexed.patch,
+    chunks: indexed.chunks,
+    changedLineIndex: indexed.changedLineIndex,
     gitContext,
   };
+}
+
+export async function collectDiffForReviewRequest(
+  request: ReviewRequest
+): Promise<DiffContext> {
+  const options: DiffIndexOptions = {};
+  if (request.excludePaths) {
+    options.excludePaths = request.excludePaths;
+  }
+  if (request.includePaths) {
+    options.includePaths = request.includePaths;
+  }
+  if (request.maxDiffBytes) {
+    options.maxDiffBytes = request.maxDiffBytes;
+  }
+  if (request.maxFiles) {
+    options.maxFiles = request.maxFiles;
+  }
+  return collectDiffForTarget(request.cwd, request.target, options);
 }

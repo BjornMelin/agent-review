@@ -1,6 +1,11 @@
+use std::error::Error;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use review_agent_contracts::{ContractParseError, ReviewRequest, parse_review_request};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +14,67 @@ pub struct DiffChunk {
     pub absolute_file_path: String,
     pub patch: String,
     pub changed_lines: Vec<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiffIndexInput {
+    pub request: Value,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffIndexOutput {
+    pub patch: String,
+    pub chunks: Vec<DiffChunk>,
+    pub changed_line_index: Vec<(String, Vec<usize>)>,
+}
+
+#[derive(Debug)]
+pub enum DiffIndexError {
+    InvalidRequest(ContractParseError),
+    InvalidGlob {
+        pattern: String,
+        source: globset::Error,
+    },
+    InvalidLimit {
+        field: &'static str,
+        value: i64,
+    },
+}
+
+impl fmt::Display for DiffIndexError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRequest(error) => write!(formatter, "invalid review request: {error}"),
+            Self::InvalidGlob { pattern, source } => {
+                write!(formatter, "invalid glob pattern {pattern:?}: {source}")
+            }
+            Self::InvalidLimit { field, value } => {
+                write!(
+                    formatter,
+                    "{field} cannot be represented as a usize: {value}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for DiffIndexError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidRequest(error) => Some(error),
+            Self::InvalidGlob { source, .. } => Some(source),
+            Self::InvalidLimit { .. } => None,
+        }
+    }
+}
+
+impl From<ContractParseError> for DiffIndexError {
+    fn from(error: ContractParseError) -> Self {
+        Self::InvalidRequest(error)
+    }
 }
 
 fn decode_git_quoted_path(value: &str) -> String {
@@ -276,11 +342,148 @@ pub fn parse_unified_diff(cwd: &Path, patch: &str) -> Vec<DiffChunk> {
     chunks
 }
 
+fn build_glob_set(patterns: &[String]) -> Result<Option<GlobSet>, DiffIndexError> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .empty_alternates(true)
+            .allow_unclosed_class(true)
+            .build()
+            .map_err(|source| DiffIndexError::InvalidGlob {
+                pattern: pattern.clone(),
+                source,
+            })?;
+        builder.add(glob);
+    }
+    builder
+        .build()
+        .map(Some)
+        .map_err(|source| DiffIndexError::InvalidGlob {
+            pattern: patterns.join(", "),
+            source,
+        })
+}
+
+fn optional_usize_limit(
+    value: Option<i64>,
+    field: &'static str,
+) -> Result<Option<usize>, DiffIndexError> {
+    value
+        .map(|limit| {
+            usize::try_from(limit).map_err(|_error| DiffIndexError::InvalidLimit {
+                field,
+                value: limit,
+            })
+        })
+        .transpose()
+}
+
+fn chunk_matches_filters(
+    chunk: &DiffChunk,
+    include_paths: &Option<GlobSet>,
+    exclude_paths: &Option<GlobSet>,
+) -> bool {
+    if let Some(include_paths) = include_paths {
+        if !include_paths.is_match(&chunk.file) {
+            return false;
+        }
+    }
+
+    if let Some(exclude_paths) = exclude_paths {
+        if exclude_paths.is_match(&chunk.file) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn push_changed_line_index(
+    index: &mut Vec<(String, Vec<usize>)>,
+    absolute_file_path: &str,
+    changed_lines: &[usize],
+) {
+    let lines = match index
+        .iter_mut()
+        .find(|(candidate, _lines)| candidate == absolute_file_path)
+    {
+        Some((_path, lines)) => lines,
+        None => {
+            index.push((absolute_file_path.to_owned(), Vec::new()));
+            &mut index.last_mut().expect("index entry exists").1
+        }
+    };
+    lines.extend(changed_lines.iter().copied());
+    lines.sort_unstable();
+    lines.dedup();
+}
+
+fn build_changed_line_index(chunks: &[DiffChunk]) -> Vec<(String, Vec<usize>)> {
+    let mut index = Vec::new();
+    for chunk in chunks {
+        push_changed_line_index(&mut index, &chunk.absolute_file_path, &chunk.changed_lines);
+    }
+    index
+}
+
+pub fn build_diff_index(
+    request: &ReviewRequest,
+    patch: &str,
+) -> Result<DiffIndexOutput, DiffIndexError> {
+    let include_paths = build_glob_set(&request.include_paths)?;
+    let exclude_paths = build_glob_set(&request.exclude_paths)?;
+    let max_files = optional_usize_limit(request.max_files, "maxFiles")?;
+    let max_diff_bytes = optional_usize_limit(request.max_diff_bytes, "maxDiffBytes")?;
+
+    let mut filtered_chunks = Vec::new();
+    let mut total_bytes = 0usize;
+    for chunk in parse_unified_diff(Path::new(&request.cwd), patch) {
+        if !chunk_matches_filters(&chunk, &include_paths, &exclude_paths) {
+            continue;
+        }
+        if max_files.is_some_and(|limit| filtered_chunks.len() >= limit) {
+            break;
+        }
+
+        let chunk_bytes = chunk.patch.len();
+        if max_diff_bytes.is_some_and(|limit| total_bytes + chunk_bytes > limit) {
+            break;
+        }
+
+        total_bytes += chunk_bytes;
+        filtered_chunks.push(chunk);
+    }
+
+    Ok(DiffIndexOutput {
+        patch: filtered_chunks
+            .iter()
+            .map(|chunk| chunk.patch.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        changed_line_index: build_changed_line_index(&filtered_chunks),
+        chunks: filtered_chunks,
+    })
+}
+
+pub fn build_diff_index_from_input(
+    input: DiffIndexInput,
+) -> Result<DiffIndexOutput, DiffIndexError> {
+    let request = parse_review_request(&input.request)?;
+    build_diff_index(&request, &input.patch)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::parse_unified_diff;
+    use serde_json::json;
+
+    use super::{DiffIndexInput, build_diff_index_from_input, parse_unified_diff};
 
     #[test]
     fn parses_quoted_paths_and_added_lines() {
@@ -299,5 +502,110 @@ mod tests {
         assert_eq!(chunks[0].file, "quoted\tpath.ts");
         assert_eq!(chunks[0].absolute_file_path, "/repo/quoted\tpath.ts");
         assert_eq!(chunks[0].changed_lines, vec![1]);
+    }
+
+    #[test]
+    fn filters_and_indexes_chunks_with_generated_review_request() {
+        let patch = [
+            "diff --git a/src/app.ts b/src/app.ts",
+            "index 7898192..6178079 100644",
+            "--- a/src/app.ts",
+            "+++ b/src/app.ts",
+            "@@ -1 +1 @@",
+            "-export const app = 1;",
+            "+export const app = 2;",
+            "diff --git a/src/generated/client.ts b/src/generated/client.ts",
+            "index 7898192..6178079 100644",
+            "--- a/src/generated/client.ts",
+            "+++ b/src/generated/client.ts",
+            "@@ -1 +1 @@",
+            "-export const generated = 1;",
+            "+export const generated = 2;",
+        ]
+        .join("\n");
+        let request = json!({
+            "cwd": "/repo",
+            "target": { "type": "uncommittedChanges" },
+            "provider": "codexDelegate",
+            "includePaths": ["src/**"],
+            "excludePaths": ["src/generated/**"],
+            "outputFormats": ["json"]
+        });
+
+        let output = build_diff_index_from_input(DiffIndexInput { request, patch }).unwrap();
+
+        assert_eq!(output.chunks.len(), 1);
+        assert_eq!(output.chunks[0].file, "src/app.ts");
+        assert_eq!(
+            output.changed_line_index,
+            vec![("/repo/src/app.ts".to_owned(), vec![1])]
+        );
+    }
+
+    #[test]
+    fn applies_file_and_byte_limits_after_path_filters() {
+        let patch = [
+            "diff --git a/src/one.ts b/src/one.ts",
+            "index 7898192..6178079 100644",
+            "--- a/src/one.ts",
+            "+++ b/src/one.ts",
+            "@@ -1 +1 @@",
+            "-export const one = 1;",
+            "+export const one = 2;",
+            "diff --git a/src/two.ts b/src/two.ts",
+            "index 7898192..6178079 100644",
+            "--- a/src/two.ts",
+            "+++ b/src/two.ts",
+            "@@ -1 +1 @@",
+            "-export const two = 1;",
+            "+export const two = 2;",
+        ]
+        .join("\n");
+        let request = json!({
+            "cwd": "/repo",
+            "target": { "type": "uncommittedChanges" },
+            "provider": "codexDelegate",
+            "includePaths": ["src/**"],
+            "maxFiles": 1,
+            "maxDiffBytes": 1024,
+            "outputFormats": ["json"]
+        });
+
+        let output = build_diff_index_from_input(DiffIndexInput { request, patch }).unwrap();
+
+        assert_eq!(
+            output
+                .chunks
+                .iter()
+                .map(|chunk| chunk.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/one.ts"]
+        );
+        assert!(!output.patch.contains("src/two.ts"));
+    }
+
+    #[test]
+    fn includes_dot_paths_with_minimatch_dot_semantics() {
+        let patch = [
+            "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml",
+            "index 7898192..6178079 100644",
+            "--- a/.github/workflows/ci.yml",
+            "+++ b/.github/workflows/ci.yml",
+            "@@ -1 +1 @@",
+            "-name: old",
+            "+name: new",
+        ]
+        .join("\n");
+        let request = json!({
+            "cwd": "/repo",
+            "target": { "type": "uncommittedChanges" },
+            "provider": "codexDelegate",
+            "includePaths": [".github/**"],
+            "outputFormats": ["json"]
+        });
+
+        let output = build_diff_index_from_input(DiffIndexInput { request, patch }).unwrap();
+
+        assert_eq!(output.chunks[0].file, ".github/workflows/ci.yml");
     }
 }
