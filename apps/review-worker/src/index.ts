@@ -1,10 +1,20 @@
-import { type ReviewRunResult, runReview } from '@review-agent/review-core';
+import {
+  type ReviewRunResult,
+  runReview,
+  type SandboxReviewRunner,
+} from '@review-agent/review-core';
 import { createReviewProviders } from '@review-agent/review-provider-registry';
 import {
+  createDefaultPolicy,
+  runInSandbox,
+} from '@review-agent/review-sandbox-vercel';
+import {
   isTerminalReviewRunStatus,
+  type RawModelOutput,
   type ReviewRequest,
   ReviewRequestSchema,
   type ReviewRunStatus,
+  type SandboxAudit,
 } from '@review-agent/review-types';
 
 /**
@@ -22,9 +32,27 @@ export type DetachedRunRecord = {
   error?: string;
   result?: ReviewRunResult;
   workflowRunId?: string;
+  sandboxId?: string;
 };
 
 const providers = createReviewProviders();
+
+const SANDBOX_ROOT = '/vercel/sandbox';
+
+const SANDBOX_REVIEW_RUNNER = `
+import { readFile, writeFile } from 'node:fs/promises';
+
+const input = JSON.parse(await readFile(new URL('./review-input.json', import.meta.url), 'utf8'));
+const diffBytes = input.normalizedDiffChunks.reduce((total, chunk) => total + Buffer.byteLength(chunk.patch, 'utf8'), 0);
+const raw = {
+  findings: [],
+  overall_correctness: 'patch is correct',
+  overall_explanation: \`Remote sandbox policy runner completed under deny-all network for \${input.normalizedDiffChunks.length} diff chunk(s) and \${diffBytes} diff byte(s). Provider execution inside Vercel Sandbox is not enabled for this policy profile; no findings were emitted.\`,
+  overall_confidence_score: 0
+};
+await writeFile(new URL('./review-output.json', import.meta.url), JSON.stringify(raw), 'utf8');
+process.stdout.write('review-output.json\\n');
+`;
 
 type WorkflowRuntimeStatus =
   | 'pending'
@@ -45,8 +73,92 @@ type WorkflowRunHandle = {
  */
 export const REVIEW_WORKFLOW_STEP_MAX_RETRIES = 3;
 
+function createRemoteSandboxPolicy() {
+  const policy = createDefaultPolicy();
+  policy.commandAllowlist = new Set(['node']);
+  policy.networkProfile = 'deny_all';
+  policy.allowlistDomains = [];
+  policy.envAllowlist = new Set(['CI']);
+  policy.budget = {
+    maxWallTimeMs: 60_000,
+    maxCommandTimeoutMs: 15_000,
+    maxCommandCount: 1,
+    maxOutputBytes: 256 * 1024,
+    maxArtifactBytes: 512 * 1024,
+  };
+  return policy;
+}
+
+const runRemoteSandboxReview: SandboxReviewRunner = async (input) => {
+  const payload = {
+    request: {
+      target: input.request.target,
+      provider: input.request.provider,
+      model: input.request.model ?? null,
+      severityThreshold: input.request.severityThreshold ?? null,
+    },
+    resolvedPrompt: input.resolvedPrompt,
+    rubric: input.rubric,
+    normalizedDiffChunks: input.normalizedDiffChunks,
+  };
+  const sandboxResult = await runInSandbox({
+    files: [
+      {
+        path: 'review-input.json',
+        content: Buffer.from(JSON.stringify(payload), 'utf8'),
+      },
+      {
+        path: 'review-runner.mjs',
+        content: Buffer.from(SANDBOX_REVIEW_RUNNER, 'utf8'),
+      },
+    ],
+    commands: [
+      {
+        cmd: 'node',
+        args: ['review-runner.mjs'],
+        cwd: SANDBOX_ROOT,
+        timeoutMs: 15_000,
+        env: { CI: '1' },
+      },
+    ],
+    artifacts: [{ path: 'review-output.json' }],
+    policy: createRemoteSandboxPolicy(),
+    runtime: 'node24',
+  });
+  const command = sandboxResult.outputs[0];
+  if (!command || command.exitCode !== 0) {
+    throw new Error(
+      `remote sandbox review failed: ${command?.stderr || command?.stdout || `exit ${command?.exitCode ?? 'unknown'}`}`
+    );
+  }
+
+  const artifact = sandboxResult.artifacts.find(
+    (candidate) => candidate.path === 'review-output.json'
+  );
+  if (!artifact) {
+    throw new Error('remote sandbox review did not produce review-output.json');
+  }
+
+  const raw = JSON.parse(artifact.content) as RawModelOutput;
+  const sandboxAudit: SandboxAudit = {
+    sandboxId: sandboxResult.sandboxId,
+    ...sandboxResult.audit,
+  };
+  return {
+    raw,
+    text: artifact.content,
+    resolvedModel: 'remoteSandbox:policy-runner',
+    sandboxAudit,
+  };
+};
+
 function withProviders(request: ReviewRequest): Promise<ReviewRunResult> {
-  return runReview(request, { providers });
+  return runReview(request, {
+    providers,
+    ...(request.executionMode === 'remoteSandbox'
+      ? { sandboxRunner: runRemoteSandboxReview }
+      : {}),
+  });
 }
 
 function mapWorkflowStatus(status: WorkflowRuntimeStatus): ReviewRunStatus {
@@ -72,6 +184,9 @@ async function hydrateWorkflowRecord(
 
   if (status === 'completed') {
     record.result = (await workflowRun.returnValue) as ReviewRunResult;
+    if (record.result.sandboxAudit) {
+      record.sandboxId = record.result.sandboxAudit.sandboxId;
+    }
     record.completedAt = now;
   } else if (status === 'failed') {
     try {

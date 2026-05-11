@@ -140,6 +140,7 @@ export const ReviewResultSchema = z.strictObject({
       mergeBaseSha: z.string().min(1).optional(),
       commitSha: z.string().min(1).optional(),
     }),
+    sandboxId: z.string().min(1).optional(),
   }),
 });
 
@@ -322,6 +323,7 @@ export const SandboxAuditSchema = z.strictObject({
       cmd: z.string().min(1),
       args: z.array(z.string()),
       cwd: z.string().min(1),
+      phase: z.enum(['bootstrap', 'runtime']).optional(),
       startedAtMs: z.number().int().nonnegative(),
       endedAtMs: z.number().int().nonnegative(),
       durationMs: z.number().int().nonnegative(),

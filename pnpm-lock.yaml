@@ -104,6 +104,9 @@ importers:
       '@review-agent/review-provider-registry':
         specifier: workspace:*
         version: link:../../packages/review-provider-registry
+      '@review-agent/review-sandbox-vercel':
+        specifier: workspace:*
+        version: link:../../packages/review-sandbox-vercel
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../../packages/review-types

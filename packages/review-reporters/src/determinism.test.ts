@@ -75,6 +75,19 @@ describe('artifact determinism', () => {
     expect(secondSarif).toBe(firstSarif);
   });
 
+  it('renders sandbox metadata when present', () => {
+    const markdown = renderMarkdown({
+      ...baseResult,
+      metadata: {
+        ...baseResult.metadata,
+        executionMode: 'remoteSandbox',
+        sandboxId: 'sbx-report-test',
+      },
+    });
+
+    expect(markdown).toContain('- Sandbox: `sbx-report-test`');
+  });
+
   it('deduplicates SARIF rules when findings share rule IDs', () => {
     const duplicateTitleResult = {
       ...baseResult,

@@ -81,7 +81,7 @@ export type ReviewServiceConfig = {
   maxRecordEvents: number;
   recordCleanupIntervalMs: number | false;
   eventStreamPollIntervalMs: number;
-  unsupportedRemoteSandboxError: string;
+  remoteSandboxInlineError: string;
 };
 
 /**
@@ -105,9 +105,12 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
   maxRecordEvents: 200,
   recordCleanupIntervalMs: 60_000,
   eventStreamPollIntervalMs: 15_000,
-  unsupportedRemoteSandboxError:
-    'executionMode "remoteSandbox" is not supported by review-service',
+  remoteSandboxInlineError:
+    'executionMode "remoteSandbox" requires detached delivery',
 };
+
+const REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR =
+  'executionMode "remoteSandbox" currently supports only custom targets until sandbox source binding is implemented';
 
 type LifecycleEventPayload = {
   [TType in LifecycleEvent['type']]: Omit<
@@ -252,6 +255,7 @@ export function createReviewServiceApp(
       correlation: {
         reviewId: record.reviewId,
         workflowRunId: record.workflowRunId ?? record.detachedRunId,
+        ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
       },
     };
   }
@@ -307,6 +311,12 @@ export function createReviewServiceApp(
                   record.workflowRunId ??
                   record.detachedRunId ??
                   event.meta.correlation.workflowRunId,
+                ...((record.sandboxId ?? event.meta.correlation.sandboxId)
+                  ? {
+                      sandboxId:
+                        record.sandboxId ?? event.meta.correlation.sandboxId,
+                    }
+                  : {}),
                 ...(correlationOverride ?? {}),
               },
             },
@@ -319,6 +329,7 @@ export function createReviewServiceApp(
               correlation: {
                 reviewId: record.reviewId,
                 workflowRunId: record.workflowRunId ?? record.detachedRunId,
+                ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
                 ...(correlationOverride ?? {}),
               },
             },
@@ -367,7 +378,7 @@ export function createReviewServiceApp(
       });
 
       if (record.request.executionMode === 'remoteSandbox') {
-        throw new Error(config.unsupportedRemoteSandboxError);
+        throw new Error(config.remoteSandboxInlineError);
       }
 
       const review = await runner(
@@ -451,11 +462,20 @@ export function createReviewServiceApp(
     const previousStatus = record.status;
     const previousError = record.error;
     const previousWorkflowRunId = record.workflowRunId;
+    const previousSandboxId = record.sandboxId;
     let changed = false;
 
     record.workflowRunId = detached.workflowRunId ?? detached.runId;
+    const detachedSandboxId =
+      detached.sandboxId ?? detached.result?.sandboxAudit?.sandboxId;
+    if (detachedSandboxId) {
+      record.sandboxId = detachedSandboxId;
+    }
     record.status = detached.status;
     if (record.workflowRunId !== previousWorkflowRunId) {
+      changed = true;
+    }
+    if (record.sandboxId !== previousSandboxId) {
       changed = true;
     }
     if (detached.status === 'completed' && detached.result) {
@@ -509,8 +529,22 @@ export function createReviewServiceApp(
 
     try {
       const { request, delivery } = parsed;
-      if (request.executionMode === 'remoteSandbox') {
-        return jsonError(context, config.unsupportedRemoteSandboxError, 400);
+      if (
+        request.executionMode === 'remoteSandbox' &&
+        delivery !== 'detached' &&
+        !request.detached
+      ) {
+        return jsonError(context, config.remoteSandboxInlineError, 400);
+      }
+      if (
+        request.executionMode === 'remoteSandbox' &&
+        request.target.type !== 'custom'
+      ) {
+        return jsonError(
+          context,
+          `${REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR}; received target "${request.target.type}"`,
+          400
+        );
       }
 
       const reviewId = uuid();
@@ -537,6 +571,11 @@ export function createReviewServiceApp(
         }
         record.detachedRunId = detached.runId;
         record.workflowRunId = detached.workflowRunId ?? detached.runId;
+        const detachedSandboxId =
+          detached.sandboxId ?? detached.result?.sandboxAudit?.sandboxId;
+        if (detachedSandboxId) {
+          record.sandboxId = detachedSandboxId;
+        }
         record.status = detached.status;
         if (detached.result) {
           record.result = detached.result;

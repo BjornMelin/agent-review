@@ -180,6 +180,9 @@ export function renderMarkdown(result: ReviewResult): string {
   );
   lines.push(`- Provider: \`${result.metadata.provider}\``);
   lines.push(`- Model: \`${result.metadata.modelResolved}\``);
+  if (result.metadata.sandboxId) {
+    lines.push(`- Sandbox: \`${result.metadata.sandboxId}\``);
+  }
   lines.push('');
   lines.push(
     result.overallExplanation ||

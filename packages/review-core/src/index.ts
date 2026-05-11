@@ -28,8 +28,11 @@ import {
   type RawModelOutput,
   type ReviewFinding,
   type ReviewProvider,
+  type ReviewProviderRunInput,
+  type ReviewProviderRunOutput,
   type ReviewRequest,
   type ReviewResult,
+  type SandboxAudit,
   severityToPriority,
 } from '@review-agent/review-types';
 import { minimatch } from 'minimatch';
@@ -37,6 +40,14 @@ import { minimatch } from 'minimatch';
 export class InvalidFindingLocationError extends Error {
   constructor(public readonly invalidFindings: ReviewFinding[]) {
     super('One or more findings referenced lines outside the reviewed diff.');
+  }
+}
+
+export class UnsupportedRemoteSandboxTargetError extends Error {
+  constructor(targetType: ReviewRequest['target']['type']) {
+    super(
+      `executionMode "remoteSandbox" currently supports only custom targets until sandbox source binding is implemented; received target "${targetType}"`
+    );
   }
 }
 
@@ -50,7 +61,12 @@ export type ReviewRunResult = {
   diff: DiffContext;
   prompt: string;
   rubric: string;
+  sandboxAudit?: SandboxAudit;
 };
+
+export type SandboxReviewRunner = (
+  input: ReviewProviderRunInput
+) => Promise<ReviewProviderRunOutput & { sandboxAudit: SandboxAudit }>;
 
 /**
  * Configures provider selection, lifecycle event handling, and correlation metadata for one review run.
@@ -60,6 +76,7 @@ export type RunReviewOptions = {
   onEvent?: (event: LifecycleEvent) => void | Promise<void>;
   now?: () => Date;
   correlation?: Omit<CorrelationIds, 'reviewId'>;
+  sandboxRunner?: SandboxReviewRunner;
 };
 
 export type MirrorWriteBridge = {
@@ -299,6 +316,18 @@ function filterDiffContext(
   };
 }
 
+function createRemoteSandboxDiffContext(request: ReviewRequest): DiffContext {
+  if (request.target.type !== 'custom') {
+    throw new UnsupportedRemoteSandboxTargetError(request.target.type);
+  }
+  return {
+    patch: '',
+    chunks: [],
+    changedLineIndex: new Map(),
+    gitContext: { mode: 'custom' },
+  };
+}
+
 function renderArtifacts(
   result: ReviewResult,
   formats: OutputFormat[]
@@ -385,10 +414,22 @@ export async function runReview(
   };
 
   const provider = options.providers[request.provider];
-  if (!provider) {
-    throw new Error(`provider "${request.provider}" is not configured`);
+  const sandboxRunner = options.sandboxRunner;
+  if (request.executionMode === 'remoteSandbox') {
+    if (request.target.type !== 'custom') {
+      throw new UnsupportedRemoteSandboxTargetError(request.target.type);
+    }
+    if (!sandboxRunner) {
+      throw new Error(
+        'executionMode "remoteSandbox" requires a configured sandbox runner'
+      );
+    }
+  } else {
+    if (!provider) {
+      throw new Error(`provider "${request.provider}" is not configured`);
+    }
+    throwOnBlockingDiagnostics(collectProviderDiagnostics(provider, request));
   }
-  throwOnBlockingDiagnostics(collectProviderDiagnostics(provider, request));
 
   const resolved = await resolveReviewRequest(
     {
@@ -402,26 +443,61 @@ export async function runReview(
   });
   await emit(emitContext, {
     type: 'progress',
-    message: 'Collecting diff context',
+    message:
+      request.executionMode === 'remoteSandbox'
+        ? 'Preparing remote sandbox context'
+        : 'Collecting diff context',
   });
 
-  const rawDiff = await collectDiffForTarget(request.cwd, request.target);
-  const diff = filterDiffContext(request, rawDiff);
+  const diff =
+    request.executionMode === 'remoteSandbox'
+      ? createRemoteSandboxDiffContext(request)
+      : filterDiffContext(
+          request,
+          await collectDiffForTarget(request.cwd, request.target)
+        );
   const normalizedDiffChunks = diff.chunks.map((chunk) => ({
     file: chunk.file,
     patch: chunk.patch,
   }));
 
-  await emit(emitContext, {
-    type: 'progress',
-    message: `Running provider ${provider.id} on ${normalizedDiffChunks.length} diff chunk(s)`,
-  });
-  const providerOutput = await provider.run({
+  const providerInput: ReviewProviderRunInput = {
     request,
     resolvedPrompt: resolved.prompt,
     rubric: REVIEW_RUBRIC_PROMPT,
     normalizedDiffChunks,
-  });
+  };
+  let providerOutput: ReviewProviderRunOutput;
+  let sandboxAudit: SandboxAudit | undefined;
+  if (request.executionMode === 'remoteSandbox') {
+    const runner = sandboxRunner;
+    if (!runner) {
+      throw new Error(
+        'executionMode "remoteSandbox" requires a configured sandbox runner'
+      );
+    }
+    await emit(emitContext, {
+      type: 'progress',
+      message: `Running remote sandbox review on ${normalizedDiffChunks.length} diff chunk(s)`,
+    });
+    const sandboxOutput = await runner(providerInput);
+    providerOutput = sandboxOutput;
+    sandboxAudit = sandboxOutput.sandboxAudit;
+    await emit(
+      emitContext,
+      {
+        type: 'progress',
+        message: `Remote sandbox ${sandboxAudit.sandboxId} completed`,
+      },
+      { sandboxId: sandboxAudit.sandboxId }
+    );
+  } else {
+    await emit(emitContext, {
+      type: 'progress',
+      message: `Running provider ${provider.id} on ${normalizedDiffChunks.length} diff chunk(s)`,
+    });
+    providerOutput = await provider.run(providerInput);
+  }
 
   const normalized = normalizeModelOutput(
     providerOutput.raw,
@@ -459,10 +535,11 @@ export async function runReview(
       modelResolved:
         providerOutput.resolvedModel ??
         request.model ??
-        `${provider.id}:${DEFAULT_MODEL}`,
+        `${request.provider}:${DEFAULT_MODEL}`,
       executionMode: request.executionMode,
       promptPack: REVIEW_PROMPT_PACK_ID,
       gitContext: diff.gitContext,
+      ...(sandboxAudit ? { sandboxId: sandboxAudit.sandboxId } : {}),
     },
   };
 
@@ -500,6 +577,7 @@ export async function runReview(
     diff,
     prompt: resolved.prompt,
     rubric: REVIEW_RUBRIC_PROMPT,
+    ...(sandboxAudit ? { sandboxAudit } : {}),
   };
 }
 

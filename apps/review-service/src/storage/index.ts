@@ -107,7 +107,7 @@ export type ClosableReviewStore = ReviewStoreAdapter & {
 };
 
 function cloneReviewRunResult(result: ReviewRunResult): ReviewRunResult {
-  return {
+  const cloned: ReviewRunResult = {
     ...result,
     artifacts: { ...result.artifacts },
     diff: {
@@ -135,6 +135,10 @@ function cloneReviewRunResult(result: ReviewRunResult): ReviewRunResult {
       },
     },
   };
+  if (result.sandboxAudit) {
+    cloned.sandboxAudit = structuredClone(result.sandboxAudit);
+  }
+  return cloned;
 }
 
 function cloneLifecycleEvent(event: LifecycleEvent): LifecycleEvent {
