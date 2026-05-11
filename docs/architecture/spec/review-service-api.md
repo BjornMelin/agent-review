@@ -26,6 +26,7 @@ Drizzle schema and migration ownership lives in `apps/review-service`:
 
 - `src/storage/schema.ts`
 - `drizzle/0000_initial_review_storage.sql`
+- `drizzle/0001_review_runtime_control.sql`
 - `drizzle.config.ts`
 
 Run migrations from the service package with:
@@ -74,7 +75,47 @@ The request body is parsed by `ReviewStartRequestSchema`.
 - `200`: inline run finished; response includes `result` summary payload
 - `202`: detached accepted; response includes `detachedRunId`
 - `400`: request parse/validation error
+- `429`: runtime queue, global concurrency, or per-scope active-run limit reached
 - `502`: worker or storage startup error
+
+### Runtime Capacity
+
+The service atomically reserves runtime capacity before dispatching inline or
+detached work. Tunables live in `ReviewServiceConfig`:
+
+- `maxQueuedRuns`: positive integer, default `100`. Caps queued nonterminal
+  records.
+- `maxRunningRuns`: positive integer, default `10`. Caps running nonterminal
+  records and queued detached Workflow records that have already been accepted
+  by the worker.
+- `maxActiveRunsPerScope`: positive integer, default `2`. Caps running records
+  and leased queued dispatch records sharing the same runtime scope key.
+- `runtimeLeaseTtlMs`: positive integer milliseconds, default `600000`. Sets
+  the heartbeat lease window for accepted work.
+- `maxRecordAgeMs`: positive integer milliseconds, default `3600000`. Sets
+  terminal retention and the upgrade-drain window for considering legacy
+  unleased queued or running records valid during scoped-limit reconstruction
+  and queue/drain accounting.
+
+Every accepted run receives a service-owned lease with `owner`, `scopeKey`,
+`acquiredAt`, `heartbeatAt`, and `expiresAt`. `maxQueuedRuns` bounds queued
+records. `maxRunningRuns` bounds records actively consuming execution capacity:
+running inline runs, running detached runs, and queued detached Workflow records
+after a `detachedRunId` has been persisted. The current scope key is derived
+from execution mode, provider, canonicalized cwd, and target identity.
+Leased queued rows count against scoped capacity immediately so concurrent
+same-scope detached dispatches cannot over-admit while `startDetached` is still
+pending. Nonterminal leased rows keep counting against capacity even after their
+lease expiry timestamp until service reconciliation reaches a terminal status.
+Legacy unleased queued or running rows also count against the global
+queue/running limits during the `maxRecordAgeMs` upgrade-drain window; their
+scoped limit is reconstructed from the persisted request when the service
+supplies a scope-key derivation callback. Expired leased rows are marked
+`failed` with `runtime lease expired` when the run is next reconciled.
+Nonterminal detached Workflow status refreshes only unexpired leases, while
+terminal Workflow status is still reconciled after lease expiry. Workflow
+remains the execution orchestrator; `ReviewStoreAdapter` remains the queryable
+lease/status source of truth.
 
 ## `GET /v1/review/:reviewId`
 
@@ -111,11 +152,23 @@ Returns `404` when review ID is unknown.
 
 ## `POST /v1/review/:reviewId/cancel`
 
-Attempts cancellation of detached run.
+Attempts cancellation of a detached run.
+
+Cancellation is not reported as successful unless the worker/runtime accepts the
+cancel request and later reports a cancelled terminal state. The service
+persists `cancelRequestedAt`, delegates cancellation to Workflow, and keeps the
+runtime lease while cancellation is pending. The worker also aborts the active
+in-process Workflow step when that step is running in the same worker process;
+the Workflow cancellation record remains the durable cross-process authority.
+The service only transitions the durable record to `cancelled` after Workflow
+reports `cancelled`. Terminal, unknown, inline-only, duplicate, or lease-expired
+requests return `409` with `cancelled: false`.
 
 ### Responses
 
-- `200`: cancellation applied, status becomes `cancelled`
+- `200`: cancellation accepted by runtime and durable status becomes `cancelled`
+- `202`: cancellation accepted by runtime but terminal cancelled status has not
+  been observed yet
 - `404`: review not found
 - `409`: cancellation not possible (e.g., no detached run or terminal state reached)
 - `502`: service storage or Workflow runtime cancellation failed
@@ -149,6 +202,10 @@ Returns:
 - Detached Workflow run identifiers and observed states are persisted in the
   service store. Workflow orchestrates execution and retries, while
   `ReviewStoreAdapter` remains the queryable run/event/artifact state boundary.
+- Provider and sandbox cancellation uses native `AbortSignal` support:
+  AI SDK `generateText` receives `abortSignal`, the Codex delegate forwards the
+  signal into the Rust process-group runner, and Vercel Sandbox command
+  execution receives a linked signal.
 - Authentication defaults to allow-all through an injected auth policy hook.
 - `remoteSandbox` execution mode must be requested with detached delivery. Inline
   `remoteSandbox` requests return `400` with

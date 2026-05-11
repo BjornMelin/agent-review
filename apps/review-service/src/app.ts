@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type {
   MirrorWriteBridge,
   ReviewRunResult,
   RunReviewOptions,
 } from '@review-agent/review-core';
-import { runReview } from '@review-agent/review-core';
+import { ReviewRunCancelledError, runReview } from '@review-agent/review-core';
 import {
   ARTIFACT_CONTENT_TYPES,
   type CorrelationIds,
@@ -79,6 +81,10 @@ export type ReviewServiceAuthPolicy = (
 export type ReviewServiceConfig = {
   maxRecordAgeMs: number;
   maxRecordEvents: number;
+  maxQueuedRuns: number;
+  maxRunningRuns: number;
+  maxActiveRunsPerScope: number;
+  runtimeLeaseTtlMs: number;
   recordCleanupIntervalMs: number | false;
   eventStreamPollIntervalMs: number;
   remoteSandboxInlineError: string;
@@ -103,6 +109,10 @@ export type ReviewServiceDependencies = {
 const DEFAULT_CONFIG: ReviewServiceConfig = {
   maxRecordAgeMs: 60 * 60 * 1000,
   maxRecordEvents: 200,
+  maxQueuedRuns: 100,
+  maxRunningRuns: 10,
+  maxActiveRunsPerScope: 2,
+  runtimeLeaseTtlMs: 10 * 60 * 1000,
   recordCleanupIntervalMs: 60_000,
   eventStreamPollIntervalMs: 15_000,
   remoteSandboxInlineError:
@@ -111,6 +121,7 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
 
 const REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR =
   'executionMode "remoteSandbox" currently supports only custom targets until sandbox source binding is implemented';
+const RUNTIME_LEASE_OWNER = 'review-service';
 
 type LifecycleEventPayload = {
   [TType in LifecycleEvent['type']]: Omit<
@@ -121,13 +132,25 @@ type LifecycleEventPayload = {
 type ReviewEventCursor = ReturnType<typeof ReviewEventCursorSchema.parse>;
 type ReviewLifecycleListener = (event: LifecycleEvent) => void | Promise<void>;
 
+class RuntimeBackpressureError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RuntimeBackpressureError';
+  }
+}
+
 function jsonError(
   context: Context,
   message: string,
-  status: 400 | 404 | 409 | 502
+  status: 400 | 404 | 409 | 429 | 502,
+  headers: Record<string, string> = {}
 ): Response {
   const response: ReviewErrorResponse = { error: message };
-  return context.json(response, status);
+  const output = context.json(response, status);
+  for (const [key, value] of Object.entries(headers)) {
+    output.headers.set(key, value);
+  }
+  return output;
 }
 
 async function parseJsonBody<T>(
@@ -151,6 +174,23 @@ function createReviewRecord(
     updatedAt: nowMs,
     events: [],
   };
+}
+
+function runtimeScopeKeyForRequest(request: ReviewRequest): string {
+  const resolvedCwd = resolve(request.cwd);
+  let scopeCwd = resolvedCwd;
+  try {
+    scopeCwd = realpathSync.native(resolvedCwd);
+  } catch {
+    scopeCwd = resolvedCwd;
+  }
+  const target =
+    request.target.type === 'baseBranch'
+      ? `baseBranch:${request.target.branch}`
+      : request.target.type === 'commit'
+        ? `commit:${request.target.sha}`
+        : request.target.type;
+  return [request.executionMode, request.provider, scopeCwd, target].join('|');
 }
 
 function buildStatusResponse(record: ReviewRecord): ReviewStatusResponse {
@@ -242,7 +282,83 @@ export function createReviewServiceApp(
   }
 
   function setTerminalRetention(record: ReviewRecord): void {
+    releaseRuntimeLease(record);
     record.retentionExpiresAt = record.updatedAt + config.maxRecordAgeMs;
+  }
+
+  function attachRuntimeLease(record: ReviewRecord, scopeKey: string): void {
+    const now = nowMs();
+    record.lease = {
+      owner: RUNTIME_LEASE_OWNER,
+      scopeKey,
+      acquiredAt: now,
+      heartbeatAt: now,
+      expiresAt: now + config.runtimeLeaseTtlMs,
+    };
+  }
+
+  function assertRuntimeLeaseAttached(
+    record: ReviewRecord
+  ): asserts record is ReviewRecord & {
+    lease: NonNullable<ReviewRecord['lease']>;
+  } {
+    if (!record.lease) {
+      throw new Error('runtime reservation requires a lease');
+    }
+  }
+
+  function heartbeatRuntimeLease(record: ReviewRecord): void {
+    if (!record.lease || isTerminalReviewRunStatus(record.status)) {
+      return;
+    }
+    const now = nowMs();
+    record.lease = {
+      ...record.lease,
+      heartbeatAt: now,
+      expiresAt: now + config.runtimeLeaseTtlMs,
+    };
+  }
+
+  function releaseRuntimeLease(record: ReviewRecord): void {
+    if ('lease' in record) {
+      delete record.lease;
+    }
+  }
+
+  function runtimeLeaseExpired(record: ReviewRecord, now: number): boolean {
+    return (
+      !isTerminalReviewRunStatus(record.status) &&
+      record.lease !== undefined &&
+      record.lease.expiresAt <= now
+    );
+  }
+
+  async function failRuntimeLease(record: ReviewRecord): Promise<void> {
+    record.status = 'failed';
+    record.error = 'runtime lease expired';
+    record.updatedAt = nowMs();
+    setTerminalRetention(record);
+    await emit(record, { type: 'failed', message: record.error });
+    await store.set(record, { reason: 'runtime lease expired' });
+  }
+
+  async function failExpiredRuntimeLease(
+    record: ReviewRecord
+  ): Promise<boolean> {
+    if (!runtimeLeaseExpired(record, nowMs())) {
+      return false;
+    }
+    await failRuntimeLease(record);
+    return true;
+  }
+
+  async function failMissingDetachedRun(record: ReviewRecord): Promise<void> {
+    record.status = 'failed';
+    record.error = 'detached run not found';
+    record.updatedAt = nowMs();
+    setTerminalRetention(record);
+    await emit(record, { type: 'failed', message: record.error });
+    await store.set(record, { reason: 'detached run missing' });
   }
 
   function detachedTerminalMeta(
@@ -368,45 +484,94 @@ export function createReviewServiceApp(
     return enriched;
   }
 
-  async function runInline(record: ReviewRecord): Promise<void> {
+  async function runInline(
+    record: ReviewRecord,
+    signal?: AbortSignal
+  ): Promise<void> {
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatStopped = false;
+    const stopInlineHeartbeat = () => {
+      heartbeatStopped = true;
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+    };
+    const persistInlineHeartbeat = async (): Promise<void> => {
+      if (heartbeatStopped || isTerminalReviewRunStatus(record.status)) {
+        return;
+      }
+      heartbeatRuntimeLease(record);
+      await store.set(record, { reason: 'inline heartbeat' });
+    };
+    const startInlineHeartbeat = () => {
+      const heartbeatIntervalMs = Math.max(
+        100,
+        Math.min(Math.floor(config.runtimeLeaseTtlMs / 2), 30_000)
+      );
+      heartbeatTimer = setInterval(() => {
+        void persistInlineHeartbeat().catch((error) => {
+          logger.error('[review-service] inline heartbeat failed', error);
+        });
+      }, heartbeatIntervalMs);
+      heartbeatTimer.unref?.();
+    };
+
     try {
       record.status = 'running';
       record.updatedAt = nowMs();
+      heartbeatRuntimeLease(record);
       await emit(record, {
         type: 'progress',
         message: 'starting inline review run',
       });
+      await store.set(record, { reason: 'inline running' });
 
       if (record.request.executionMode === 'remoteSandbox') {
         throw new Error(config.remoteSandboxInlineError);
       }
 
+      startInlineHeartbeat();
       const review = await runner(
         record.request,
         {
           providers: dependencies.providers,
           onEvent: async (event) => {
+            await persistInlineHeartbeat();
             await emit(record, event);
           },
           now: () => new Date(nowMs()),
           correlation: {
             workflowRunId: record.workflowRunId ?? record.detachedRunId,
           },
+          ...(signal ? { signal } : {}),
         },
         dependencies.bridge
       );
+      stopInlineHeartbeat();
       record.result = review;
       record.status = 'completed';
       record.updatedAt = nowMs();
       setTerminalRetention(record);
       await store.set(record, { reason: 'inline completed' });
     } catch (error) {
-      record.status = 'failed';
+      stopInlineHeartbeat();
+      const cancelled = error instanceof ReviewRunCancelledError;
+      record.status = cancelled ? 'cancelled' : 'failed';
       record.error = error instanceof Error ? error.message : String(error);
       record.updatedAt = nowMs();
       setTerminalRetention(record);
-      await emit(record, { type: 'failed', message: record.error });
-      await store.set(record, { reason: 'inline failed' });
+      await emit(
+        record,
+        cancelled
+          ? { type: 'cancelled' }
+          : { type: 'failed', message: record.error }
+      );
+      await store.set(record, {
+        reason: cancelled ? 'inline cancelled' : 'inline failed',
+      });
+    } finally {
+      stopInlineHeartbeat();
     }
   }
 
@@ -453,9 +618,29 @@ export function createReviewServiceApp(
     ) {
       return;
     }
-
     const detached = await dependencies.worker.get(record.detachedRunId);
     if (!detached) {
+      await failMissingDetachedRun(record);
+      return;
+    }
+
+    if (
+      !isTerminalReviewRunStatus(detached.status) &&
+      runtimeLeaseExpired(record, nowMs())
+    ) {
+      const cancellationAccepted = await dependencies.worker.cancel(
+        record.detachedRunId
+      );
+      if (cancellationAccepted) {
+        record.cancelRequestedAt = nowMs();
+        record.updatedAt = nowMs();
+        heartbeatRuntimeLease(record);
+        await store.set(record, {
+          reason: 'runtime lease expired cancellation requested',
+        });
+      } else {
+        await failRuntimeLease(record);
+      }
       return;
     }
 
@@ -463,9 +648,18 @@ export function createReviewServiceApp(
     const previousError = record.error;
     const previousWorkflowRunId = record.workflowRunId;
     const previousSandboxId = record.sandboxId;
+    const previousLeaseHeartbeatAt = record.lease?.heartbeatAt;
+    const previousLeaseExpiresAt = record.lease?.expiresAt;
     let changed = false;
 
     record.workflowRunId = detached.workflowRunId ?? detached.runId;
+    heartbeatRuntimeLease(record);
+    if (
+      record.lease?.heartbeatAt !== previousLeaseHeartbeatAt ||
+      record.lease?.expiresAt !== previousLeaseExpiresAt
+    ) {
+      changed = true;
+    }
     const detachedSandboxId =
       detached.sandboxId ?? detached.result?.sandboxAudit?.sandboxId;
     if (detachedSandboxId) {
@@ -505,6 +699,9 @@ export function createReviewServiceApp(
 
     if (changed) {
       await store.set(record, { reason: 'detached sync' });
+    }
+    if (!changed) {
+      await failExpiredRuntimeLease(record);
     }
   }
 
@@ -549,10 +746,23 @@ export function createReviewServiceApp(
 
       const reviewId = uuid();
       const record = createReviewRecord(request, reviewId, nowMs());
+      attachRuntimeLease(record, runtimeScopeKeyForRequest(request));
+      assertRuntimeLeaseAttached(record);
       await cleanupReviewRecords();
+      const reservation = await store.reserve(record, {
+        nowMs: nowMs(),
+        legacyUnleasedActiveTtlMs: config.maxRecordAgeMs,
+        scopeKeyForRequest: runtimeScopeKeyForRequest,
+        maxQueuedRuns: config.maxQueuedRuns,
+        maxRunningRuns: config.maxRunningRuns,
+        maxActiveRunsPerScope: config.maxActiveRunsPerScope,
+        reason: 'runtime reserved',
+      });
+      if (!reservation.reserved) {
+        throw new RuntimeBackpressureError(reservation.message);
+      }
 
       if (delivery === 'detached' || request.detached) {
-        await store.set(record, { reason: 'detached queued' });
         let detached: DetachedRunRecord;
         try {
           detached = await dependencies.worker.startDetached(request);
@@ -584,6 +794,7 @@ export function createReviewServiceApp(
           record.error = detached.error;
         }
         record.updatedAt = nowMs();
+        heartbeatRuntimeLease(record);
         if (isTerminalReviewRunStatus(record.status)) {
           setTerminalRetention(record);
         }
@@ -603,8 +814,7 @@ export function createReviewServiceApp(
         return context.json(response, 202);
       }
 
-      await store.set(record, { reason: 'inline queued' });
-      await runInline(record);
+      await runInline(record, context.req.raw.signal);
       const response: ReviewStartResponse = {
         reviewId,
         status: record.status,
@@ -612,6 +822,11 @@ export function createReviewServiceApp(
       };
       return context.json(response, 200);
     } catch (error) {
+      if (error instanceof RuntimeBackpressureError) {
+        return jsonError(context, error.message, 429, {
+          'Retry-After': '1',
+        });
+      }
       logger.error('[review-service] failed to start review', error);
       return jsonError(context, 'failed to start review', 502);
     }
@@ -630,6 +845,7 @@ export function createReviewServiceApp(
 
     try {
       await syncDetachedRecord(record);
+      await failExpiredRuntimeLease(record);
       return context.json(buildStatusResponse(record));
     } catch (error) {
       logger.error('[review-service] failed to fetch run status', error);
@@ -659,6 +875,7 @@ export function createReviewServiceApp(
 
     try {
       await syncDetachedRecord(record);
+      await failExpiredRuntimeLease(record);
     } catch (error) {
       logger.error(
         '[review-service] failed to sync event stream status',
@@ -732,6 +949,7 @@ export function createReviewServiceApp(
             break;
           }
           await syncDetachedRecord(latestRecord);
+          await failExpiredRuntimeLease(latestRecord);
           if (!streaming) {
             break;
           }
@@ -761,6 +979,7 @@ export function createReviewServiceApp(
 
     try {
       await syncDetachedRecord(record);
+      await failExpiredRuntimeLease(record);
     } catch (error) {
       logger.error('[review-service] failed to sync artifact status', error);
       return jsonError(context, 'failed to fetch artifact status', 502);
@@ -801,6 +1020,71 @@ export function createReviewServiceApp(
       return record;
     }
 
+    if (record.detachedRunId) {
+      try {
+        await syncDetachedRecord(record);
+        if (await failExpiredRuntimeLease(record)) {
+          const response: ReviewCancelResponse = {
+            reviewId,
+            status: record.status,
+            cancelled: false,
+          };
+          return context.json(response, 409);
+        }
+        if (isTerminalReviewRunStatus(record.status)) {
+          const response: ReviewCancelResponse = {
+            reviewId,
+            status: record.status,
+            cancelled: false,
+          };
+          return context.json(response, 409);
+        }
+        if (record.cancelRequestedAt !== undefined) {
+          const response: ReviewCancelResponse = {
+            reviewId,
+            status: record.status,
+            cancelled: false,
+          };
+          return context.json(response, 202);
+        }
+        const cancelled = await dependencies.worker.cancel(
+          record.detachedRunId
+        );
+        if (cancelled) {
+          record.cancelRequestedAt = nowMs();
+          heartbeatRuntimeLease(record);
+          await store.set(record, { reason: 'cancel requested' });
+          await syncDetachedRecord(record);
+          if (record.status === 'cancelled') {
+            await cleanupReviewRecords();
+            const response: ReviewCancelResponse = {
+              reviewId,
+              status: record.status,
+            };
+            return context.json(response);
+          }
+          if (isTerminalReviewRunStatus(record.status)) {
+            const response: ReviewCancelResponse = {
+              reviewId,
+              status: record.status,
+              cancelled: false,
+            };
+            return context.json(response, 409);
+          }
+          const response: ReviewCancelResponse = {
+            reviewId,
+            status: record.status,
+            cancelled: false,
+          };
+          return context.json(response, 202);
+        }
+        await syncDetachedRecord(record);
+      } catch (error) {
+        logger.error('[review-service] failed to cancel run', error);
+        return jsonError(context, 'failed to cancel run', 502);
+      }
+    }
+
     if (isTerminalReviewRunStatus(record.status)) {
       const response: ReviewCancelResponse = {
         reviewId,
@@ -808,34 +1092,6 @@ export function createReviewServiceApp(
         cancelled: false,
       };
       return context.json(response, 409);
-    }
-
-    if (record.detachedRunId) {
-      try {
-        const cancelled = await dependencies.worker.cancel(
-          record.detachedRunId
-        );
-        if (cancelled) {
-          record.status = 'cancelled';
-          record.updatedAt = nowMs();
-          setTerminalRetention(record);
-          await emit(record, {
-            type: 'cancelled',
-            meta: detachedTerminalMeta(record, 'cancelled'),
-          });
-          await store.set(record, { reason: 'cancelled' });
-          await cleanupReviewRecords();
-          const response: ReviewCancelResponse = {
-            reviewId,
-            status: record.status,
-          };
-          return context.json(response);
-        }
-        await syncDetachedRecord(record);
-      } catch (error) {
-        logger.error('[review-service] failed to cancel run', error);
-        return jsonError(context, 'failed to cancel run', 502);
-      }
     }
 
     const response: ReviewCancelResponse = {

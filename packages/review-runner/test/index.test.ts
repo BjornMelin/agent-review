@@ -40,6 +40,52 @@ describe('review runner adapter', () => {
     expect(result.events.some((event) => event.type === 'started')).toBe(true);
   });
 
+  it('fails before helper startup when the caller already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      runCommand(
+        {
+          commandId: 'adapter-pre-cancelled',
+          cmd: 'node',
+          args: ['-e', 'process.stdout.write("unused")'],
+          cwd: process.cwd(),
+          env: { PATH: process.env.PATH ?? '' },
+          readFiles: [],
+        },
+        { signal: controller.signal }
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('rejects cancellation even when the helper already captured stdout', async () => {
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 100);
+
+    try {
+      await expect(
+        runCommand(
+          {
+            commandId: 'adapter-mid-run-cancelled',
+            cmd: 'node',
+            args: [
+              '-e',
+              'process.stdout.write("partial"); setTimeout(() => {}, 5000)',
+            ],
+            cwd: process.cwd(),
+            env: { PATH: process.env.PATH ?? '' },
+            readFiles: [],
+            timeoutMs: 10_000,
+          },
+          { signal: controller.signal }
+        )
+      ).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  });
+
   it('does not inherit parent environment into delegated commands', async () => {
     const originalSecret = process.env.REVIEW_RUNNER_SECRET_FOR_TEST;
     process.env.REVIEW_RUNNER_SECRET_FOR_TEST = 'leaked';

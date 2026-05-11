@@ -54,6 +54,24 @@ export const reviewRuns = pgTable(
     detachedRunId: text('detached_run_id'),
     workflowRunId: text('workflow_run_id'),
     sandboxId: text('sandbox_id'),
+    leaseOwner: text('lease_owner'),
+    leaseScopeKey: text('lease_scope_key'),
+    leaseAcquiredAt: timestamp('lease_acquired_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    leaseHeartbeatAt: timestamp('lease_heartbeat_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    leaseExpiresAt: timestamp('lease_expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    cancelRequestedAt: timestamp('cancel_requested_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
     eventSequence: integer('event_sequence').notNull().default(0),
     createdAt: timestamp('created_at', {
       mode: 'date',
@@ -78,6 +96,8 @@ export const reviewRuns = pgTable(
   },
   (table) => [
     index('review_runs_status_idx').on(table.status),
+    index('review_runs_lease_expires_at_idx').on(table.leaseExpiresAt),
+    index('review_runs_lease_scope_key_idx').on(table.leaseScopeKey),
     index('review_runs_updated_at_idx').on(table.updatedAt),
     index('review_runs_retention_expires_at_idx').on(table.retentionExpiresAt),
     uniqueIndex('review_runs_detached_run_id_idx')

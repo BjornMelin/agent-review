@@ -50,6 +50,16 @@ export class UnsupportedRemoteSandboxTargetError extends Error {
   }
 }
 
+/**
+ * Represents a review run cancellation caused by an abort signal.
+ */
+export class ReviewRunCancelledError extends Error {
+  constructor(message = 'review run cancelled') {
+    super(message);
+    this.name = 'ReviewRunCancelledError';
+  }
+}
+
 export type ReviewArtifacts = Partial<Record<OutputFormat, string>>;
 
 export type ReviewRunResult = {
@@ -77,6 +87,7 @@ export type RunReviewOptions = {
   now?: () => Date;
   correlation?: Omit<CorrelationIds, 'reviewId'>;
   sandboxRunner?: SandboxReviewRunner;
+  signal?: AbortSignal;
 };
 
 export type MirrorWriteBridge = {
@@ -357,6 +368,43 @@ function throwOnBlockingDiagnostics(diagnostics: ProviderDiagnostic[]): void {
   throw new Error(`provider diagnostics failed: ${detail}`);
 }
 
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw cancellationErrorFromSignal(signal);
+}
+
+function cancellationErrorFromSignal(
+  signal: AbortSignal
+): ReviewRunCancelledError {
+  return new ReviewRunCancelledError(
+    signal.reason instanceof Error
+      ? signal.reason.message
+      : 'review run cancelled'
+  );
+}
+
+function isAbortLikeError(
+  error: unknown,
+  signal: AbortSignal | undefined
+): boolean {
+  return (
+    error instanceof ReviewRunCancelledError ||
+    (error instanceof Error && error.name === 'AbortError') ||
+    (signal?.reason instanceof Error && error === signal.reason)
+  );
+}
+
+function normalizeCancellationError(
+  error: unknown,
+  signal: AbortSignal | undefined
+): unknown {
+  return signal?.aborted && isAbortLikeError(error, signal)
+    ? cancellationErrorFromSignal(signal)
+    : error;
+}
+
 export function computeExitCode(
   result: ReviewResult,
   threshold?: ReviewRequest['severityThreshold']
@@ -373,6 +421,7 @@ export async function runReview(
   bridge?: MirrorWriteBridge
 ): Promise<ReviewRunResult> {
   const request = parseReviewRequest(input);
+  throwIfCancelled(options.signal);
   const reviewId = randomUUID();
   const now = options.now ?? (() => new Date());
   const emitContext: EmitContext = {
@@ -408,6 +457,7 @@ export async function runReview(
     },
     request.cwd
   );
+  throwIfCancelled(options.signal);
   await emit(emitContext, {
     type: 'enteredReviewMode',
     review: resolved.userFacingHint,
@@ -424,6 +474,7 @@ export async function runReview(
     request.executionMode === 'remoteSandbox'
       ? createRemoteSandboxDiffContext(request)
       : await collectDiffForReviewRequest(request);
+  throwIfCancelled(options.signal);
   const normalizedDiffChunks = diff.chunks.map((chunk) => ({
     file: chunk.file,
     patch: chunk.patch,
@@ -434,6 +485,7 @@ export async function runReview(
     resolvedPrompt: resolved.prompt,
     rubric: REVIEW_RUBRIC_PROMPT,
     normalizedDiffChunks,
+    ...(options.signal ? { abortSignal: options.signal } : {}),
   };
   let providerOutput: ReviewProviderRunOutput;
   let sandboxAudit: SandboxAudit | undefined;
@@ -448,9 +500,14 @@ export async function runReview(
       type: 'progress',
       message: `Running remote sandbox review on ${normalizedDiffChunks.length} diff chunk(s)`,
     });
-    const sandboxOutput = await runner(providerInput);
-    providerOutput = sandboxOutput;
-    sandboxAudit = sandboxOutput.sandboxAudit;
+    try {
+      const sandboxOutput = await runner(providerInput);
+      throwIfCancelled(options.signal);
+      providerOutput = sandboxOutput;
+      sandboxAudit = sandboxOutput.sandboxAudit;
+    } catch (error) {
+      throw normalizeCancellationError(error, options.signal);
+    }
     await emit(
       emitContext,
       {
@@ -466,12 +523,13 @@ export async function runReview(
     });
     try {
       providerOutput = await provider.run(providerInput);
+      throwIfCancelled(options.signal);
     } catch (error) {
       const commandRun = getReviewProviderCommandRun(error);
       if (commandRun) {
         await emitCommandRunProgress(emitContext, [commandRun]);
       }
-      throw error;
+      throw normalizeCancellationError(error, options.signal);
     }
   }
 
@@ -479,6 +537,7 @@ export async function runReview(
     providerOutput.raw,
     providerOutput.text
   );
+  throwIfCancelled(options.signal);
   const commandRuns = providerOutput.commandRun
     ? [providerOutput.commandRun]
     : [];

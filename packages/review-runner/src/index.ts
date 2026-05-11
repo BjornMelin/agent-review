@@ -69,6 +69,13 @@ const helperEnvAllowlist = [
   'ComSpec',
 ] as const;
 
+/**
+ * Configures cancellable command execution.
+ */
+export type CommandRunOptions = {
+  signal?: AbortSignal;
+};
+
 let buildPromise: Promise<string> | undefined;
 
 function parsePositiveIntegerEnv(name: string, fallback: number): number {
@@ -160,9 +167,14 @@ async function runWithStdin(
   command: string,
   args: string[],
   input: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<string> {
   return new Promise((resolveOutput, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
     const child = spawn(command, args, {
       cwd: repoRoot,
       detached: process.platform !== 'win32',
@@ -174,6 +186,7 @@ async function runWithStdin(
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let timedOut = false;
+    let externallyAborted = false;
     let outputLimitError: Error | undefined;
     let forceKillTimer: NodeJS.Timeout | undefined;
     let terminationRequested = false;
@@ -194,6 +207,18 @@ async function runWithStdin(
       timedOut = true;
       terminate();
     }, timeoutMs);
+    const abortListener = () => {
+      externallyAborted = true;
+      terminate();
+    };
+    signal?.addEventListener('abort', abortListener, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      signal?.removeEventListener('abort', abortListener);
+    };
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -228,17 +253,11 @@ async function runWithStdin(
       stderrBytes += chunkBytes;
     });
     child.on('error', (error) => {
-      clearTimeout(timer);
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
+      cleanup();
       reject(error);
     });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
+    child.on('close', (code, exitSignal) => {
+      cleanup();
       if (timedOut) {
         reject(
           new Error(
@@ -251,18 +270,31 @@ async function runWithStdin(
         reject(outputLimitError);
         return;
       }
+      if (externallyAborted) {
+        reject(abortError(signal));
+        return;
+      }
       if (code === 0) {
         resolveOutput(stdout);
         return;
       }
       reject(
         new Error(
-          `${command} ${args.join(' ')} failed with ${signal ?? code}: ${stderr.trim()}`
+          `${command} ${args.join(' ')} failed with ${exitSignal ?? code}: ${stderr.trim()}`
         )
       );
     });
     child.stdin.end(input);
   });
+}
+
+function abortError(signal: AbortSignal | undefined): Error {
+  if (signal?.reason instanceof Error) {
+    return signal.reason;
+  }
+  const error = new Error('command run aborted');
+  error.name = 'AbortError';
+  return error;
 }
 
 function signalChild(
@@ -283,12 +315,17 @@ function signalChild(
 /**
  * Runs a bounded command through the Rust process-group runner.
  *
- * @param input Command request validated against the shared review-types contract.
+ * @param input - Command request validated against the shared review-types contract.
+ * @param options - Optional configuration for the command run, including abort signals.
  * @returns Structured command result with redacted output and command events.
  */
 export async function runCommand(
-  input: CommandRunInput
+  input: CommandRunInput,
+  options: CommandRunOptions = {}
 ): Promise<CommandRunOutput> {
+  if (options.signal?.aborted) {
+    throw abortError(options.signal);
+  }
   const request = CommandRunInputSchema.parse(input);
   const binary = await ensureReviewRunnerBinary();
   const helperTimeoutMs = Math.max(
@@ -299,7 +336,8 @@ export async function runCommand(
     binary,
     ['run'],
     JSON.stringify(request),
-    helperTimeoutMs
+    helperTimeoutMs,
+    options.signal
   );
   return CommandRunOutputSchema.parse(JSON.parse(stdout));
 }

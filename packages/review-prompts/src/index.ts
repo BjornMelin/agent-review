@@ -89,7 +89,7 @@ The finding description should be one paragraph.
 
 OUTPUT FORMAT:
 
-## Output schema  — MUST MATCH *exactly*
+## Output schema -- MUST MATCH *exactly*
 
 {
   "findings": [

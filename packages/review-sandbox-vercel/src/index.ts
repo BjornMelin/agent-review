@@ -19,6 +19,34 @@ export const SandboxBudgetSchema = z.strictObject({
 
 const SANDBOX_ROOT = '/vercel/sandbox';
 const DEFAULT_SANDBOX_RUNTIME = 'node24';
+const SUPPRESSED_CLEANUP_ERRORS_KEY = 'suppressedCleanupErrors';
+
+type ErrorWithSuppressedCleanup = Error & {
+  suppressedCleanupErrors?: unknown[];
+};
+
+function cleanupErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function attachSuppressedCleanupError(
+  primaryError: unknown,
+  cleanupError: unknown
+): void {
+  if (!(primaryError instanceof Error)) {
+    return;
+  }
+  const error = primaryError as ErrorWithSuppressedCleanup;
+  const suppressed = [...(error.suppressedCleanupErrors ?? []), cleanupError];
+  error.message = `${error.message}; sandbox cleanup failed: ${cleanupErrorMessage(
+    cleanupError
+  )}`;
+  Object.defineProperty(error, SUPPRESSED_CLEANUP_ERRORS_KEY, {
+    configurable: true,
+    enumerable: true,
+    value: suppressed,
+  });
+}
 
 function sanitizeSandboxCwd(cwd: string): string {
   const resolved = resolve(SANDBOX_ROOT, cwd);
@@ -53,12 +81,17 @@ export type SandboxPolicy = {
   budget: SandboxBudget;
 };
 
+/**
+ * Defines files, commands, artifacts, policy, runtime, and cancellation for a
+ * sandbox execution.
+ */
 export type SandboxExecutionInput = {
   files?: Array<{ path: string; content: Buffer }>;
   commands: SandboxCommandInput[];
   artifacts?: Array<{ path: string }>;
   policy: SandboxPolicy;
   runtime?: 'node22' | 'node24' | 'python3.13';
+  signal?: AbortSignal;
 };
 
 export type SandboxExecutionOutput = {
@@ -204,9 +237,44 @@ function redactSecrets(text: string): {
   };
 }
 
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+  const error = new Error('sandbox execution aborted');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function linkAbortSignal(
+  source: AbortSignal | undefined,
+  target: AbortController
+): () => void {
+  if (!source) {
+    return () => undefined;
+  }
+  if (source.aborted) {
+    target.abort(source.reason);
+    return () => undefined;
+  }
+  const abort = () => target.abort(source.reason);
+  source.addEventListener('abort', abort, { once: true });
+  return () => source.removeEventListener('abort', abort);
+}
+
+function abortOptions(
+  signal: AbortSignal | undefined
+): { signal: AbortSignal } | undefined {
+  return signal ? { signal } : undefined;
+}
+
 export async function runInSandbox(
   input: SandboxExecutionInput
 ): Promise<SandboxExecutionOutput> {
+  throwIfAborted(input.signal);
   function sanitizeFilePath(filePath: string): string {
     const resolvedPath = resolve(SANDBOX_ROOT, filePath);
     const relativePath = relative(SANDBOX_ROOT, resolvedPath);
@@ -250,6 +318,7 @@ export async function runInSandbox(
       input.policy.networkProfile,
       input.policy.allowlistDomains
     ),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
 
   const startedAt = Date.now();
@@ -263,19 +332,32 @@ export async function runInSandbox(
     bearer: 0,
   };
   let denyAllApplied = input.policy.networkProfile !== 'bootstrap_then_deny';
+  let workFailed = true;
+  const stopSandbox = () =>
+    sandbox.stop({
+      blocking: true,
+      signal: AbortSignal.timeout(10_000),
+    });
 
   try {
+    throwIfAborted(input.signal);
     if (files && files.length > 0) {
-      await sandbox.writeFiles(files);
+      await sandbox.writeFiles(files, abortOptions(input.signal));
     }
 
     for (const command of validatedCommands) {
+      throwIfAborted(input.signal);
       if (
         input.policy.networkProfile === 'bootstrap_then_deny' &&
         !denyAllApplied &&
         command.phase !== 'bootstrap'
       ) {
-        await sandbox.updateNetworkPolicy('deny-all');
+        const options = abortOptions(input.signal);
+        if (options) {
+          await sandbox.updateNetworkPolicy('deny-all', options);
+        } else {
+          await sandbox.updateNetworkPolicy('deny-all');
+        }
         denyAllApplied = true;
       }
 
@@ -286,6 +368,7 @@ export async function runInSandbox(
         budget.maxCommandTimeoutMs
       );
       const controller = new AbortController();
+      const unlinkAbortSignal = linkAbortSignal(input.signal, controller);
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       const finished = await (async () => {
         try {
@@ -298,11 +381,17 @@ export async function runInSandbox(
           });
         } finally {
           clearTimeout(timeout);
+          unlinkAbortSignal();
         }
       })();
+      throwIfAborted(input.signal);
 
-      const stdoutSanitized = redactSecrets(await finished.stdout());
-      const stderrSanitized = redactSecrets(await finished.stderr());
+      const stdoutSanitized = redactSecrets(
+        await finished.stdout(abortOptions(input.signal))
+      );
+      const stderrSanitized = redactSecrets(
+        await finished.stderr(abortOptions(input.signal))
+      );
       const commandRedactions = {
         apiKeyLike:
           stdoutSanitized.redactions.apiKeyLike +
@@ -355,13 +444,23 @@ export async function runInSandbox(
       input.policy.networkProfile === 'bootstrap_then_deny' &&
       !denyAllApplied
     ) {
-      await sandbox.updateNetworkPolicy('deny-all');
+      throwIfAborted(input.signal);
+      const options = abortOptions(input.signal);
+      if (options) {
+        await sandbox.updateNetworkPolicy('deny-all', options);
+      } else {
+        await sandbox.updateNetworkPolicy('deny-all');
+      }
       denyAllApplied = true;
     }
 
     for (const artifact of input.artifacts ?? []) {
+      throwIfAborted(input.signal);
       const artifactPath = sanitizeFilePath(artifact.path);
-      const content = await sandbox.readFileToBuffer({ path: artifactPath });
+      const content = await sandbox.readFileToBuffer(
+        { path: artifactPath },
+        abortOptions(input.signal)
+      );
       if (!content) {
         continue;
       }
@@ -405,8 +504,17 @@ export async function runInSandbox(
       artifacts,
       audit,
     };
+    workFailed = false;
+    await stopSandbox();
     return result;
-  } finally {
-    await sandbox.stop({ blocking: true });
+  } catch (error) {
+    if (workFailed) {
+      try {
+        await stopSandbox();
+      } catch (cleanupError) {
+        attachSuppressedCleanupError(error, cleanupError);
+      }
+    }
+    throw error;
   }
 }

@@ -30,7 +30,7 @@ type TestStoreContext = Awaited<ReturnType<typeof createTestStore>>;
 async function createTestStore() {
   const client = new PGlite();
   await client.waitReady;
-  await client.exec(await readInitialMigrationSql());
+  await client.exec(await readStorageMigrationSql());
   const db = drizzle(client, { schema });
   return {
     client,
@@ -39,10 +39,26 @@ async function createTestStore() {
   };
 }
 
+async function readStorageMigrationSql(): Promise<string> {
+  return [
+    await readInitialMigrationSql(),
+    await readRuntimeControlMigrationSql(),
+  ].join('\n');
+}
+
 async function readInitialMigrationSql(): Promise<string> {
   return readFile(
     fileURLToPath(
       new URL('../../drizzle/0000_initial_review_storage.sql', import.meta.url)
+    ),
+    'utf8'
+  );
+}
+
+async function readRuntimeControlMigrationSql(): Promise<string> {
+  return readFile(
+    fileURLToPath(
+      new URL('../../drizzle/0001_review_runtime_control.sql', import.meta.url)
     ),
     'utf8'
   );
@@ -70,6 +86,10 @@ function createRequest(): ReviewRequest {
     executionMode: 'localTrusted',
     outputFormats: ['json', 'markdown'],
   };
+}
+
+function runtimeScopeKeyForRequest(request: ReviewRequest): string {
+  return `${request.executionMode}|${request.provider}|${request.cwd}|${request.target.type}`;
 }
 
 function createReviewResult(request: ReviewRequest): ReviewRunResult {
@@ -148,6 +168,18 @@ function createRecord(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
   };
 }
 
+type LeasedReviewRecord = ReviewRecord & {
+  lease: NonNullable<ReviewRecord['lease']>;
+};
+
+function createLeasedRecord(
+  overrides: Partial<ReviewRecord> & {
+    lease: NonNullable<ReviewRecord['lease']>;
+  }
+): LeasedReviewRecord {
+  return createRecord(overrides) as LeasedReviewRecord;
+}
+
 describe('review storage', () => {
   it('hydrates run records across store instances', async () => {
     await withTestStore(async ({ db, store }) => {
@@ -179,6 +211,525 @@ describe('review storage', () => {
       expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
         'event-1',
       ]);
+    });
+  });
+
+  it('persists runtime lease and cancellation audit fields', async () => {
+    await withTestStore(async ({ store }) => {
+      await store.set(
+        createRecord({
+          lease: {
+            owner: 'review-service',
+            scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+            acquiredAt: BASE_TIME_MS,
+            heartbeatAt: BASE_TIME_MS + 500,
+            expiresAt: BASE_TIME_MS + 60_000,
+          },
+          cancelRequestedAt: BASE_TIME_MS + 1_000,
+        }),
+        { reason: 'lease acquired' }
+      );
+
+      const actual = await store.get('review-1');
+
+      expect(actual?.lease).toEqual({
+        owner: 'review-service',
+        scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+        acquiredAt: BASE_TIME_MS,
+        heartbeatAt: BASE_TIME_MS + 500,
+        expiresAt: BASE_TIME_MS + 60_000,
+      });
+      expect(actual?.cancelRequestedAt).toBe(BASE_TIME_MS + 1_000);
+    });
+  });
+
+  it('reserves runtime leases with durable capacity checks', async () => {
+    await withTestStore(async ({ store }) => {
+      const first = createLeasedRecord({
+        reviewId: 'reserved-review',
+        lease: {
+          owner: 'review-service',
+          scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+          acquiredAt: BASE_TIME_MS,
+          heartbeatAt: BASE_TIME_MS,
+          expiresAt: BASE_TIME_MS + 60_000,
+        },
+      });
+      const second = createLeasedRecord({
+        reviewId: 'rejected-review',
+        lease: {
+          owner: 'review-service',
+          scopeKey: 'localTrusted|codexDelegate|/repo-2|custom',
+          acquiredAt: BASE_TIME_MS,
+          heartbeatAt: BASE_TIME_MS,
+          expiresAt: BASE_TIME_MS + 60_000,
+        },
+      });
+
+      await expect(
+        store.reserve(first, {
+          nowMs: BASE_TIME_MS,
+          maxQueuedRuns: 1,
+          maxRunningRuns: 10,
+          maxActiveRunsPerScope: 10,
+          reason: 'reserve first',
+        })
+      ).resolves.toEqual({ reserved: true });
+      await expect(
+        store.reserve(second, {
+          nowMs: BASE_TIME_MS,
+          maxQueuedRuns: 1,
+          maxRunningRuns: 10,
+          maxActiveRunsPerScope: 10,
+          reason: 'reserve second',
+        })
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'queue',
+        message: 'review queue is at capacity',
+      });
+      await expect(store.get('rejected-review')).resolves.toBeUndefined();
+    });
+  });
+
+  it('does not count queued reservations against running capacity', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'queued-review',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve queued first',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'second-queued-review',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve queued second',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+    });
+  });
+
+  it('counts queued detached workflow records against execution and scope capacity', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await store.set(
+        createLeasedRecord({
+          reviewId: 'queued-detached-review',
+          request,
+          detachedRunId: 'detached-queued-run',
+          status: 'queued',
+          lease: {
+            owner: 'review-service',
+            scopeKey,
+            acquiredAt: BASE_TIME_MS,
+            heartbeatAt: BASE_TIME_MS,
+            expiresAt: BASE_TIME_MS + 60_000,
+          },
+        }),
+        { reason: 'queued detached workflow run' }
+      );
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-detached-execution',
+            request: { ...request, cwd: '/repo/other' },
+            lease: {
+              owner: 'review-service',
+              scopeKey: 'localTrusted|codexDelegate|/repo/other|custom',
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve after queued detached execution',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'running',
+        message: 'review runtime concurrency is at capacity',
+      });
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-detached-scope',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve after queued detached scope',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'scope',
+        message: 'review runtime scope is at capacity',
+      });
+    });
+  });
+
+  it('counts leased queued reservations against scope capacity while dispatching', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'dispatching-queued-review',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve dispatching queued',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-dispatching-scope',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve after dispatching scope',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'scope',
+        message: 'review runtime scope is at capacity',
+      });
+    });
+  });
+
+  it('counts legacy unleased and expired leased rows until reconciliation confirms terminal state', async () => {
+    await withTestStore(async ({ store }) => {
+      await store.set(
+        createRecord({
+          reviewId: 'legacy-unleased-review',
+          status: 'queued',
+        }),
+        { reason: 'legacy active row' }
+      );
+      await store.set(
+        createRecord({
+          reviewId: 'expired-leased-review',
+          status: 'running',
+          lease: {
+            owner: 'review-service',
+            scopeKey: 'localTrusted|codexDelegate|/repo-old|custom',
+            acquiredAt: BASE_TIME_MS - 60_000,
+            heartbeatAt: BASE_TIME_MS - 60_000,
+            expiresAt: BASE_TIME_MS - 1,
+          },
+        }),
+        { reason: 'expired lease' }
+      );
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'reserved-after-legacy-queue',
+            lease: {
+              owner: 'review-service',
+              scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 1,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve after legacy queued',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'queue',
+        message: 'review queue is at capacity',
+      });
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'reserved-after-expired-lease',
+            lease: {
+              owner: 'review-service',
+              scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve after expired lease',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'running',
+        message: 'review runtime concurrency is at capacity',
+      });
+    });
+  });
+
+  it('ignores stale legacy unleased rows after the active upgrade-drain window', async () => {
+    await withTestStore(async ({ store }) => {
+      await store.set(
+        createRecord({
+          reviewId: 'stale-legacy-unleased-review',
+          status: 'running',
+          updatedAt: BASE_TIME_MS - 120_000,
+        }),
+        { reason: 'stale legacy active row' }
+      );
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'reserved-after-stale-legacy',
+            lease: {
+              owner: 'review-service',
+              scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            legacyUnleasedActiveTtlMs: 60_000,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 1,
+            maxActiveRunsPerScope: 10,
+            reason: 'reserve after stale legacy',
+          }
+        )
+      ).resolves.toEqual({ reserved: true });
+    });
+  });
+
+  it('counts fresh legacy unleased rows against reconstructed scope limits', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = {
+        ...createRequest(),
+        cwd: '/repo/scope',
+      };
+      const scopeKey = runtimeScopeKeyForRequest(request);
+      await store.set(
+        createRecord({
+          reviewId: 'fresh-legacy-unleased-scope',
+          status: 'running',
+          request,
+        }),
+        { reason: 'fresh legacy active row' }
+      );
+
+      await expect(
+        store.reserve(
+          createLeasedRecord({
+            reviewId: 'blocked-by-legacy-scope',
+            request,
+            lease: {
+              owner: 'review-service',
+              scopeKey,
+              acquiredAt: BASE_TIME_MS,
+              heartbeatAt: BASE_TIME_MS,
+              expiresAt: BASE_TIME_MS + 60_000,
+            },
+          }),
+          {
+            nowMs: BASE_TIME_MS,
+            legacyUnleasedActiveTtlMs: 60_000,
+            scopeKeyForRequest: runtimeScopeKeyForRequest,
+            maxQueuedRuns: 10,
+            maxRunningRuns: 10,
+            maxActiveRunsPerScope: 1,
+            reason: 'reserve after fresh legacy scope',
+          }
+        )
+      ).resolves.toEqual({
+        reserved: false,
+        reason: 'scope',
+        message: 'review runtime scope is at capacity',
+      });
+    });
+  });
+
+  it('rejects runtime reservations without a lease', async () => {
+    const missingDrizzleLease = createRecord({
+      reviewId: 'missing-drizzle-lease',
+    }) as Parameters<TestStoreContext['store']['reserve']>[0];
+    const missingMemoryLease = createRecord({
+      reviewId: 'missing-memory-lease',
+    }) as Parameters<
+      ReturnType<typeof createInMemoryReviewStore>['reserve']
+    >[0];
+    const options = {
+      nowMs: BASE_TIME_MS,
+      maxQueuedRuns: 10,
+      maxRunningRuns: 10,
+      maxActiveRunsPerScope: 10,
+      reason: 'missing lease',
+    };
+    await withTestStore(async ({ store }) => {
+      await expect(store.reserve(missingDrizzleLease, options)).rejects.toThrow(
+        'runtime reservation requires a lease'
+      );
+    });
+    const store = createInMemoryReviewStore();
+    await expect(store.reserve(missingMemoryLease, options)).rejects.toThrow(
+      'runtime reservation requires a lease'
+    );
+  });
+
+  it('does not overwrite terminal rows with stale active writes', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      await store.set(
+        createRecord({
+          reviewId: 'monotonic-review',
+          status: 'running',
+          request,
+          lease: {
+            owner: 'review-service',
+            scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+            acquiredAt: BASE_TIME_MS,
+            heartbeatAt: BASE_TIME_MS,
+            expiresAt: BASE_TIME_MS + 60_000,
+          },
+        }),
+        { reason: 'running' }
+      );
+      await store.set(
+        createRecord({
+          reviewId: 'monotonic-review',
+          status: 'completed',
+          request,
+          updatedAt: BASE_TIME_MS + 1_000,
+          result: createReviewResult(request),
+          retentionExpiresAt: BASE_TIME_MS + 60_000,
+        }),
+        { reason: 'completed' }
+      );
+      await store.set(
+        createRecord({
+          reviewId: 'monotonic-review',
+          status: 'running',
+          request,
+          updatedAt: BASE_TIME_MS + 2_000,
+          lease: {
+            owner: 'review-service',
+            scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+            acquiredAt: BASE_TIME_MS,
+            heartbeatAt: BASE_TIME_MS + 2_000,
+            expiresAt: BASE_TIME_MS + 62_000,
+          },
+        }),
+        { reason: 'stale running sync' }
+      );
+      await store.appendEvent(
+        createRecord({
+          reviewId: 'monotonic-review',
+          status: 'failed',
+          request,
+          updatedAt: BASE_TIME_MS + 3_000,
+          error: 'runtime lease expired',
+        }),
+        {
+          ...createEvent('monotonic-review', 4, 'runtime lease expired'),
+          type: 'failed',
+          message: 'runtime lease expired',
+        },
+        { maxEvents: 10, reason: 'stale failed event' }
+      );
+
+      await expect(store.get('monotonic-review')).resolves.toMatchObject({
+        status: 'completed',
+        retentionExpiresAt: BASE_TIME_MS + 60_000,
+        events: [],
+      });
     });
   });
 
@@ -359,7 +910,7 @@ describe('review storage', () => {
     });
   });
 
-  it('keeps durable appendEvent from overwriting newer run fields', async () => {
+  it('keeps durable appendEvent from mutating newer terminal rows', async () => {
     await withTestStore(async ({ store }) => {
       const request = createRequest();
       await store.set(createRecord({ request }), { reason: 'created' });
@@ -391,13 +942,11 @@ describe('review storage', () => {
       expect(actual?.result?.artifacts.markdown).toBe(
         '# Review\n\nNo findings.'
       );
-      expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
-        'event-1',
-      ]);
+      expect(actual?.events.map((event) => event.meta.eventId)).toEqual([]);
     });
   });
 
-  it('keeps in-memory appendEvent from overwriting newer run fields', async () => {
+  it('keeps in-memory appendEvent from mutating newer terminal rows', async () => {
     const request = createRequest();
     const store = createInMemoryReviewStore();
     await store.set(createRecord({ request }), { reason: 'created' });
@@ -427,9 +976,7 @@ describe('review storage', () => {
       retentionExpiresAt: BASE_TIME_MS + 86_400_000,
     });
     expect(actual?.result?.artifacts.markdown).toBe('# Review\n\nNo findings.');
-    expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
-      'event-1',
-    ]);
+    expect(actual?.events.map((event) => event.meta.eventId)).toEqual([]);
   });
 
   it('preserves stored events when stale records update run state', async () => {
@@ -607,6 +1154,65 @@ describe('review storage', () => {
     ).toBeDefined();
   });
 
+  it('upgrades existing initial-schema databases with runtime control columns', async () => {
+    const client = new PGlite();
+    await client.waitReady;
+    try {
+      await client.exec(await readInitialMigrationSql());
+      await client.exec(
+        `
+          INSERT INTO review_runs (
+            review_id,
+            run_id,
+            status,
+            request,
+            request_summary,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            'legacy-review',
+            'legacy-review',
+            'queued',
+            '{"cwd":"/repo","target":{"type":"custom","instructions":"legacy"},"provider":"codexDelegate","executionMode":"localTrusted","outputFormats":["json"]}'::jsonb,
+            '{"provider":"codexDelegate","executionMode":"localTrusted","targetType":"custom","outputFormats":["json"]}'::jsonb,
+            '2026-01-01T12:00:00Z',
+            '2026-01-01T12:00:00Z'
+          )
+        `
+      );
+      await client.exec(await readRuntimeControlMigrationSql());
+      const db = drizzle(client, { schema });
+      const store = createDrizzleReviewStore(db);
+
+      await expect(store.get('legacy-review')).resolves.toMatchObject({
+        reviewId: 'legacy-review',
+        status: 'queued',
+      });
+      await store.set(
+        createRecord({
+          reviewId: 'legacy-review',
+          lease: {
+            owner: 'review-service',
+            scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+            acquiredAt: BASE_TIME_MS,
+            heartbeatAt: BASE_TIME_MS,
+            expiresAt: BASE_TIME_MS + 60_000,
+          },
+        }),
+        { reason: 'lease write after upgrade' }
+      );
+      await expect(store.get('legacy-review')).resolves.toMatchObject({
+        lease: {
+          owner: 'review-service',
+          scopeKey: 'localTrusted|codexDelegate|/repo|custom',
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it('publishes the manual migration through the Drizzle journal', async () => {
     const { readMigrationFiles } = await import('drizzle-orm/migrator');
 
@@ -616,9 +1222,12 @@ describe('review storage', () => {
       ),
     });
 
-    expect(migrations).toHaveLength(1);
+    expect(migrations).toHaveLength(2);
     expect(migrations[0]?.sql.join('\n').trim()).toBe(
       (await readInitialMigrationSql()).trim()
+    );
+    expect(migrations[1]?.sql.join('\n').trim()).toBe(
+      (await readRuntimeControlMigrationSql()).trim()
     );
   });
 });

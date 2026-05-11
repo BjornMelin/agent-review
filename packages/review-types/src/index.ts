@@ -289,6 +289,17 @@ export const ReviewArtifactMetadataSchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
 });
 
+/**
+ * Tracks service-owned runtime capacity and heartbeat ownership for active runs.
+ */
+export const ReviewRunLeaseSchema = z.strictObject({
+  owner: z.string().min(1),
+  scopeKey: z.string().min(1),
+  acquiredAt: z.number().int().nonnegative(),
+  heartbeatAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative(),
+});
+
 const SandboxAuditRedactionsSchema = z.strictObject({
   apiKeyLike: z.number().int().nonnegative(),
   bearer: z.number().int().nonnegative(),
@@ -434,6 +445,8 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   error: z.string().min(1).optional(),
   workflowRunId: z.string().min(1).optional(),
   sandboxId: z.string().min(1).optional(),
+  lease: ReviewRunLeaseSchema.optional(),
+  cancelRequestedAt: z.number().int().nonnegative().optional(),
 });
 
 /**
@@ -487,6 +500,10 @@ export type ReviewArtifactMetadata = z.infer<
   typeof ReviewArtifactMetadataSchema
 >;
 /**
+ * Describes persisted runtime lease ownership and heartbeat timestamps for a run.
+ */
+export type ReviewRunLease = z.infer<typeof ReviewRunLeaseSchema>;
+/**
  * Command execution request accepted by the local runner helper.
  */
 export type CommandRunInput = z.infer<typeof CommandRunInputSchema>;
@@ -515,11 +532,15 @@ export type ReviewProviderValidationInput = {
   capabilities: ReviewProviderCapabilities;
 };
 
+/**
+ * Defines the prompt, diff, request, and cancellation inputs passed to providers.
+ */
 export type ReviewProviderRunInput = {
   request: ReviewRequest;
   resolvedPrompt: string;
   rubric: string;
   normalizedDiffChunks: Array<{ file: string; patch: string }>;
+  abortSignal?: AbortSignal;
 };
 
 /**

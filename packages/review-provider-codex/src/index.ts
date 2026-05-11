@@ -212,26 +212,29 @@ export class CodexDelegateProvider implements ReviewProvider {
       args.unshift('--model', input.request.model);
     }
 
-    const output = await runCommand({
-      commandId: 'codex-review',
-      cmd: this.codexBin,
-      args,
-      cwd: input.request.cwd,
-      env: codexEnv(),
-      timeoutMs: CODEX_REVIEW_TIMEOUT_MS,
-      maxStdoutBytes: this.outputBytes,
-      maxStderrBytes: this.outputBytes,
-      maxFileBytes: this.outputBytes,
-      maxTotalFileBytes: this.outputBytes,
-      tempDirPrefix: 'review-agent-codex-',
-      readFiles: [
-        {
-          key: LAST_MESSAGE_KEY,
-          path: `${TEMP_DIR_PLACEHOLDER}/last-message.txt`,
-          optional: true,
-        },
-      ],
-    });
+    const output = await runCommand(
+      {
+        commandId: 'codex-review',
+        cmd: this.codexBin,
+        args,
+        cwd: input.request.cwd,
+        env: codexEnv(),
+        timeoutMs: CODEX_REVIEW_TIMEOUT_MS,
+        maxStdoutBytes: this.outputBytes,
+        maxStderrBytes: this.outputBytes,
+        maxFileBytes: this.outputBytes,
+        maxTotalFileBytes: this.outputBytes,
+        tempDirPrefix: 'review-agent-codex-',
+        readFiles: [
+          {
+            key: LAST_MESSAGE_KEY,
+            path: `${TEMP_DIR_PLACEHOLDER}/last-message.txt`,
+            optional: true,
+          },
+        ],
+      },
+      input.abortSignal ? { signal: input.abortSignal } : undefined
+    );
 
     const text = commandText(output);
     if (output.status !== 'completed' || output.exitCode !== 0) {
