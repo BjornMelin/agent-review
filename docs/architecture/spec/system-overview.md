@@ -25,7 +25,8 @@ pass parity, benchmark, and generated-contract gates.
 
 - `review-core`: orchestrates diff collection, prompt resolution, provider execution, finding normalization, validation, and artifact rendering.
 - `review-types`: shared schemas/types and provider interfaces.
-- `review-git`: collects and parses unified diff context.
+- `review-git`: collects git patch text and delegates parse/filter/index work
+  to the Rust diff-index helper.
 - `review-prompts`: builds target-specific prompt text and shared rubric.
 - `review-provider-codex`: invokes Codex CLI delegate.
 - `review-provider-openai`: invokes AI SDK gateway/openrouter models.
@@ -40,10 +41,10 @@ pass parity, benchmark, and generated-contract gates.
 
 - `review-contracts`: generated DTO parity and schema-validating parser helpers
   for committed `review-types` JSON Schema artifacts.
-- `review-git-diff`: diff parser/index candidate used by conformance fixtures
-  and benchmarks only. TypeScript remains the production diff owner until a
-  later issue proves parity, performance, and deletion value, then cuts over
-  without a permanent dual path.
+- `review-git-diff`: production stdin/stdout diff-index helper. It validates
+  the generated `ReviewRequest` contract, parses unified git patches, applies
+  include/exclude and byte/file budgets, and returns normalized chunks plus the
+  changed-line index.
 
 ## Core Data Flow
 
@@ -53,7 +54,9 @@ pass parity, benchmark, and generated-contract gates.
    instances.
 3. Request is parsed with `ReviewRequestSchema`.
 4. Prompt is resolved from target (`review-prompts`).
-5. Diff context is collected (`review-git`) and filtered (`review-core`) by include/exclude path and byte/file budgets.
+5. Diff context is collected (`review-git`) and indexed by `review-git-diff`,
+   which applies include/exclude paths and byte/file budgets before provider
+   execution.
 6. Selected provider executes using prompt + rubric + normalized diff chunks.
 7. Provider output is normalized to `ReviewResult` shape.
 8. Finding locations are normalized to absolute paths and validated against changed line index.

@@ -39,6 +39,10 @@ and treated as downstream artifacts. Rust code must not define a competing
 canonical request, result, lifecycle event, provider, sandbox, or API schema.
 The root Cargo workspace and `crates/review-contracts` provide that generation
 and parity gate before any Rust helper behavior is allowed to ship.
+`crates/review-git-diff` is the first admitted helper: TypeScript still owns Git
+CLI collection, while Rust validates the generated `ReviewRequest`, performs
+diff parse/filter/index work, and returns the normalized helper output over a
+stdin/stdout JSON contract.
 
 Postgres with Drizzle is the target durable store for run, event, and artifact
 metadata. Vercel Workflow coordinates execution, retries, and resumption; it
@@ -117,7 +121,7 @@ contracts are stable enough to justify a second product surface.
 - `docs/architecture/spec/system-overview.md`
 - `docs/architecture/spec/schema-and-provider-contracts.md`
 - https://docs.rs/typify/latest/typify/
-- https://docs.rs/unidiff/latest/unidiff/
+- https://docs.rs/globset/latest/globset/
 - https://docs.rs/command-group/latest/command_group/
 - https://vercel.com/docs/functions/runtimes/rust
 - https://v2.tauri.app/security/capabilities/

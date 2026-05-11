@@ -1,8 +1,8 @@
 # Review Agent Platform
 
 Codex-grade review agent platform implemented as a pnpm/Turborepo monorepo with
-a small Rust helper workspace for generated contract parity and gated helper
-candidates.
+a small Rust helper workspace for generated contract parity and production
+diff indexing.
 
 ## What It Does
 
@@ -107,8 +107,12 @@ pnpm --filter @review-agent/review-service db:migrate
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
 | `OPENROUTER_API_KEY` | `packages/review-provider-openai` via provider registry | API key for OpenRouter |
 | `CONVEX_URL` | `packages/review-convex-bridge` | Enables optional metadata mirror mutation |
+| `REVIEW_AGENT_DIFF_INDEX_BIN` | `packages/review-git` | Overrides the Rust diff-index helper binary path; package builds otherwise resolve `dist/bin/review-git-diff` |
+| `REVIEW_AGENT_DIFF_INDEX_ALLOW_BUILD=1` | `packages/review-git` | Enables development-only Cargo build fallback when the helper binary is missing |
+| `REVIEW_AGENT_DIFF_INDEX_BUILD_TIMEOUT_MS` | `packages/review-git` | Overrides the development-only Rust helper build timeout (default `120000`) |
+| `REVIEW_AGENT_DIFF_INDEX_MAX_STDOUT_BYTES` / `REVIEW_AGENT_DIFF_INDEX_MAX_STDERR_BYTES` | `packages/review-git` | Caps Rust helper output collected by the Node adapter |
+| `REVIEW_AGENT_DIFF_INDEX_TIMEOUT_MS` | `packages/review-git` | Overrides the Rust diff-index helper execution timeout (default `30000`) |
 | `REVIEW_AGENT_STRICT_PERF=1` | `packages/review-git` tests | Enables strict parser/diff performance thresholds |
-| `REVIEW_AGENT_RUST_DIFF_BENCH=1` | `packages/review-git` tests | Compares the TypeScript parser/index path with the Rust `review-git-diff` candidate |
 
 ## Build and CI
 
