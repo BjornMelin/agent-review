@@ -16,6 +16,7 @@
   "dependencies": {
     "@review-agent/review-core": "workspace:*",
     "@review-agent/review-provider-registry": "workspace:*",
+    "@review-agent/review-sandbox-vercel": "workspace:*",
     "@review-agent/review-types": "workspace:*",
     "@workflow/core": "4.2.4"
   },

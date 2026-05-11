@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
+import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
+import { devNull } from 'node:os';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { ReviewTarget } from '@review-agent/review-types';
 
@@ -31,6 +32,17 @@ type GitExecOptions = {
   allowExitCodes?: number[];
 };
 
+const SAFE_GIT_ENV = {
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: devNull,
+  GIT_EXTERNAL_DIFF: '',
+  GIT_OPTIONAL_LOCKS: '0',
+  GIT_PAGER: 'cat',
+  GIT_TERMINAL_PROMPT: '0',
+} as const;
+
+const SAFE_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+
 async function runGit(
   cwd: string,
   args: string[],
@@ -38,8 +50,12 @@ async function runGit(
 ): Promise<string> {
   const allowExitCodes = new Set(options.allowExitCodes ?? [0]);
   try {
-    const { stdout } = await execFileAsync('git', args, {
+    const { stdout } = await execFileAsync('git', ['--no-pager', ...args], {
       cwd,
+      env: {
+        ...process.env,
+        ...SAFE_GIT_ENV,
+      },
       maxBuffer: 16 * 1024 * 1024,
       encoding: 'utf8',
     });
@@ -55,7 +71,9 @@ async function runGit(
       return String(err.stdout ?? '').trimEnd();
     }
     const stderr = String(err.stderr ?? '').trim();
-    throw new Error(`git ${args.join(' ')} failed: ${stderr || err.message}`);
+    throw new Error(
+      `git --no-pager ${args.join(' ')} failed: ${stderr || err.message}`
+    );
   }
 }
 
@@ -147,11 +165,60 @@ function isBinaryBuffer(buffer: Buffer): boolean {
   return buffer.includes(0);
 }
 
+function assertPathContained(
+  root: string,
+  candidate: string,
+  label: string
+): void {
+  const pathFromRoot = relative(root, candidate);
+  if (
+    pathFromRoot === '..' ||
+    pathFromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(pathFromRoot)
+  ) {
+    throw new Error(`${label} escapes repository root`);
+  }
+}
+
+function buildUntrackedSymlinkPatch(
+  relativePath: string,
+  linkTarget: string
+): string {
+  return [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    'new file mode 120000',
+    '--- /dev/null',
+    `+++ b/${relativePath}`,
+    '@@ -0,0 +1 @@',
+    `+${linkTarget}`,
+    '\\ No newline at end of file',
+    '',
+  ].join('\n');
+}
+
 async function buildUntrackedFilePatch(
   cwd: string,
   relativePath: string
 ): Promise<string> {
-  const absolutePath = resolve(cwd, relativePath);
+  const root = await realpath(cwd);
+  const absolutePath = resolve(root, relativePath);
+  assertPathContained(root, absolutePath, 'untracked file path');
+  const stats = await lstat(absolutePath);
+
+  if (stats.isSymbolicLink()) {
+    return buildUntrackedSymlinkPatch(
+      relativePath,
+      await readlink(absolutePath)
+    );
+  }
+
+  if (!stats.isFile()) {
+    return '';
+  }
+
+  const resolvedPath = await realpath(absolutePath);
+  assertPathContained(root, resolvedPath, 'untracked file realpath');
+
   const bytes = await readFile(absolutePath);
   if (isBinaryBuffer(bytes)) {
     return [
@@ -182,8 +249,14 @@ async function buildUntrackedFilePatch(
 
 async function buildUncommittedPatch(cwd: string): Promise<string> {
   const [staged, unstaged, untrackedListRaw] = await Promise.all([
-    runGit(cwd, ['diff', '--no-color', '--binary', '--staged']),
-    runGit(cwd, ['diff', '--no-color', '--binary']),
+    runGit(cwd, [
+      'diff',
+      ...SAFE_DIFF_ARGS,
+      '--no-color',
+      '--binary',
+      '--staged',
+    ]),
+    runGit(cwd, ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary']),
     runGit(cwd, ['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
 
@@ -341,6 +414,7 @@ export async function collectDiffForTarget(
       if (mergeBaseSha) {
         patch = await runGit(cwd, [
           'diff',
+          ...SAFE_DIFF_ARGS,
           '--no-color',
           '--binary',
           mergeBaseSha,
@@ -348,6 +422,7 @@ export async function collectDiffForTarget(
       } else {
         patch = await runGit(cwd, [
           'diff',
+          ...SAFE_DIFF_ARGS,
           '--no-color',
           '--binary',
           target.branch,
@@ -366,6 +441,7 @@ export async function collectDiffForTarget(
     case 'commit': {
       patch = await runGit(cwd, [
         'show',
+        ...SAFE_DIFF_ARGS,
         '--no-color',
         '--binary',
         '--format=',

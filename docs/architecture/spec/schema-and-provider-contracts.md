@@ -136,6 +136,8 @@ queryable persistence:
 - `ReviewEventCursorSchema`: event replay cursor with bounded `limit` default.
 - `SandboxAuditSchema`: sandbox policy, budget consumption, redaction counters,
   and per-command audit records.
+- `ReviewResultSchema.metadata.sandboxId`: optional sandbox identifier surfaced
+  for completed remote sandbox runs.
 
 The initial service database migration creates:
 

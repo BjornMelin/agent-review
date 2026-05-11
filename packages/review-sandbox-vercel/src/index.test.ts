@@ -1,25 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { runCommandMock, updateNetworkPolicyMock, stopMock, createMock } =
-  vi.hoisted(() => {
-    const runCommand = vi.fn();
-    const writeFiles = vi.fn();
-    const updateNetworkPolicy = vi.fn();
-    const stop = vi.fn();
-    const create = vi.fn(async () => ({
-      sandboxId: 'sbx-test',
-      writeFiles,
-      runCommand,
-      updateNetworkPolicy,
-      stop,
-    }));
-    return {
-      runCommandMock: runCommand,
-      updateNetworkPolicyMock: updateNetworkPolicy,
-      stopMock: stop,
-      createMock: create,
-    };
-  });
+const {
+  readFileToBufferMock,
+  runCommandMock,
+  updateNetworkPolicyMock,
+  stopMock,
+  createMock,
+} = vi.hoisted(() => {
+  const runCommand = vi.fn();
+  const readFileToBuffer = vi.fn();
+  const writeFiles = vi.fn();
+  const updateNetworkPolicy = vi.fn();
+  const stop = vi.fn();
+  const create = vi.fn(async () => ({
+    sandboxId: 'sbx-test',
+    writeFiles,
+    readFileToBuffer,
+    runCommand,
+    updateNetworkPolicy,
+    stop,
+  }));
+  return {
+    readFileToBufferMock: readFileToBuffer,
+    runCommandMock: runCommand,
+    updateNetworkPolicyMock: updateNetworkPolicy,
+    stopMock: stop,
+    createMock: create,
+  };
+});
 
 vi.mock('@vercel/sandbox', () => ({
   Sandbox: {
@@ -47,6 +55,7 @@ describe('sandbox policy and budget enforcement', () => {
     runCommandMock.mockResolvedValue(
       createFinishedCommand({ stdout: 'ok', stderr: '' })
     );
+    readFileToBufferMock.mockResolvedValue(null);
   });
 
   it('blocks commands outside allowlist', async () => {
@@ -60,6 +69,19 @@ describe('sandbox policy and budget enforcement', () => {
     ).rejects.toThrow('blocked by sandbox policy');
     expect(createMock).toHaveBeenCalledTimes(0);
     expect(stopMock).toHaveBeenCalledTimes(0);
+  });
+
+  it('blocks path-like command names even when the basename is allowlisted', async () => {
+    const policy = createDefaultPolicy();
+    policy.commandAllowlist = new Set(['node']);
+
+    await expect(
+      runInSandbox({
+        commands: [{ cmd: './node', args: [], cwd: '/vercel/sandbox' }],
+        policy,
+      })
+    ).rejects.toThrow('command paths are not allowed');
+    expect(createMock).toHaveBeenCalledTimes(0);
   });
 
   it('fails fast when staging files escapes sandbox root', async () => {
@@ -114,13 +136,41 @@ describe('sandbox policy and budget enforcement', () => {
   it('enforces artifact budget', async () => {
     const policy = createDefaultPolicy();
     policy.budget.maxArtifactBytes = 64;
+    readFileToBufferMock.mockResolvedValue(Buffer.alloc(65));
 
     await expect(
       runInSandbox({
         commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+        artifacts: [{ path: 'review-output.json' }],
         policy,
       })
     ).rejects.toThrow('sandbox artifact budget exceeded');
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('extracts requested artifacts and accounts for redactions', async () => {
+    const policy = createDefaultPolicy();
+    readFileToBufferMock.mockResolvedValue(
+      Buffer.from('artifact sk-12345678901234567890')
+    );
+
+    const result = await runInSandbox({
+      commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+      artifacts: [{ path: 'review-output.json' }],
+      policy,
+    });
+
+    expect(result.artifacts).toEqual([
+      {
+        path: 'review-output.json',
+        content: 'artifact [REDACTED_SECRET]',
+        byteLength: 'artifact sk-12345678901234567890'.length,
+      },
+    ]);
+    expect(result.audit.consumed.artifactBytes).toBe(
+      'artifact sk-12345678901234567890'.length
+    );
+    expect(result.audit.redactions.apiKeyLike).toBeGreaterThan(0);
     expect(stopMock).toHaveBeenCalledTimes(1);
   });
 

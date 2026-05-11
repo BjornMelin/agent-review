@@ -1154,7 +1154,7 @@ describe('createReviewServiceApp', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  it('rejects unsupported remote sandbox requests before dispatch', async () => {
+  it('requires detached delivery for remote sandbox requests', async () => {
     const worker = createWorker();
     const app = createReviewServiceApp({
       providers: createProviders(),
@@ -1172,7 +1172,116 @@ describe('createReviewServiceApp', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: 'executionMode "remoteSandbox" is not supported by review-service',
+      error: 'executionMode "remoteSandbox" requires detached delivery',
+    });
+    expect(worker.started).toEqual([]);
+  });
+
+  it('accepts detached remote sandbox requests and persists sandbox ids', async () => {
+    const request = createRequest({ executionMode: 'remoteSandbox' });
+    const baseResult = createReviewResult(request);
+    const result: ReviewRunResult = {
+      ...baseResult,
+      result: {
+        ...baseResult.result,
+        metadata: {
+          ...baseResult.result.metadata,
+          sandboxId: 'sbx-service-test',
+        },
+      },
+      sandboxAudit: {
+        sandboxId: 'sbx-service-test',
+        policy: {
+          networkProfile: 'deny_all',
+          allowlistDomains: [],
+          commandAllowlistSize: 1,
+          envAllowlistSize: 1,
+        },
+        consumed: {
+          commandCount: 1,
+          wallTimeMs: 1,
+          outputBytes: 1,
+          artifactBytes: 1,
+        },
+        redactions: { apiKeyLike: 0, bearer: 0 },
+        commands: [],
+      },
+    };
+    const worker = createWorker(
+      createDetachedRun({
+        status: 'completed',
+        completedAt: 1_500,
+        result,
+        sandboxId: 'sbx-service-test',
+      })
+    );
+    const store = createStore();
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as {
+      reviewId: string;
+      status: string;
+      detachedRunId: string;
+    };
+    expect(body).toMatchObject({
+      status: 'completed',
+      detachedRunId: 'detached-run-1',
+    });
+    expect(worker.started).toEqual([request]);
+    expect(store.records.get(body.reviewId)?.sandboxId).toBe(
+      'sbx-service-test'
+    );
+
+    const status = await app.request(`/v1/review/${body.reviewId}`);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      result: {
+        metadata: {
+          sandboxId: 'sbx-service-test',
+        },
+      },
+    });
+  });
+
+  it('rejects detached git-backed remote sandbox requests before dispatch', async () => {
+    const worker = createWorker();
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest({
+          executionMode: 'remoteSandbox',
+          target: { type: 'uncommittedChanges' },
+        }),
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error:
+        'executionMode "remoteSandbox" currently supports only custom targets until sandbox source binding is implemented; received target "uncommittedChanges"',
     });
     expect(worker.started).toEqual([]);
   });

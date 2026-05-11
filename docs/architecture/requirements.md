@@ -88,6 +88,8 @@ Remote sandbox execution shall enforce:
 - Environment key allowlist
 - Wall-time and output budgets
 - Basic secret redaction in command output
+- Artifact byte budgets and redaction before persisted audit/result storage
+- Sandbox ID propagation in run results and lifecycle/event correlation
 
 ### NFR-4 Operational Simplicity
 

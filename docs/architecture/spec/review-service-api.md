@@ -150,7 +150,14 @@ Returns:
   service store. Workflow orchestrates execution and retries, while
   `ReviewStoreAdapter` remains the queryable run/event/artifact state boundary.
 - Authentication defaults to allow-all through an injected auth policy hook.
-- `remoteSandbox` execution mode is currently rejected with `400`.
+- `remoteSandbox` execution mode must be requested with detached delivery. Inline
+  `remoteSandbox` requests return `400` with
+  `executionMode "remoteSandbox" requires detached delivery`.
+- Git-backed `remoteSandbox` targets currently return `400` until sandbox source
+  binding moves diff collection inside Vercel Sandbox. The accepted safe path is
+  `target.type: "custom"`.
+- Detached `remoteSandbox` runs are accepted by the service, executed by
+  `review-worker`, and surface the sandbox ID in result metadata when available.
 - Service error bodies follow `ReviewErrorResponseSchema`.
 - Store and worker runtime failures return `502` JSON errors without exposing
   raw database or provider details.

@@ -136,6 +136,10 @@
           },
           "required": ["mode"],
           "additionalProperties": false
+        },
+        "sandboxId": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": [

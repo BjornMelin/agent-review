@@ -110,6 +110,10 @@
             "type": "string",
             "minLength": 1
           },
+          "phase": {
+            "type": "string",
+            "enum": ["bootstrap", "runtime"]
+          },
           "startedAtMs": {
             "type": "integer",
             "minimum": 0,

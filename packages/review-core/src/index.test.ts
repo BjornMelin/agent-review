@@ -1,10 +1,11 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   computeExitCode,
   InvalidFindingLocationError,
   runReview,
+  UnsupportedRemoteSandboxTargetError,
 } from './index.js';
 import { makeProvider, makeRepo } from './test-helpers.js';
 
@@ -141,6 +142,122 @@ describe('runReview', () => {
           }
         )
       ).rejects.toBeInstanceOf(InvalidFindingLocationError);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('runs remote sandbox mode through the configured sandbox runner', async () => {
+    const repo = await makeRepo();
+    try {
+      const providerRun = vi.fn();
+      const provider = {
+        ...makeProvider({}, 'codexDelegate'),
+        run: providerRun,
+      };
+      const review = await runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'custom', instructions: 'remote sandbox check' },
+          provider: 'codexDelegate',
+          executionMode: 'remoteSandbox',
+          outputFormats: ['json'],
+        },
+        {
+          providers: {
+            codexDelegate: provider,
+            openaiCompatible: makeProvider({}, 'openaiCompatible'),
+          },
+          sandboxRunner: async (input) => {
+            expect(input.resolvedPrompt).toBe('remote sandbox check');
+            expect(input.normalizedDiffChunks).toHaveLength(0);
+            return {
+              raw: {
+                findings: [],
+                overall_correctness: 'patch is correct',
+                overall_explanation: 'sandbox ok',
+                overall_confidence_score: 1,
+              },
+              text: 'sandbox ok',
+              resolvedModel: 'remoteSandbox:test',
+              sandboxAudit: {
+                sandboxId: 'sbx-core-test',
+                policy: {
+                  networkProfile: 'deny_all',
+                  allowlistDomains: [],
+                  commandAllowlistSize: 1,
+                  envAllowlistSize: 1,
+                },
+                consumed: {
+                  commandCount: 1,
+                  wallTimeMs: 1,
+                  outputBytes: 1,
+                  artifactBytes: 1,
+                },
+                redactions: { apiKeyLike: 0, bearer: 0 },
+                commands: [],
+              },
+            };
+          },
+        }
+      );
+
+      expect(providerRun).not.toHaveBeenCalled();
+      expect(review.sandboxAudit?.sandboxId).toBe('sbx-core-test');
+      expect(review.result.metadata.sandboxId).toBe('sbx-core-test');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('fails remote sandbox mode without a sandbox runner', async () => {
+    const repo = await makeRepo();
+    try {
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'custom', instructions: 'remote sandbox check' },
+            provider: 'codexDelegate',
+            executionMode: 'remoteSandbox',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: makeProvider({}, 'codexDelegate'),
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+          }
+        )
+      ).rejects.toThrow('requires a configured sandbox runner');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('rejects git-backed remote sandbox targets before host diff collection', async () => {
+    const repo = await makeRepo();
+    try {
+      const sandboxRunner = vi.fn();
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            executionMode: 'remoteSandbox',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: makeProvider({}, 'codexDelegate'),
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+            sandboxRunner,
+          }
+        )
+      ).rejects.toBeInstanceOf(UnsupportedRemoteSandboxTargetError);
+      expect(sandboxRunner).not.toHaveBeenCalled();
     } finally {
       await repo.cleanup();
     }

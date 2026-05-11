@@ -21,7 +21,8 @@ The harness owns these test doubles:
 Coverage expectations:
 
 - `POST /v1/review/start` for inline, detached, invalid payload, runner failure,
-  and unsupported `remoteSandbox` requests.
+  inline `remoteSandbox` rejection, detached custom-target `remoteSandbox`
+  acceptance, and git-backed `remoteSandbox` rejection before dispatch.
 - `GET /v1/review/:reviewId` for missing records, running detached state,
   synced terminal state, and failed inline state.
 - `GET /v1/review/:reviewId/events` for deterministic replay of lifecycle
@@ -53,6 +54,9 @@ published service/worker contracts. Current harness-backed invariants are:
 - Durable service storage is exercised with PGlite-backed tests covering schema
   migration, restart hydration, event sequence trimming, artifact metadata,
   status transitions, and cascade deletion.
+- Remote sandbox coverage uses deterministic fakes for Vercel Sandbox calls and
+  asserts deny-all policy, artifact extraction, sandbox audit propagation, and
+  inline service rejection.
 
 ## Service and Worker Package Script Policy
 

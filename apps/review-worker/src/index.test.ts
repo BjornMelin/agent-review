@@ -3,6 +3,7 @@ import type { ReviewProvider, ReviewRequest } from '@review-agent/review-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runReviewMock = vi.hoisted(() => vi.fn());
+const runInSandboxMock = vi.hoisted(() => vi.fn());
 const workflowRuntimeMock = vi.hoisted(() => ({
   start: vi.fn(),
   getRun: vi.fn(),
@@ -58,6 +59,17 @@ vi.mock('@review-agent/review-provider-registry', () => ({
       },
     }) satisfies Record<ReviewRequest['provider'], ReviewProvider>,
 }));
+
+vi.mock('@review-agent/review-sandbox-vercel', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('@review-agent/review-sandbox-vercel')
+    >();
+  return {
+    ...actual,
+    runInSandbox: runInSandboxMock,
+  };
+});
 
 vi.mock('@workflow/core/runtime', () => workflowRuntimeMock);
 
@@ -119,6 +131,7 @@ function createReviewResult(request: ReviewRequest): ReviewRunResult {
 describe('ReviewWorker', () => {
   beforeEach(() => {
     runReviewMock.mockReset();
+    runInSandboxMock.mockReset();
     workflowRuntimeMock.start.mockReset();
     workflowRuntimeMock.getRun.mockReset();
   });
@@ -325,6 +338,91 @@ describe('ReviewWorker', () => {
     };
     expect(REVIEW_WORKFLOW_STEP_MAX_RETRIES).toBe(3);
     expect(retryableStep.maxRetries).toBe(REVIEW_WORKFLOW_STEP_MAX_RETRIES);
+  });
+
+  it('routes remote sandbox execution through a deny-all Vercel sandbox runner', async () => {
+    const request = createRequest({ executionMode: 'remoteSandbox' });
+    runInSandboxMock.mockResolvedValueOnce({
+      sandboxId: 'sbx-worker-test',
+      outputs: [
+        {
+          commandId: 'command-1',
+          command: {
+            cmd: 'node',
+            args: ['review-runner.mjs'],
+            cwd: '/vercel/sandbox',
+            phase: 'runtime',
+          },
+          exitCode: 0,
+          stdout: 'review-output.json\n',
+          stderr: '',
+        },
+      ],
+      artifacts: [
+        {
+          path: 'review-output.json',
+          content: JSON.stringify({
+            findings: [],
+            overall_correctness: 'patch is correct',
+            overall_explanation: 'sandbox ok',
+            overall_confidence_score: 1,
+          }),
+          byteLength: 128,
+        },
+      ],
+      audit: {
+        policy: {
+          networkProfile: 'deny_all',
+          allowlistDomains: [],
+          commandAllowlistSize: 1,
+          envAllowlistSize: 1,
+        },
+        consumed: {
+          commandCount: 1,
+          wallTimeMs: 1,
+          outputBytes: 1,
+          artifactBytes: 128,
+        },
+        redactions: { apiKeyLike: 0, bearer: 0 },
+        commands: [],
+      },
+    });
+    runReviewMock.mockImplementationOnce(async (_request, options) => {
+      const sandboxOutput = await options.sandboxRunner({
+        request,
+        resolvedPrompt: 'prompt',
+        rubric: 'rubric',
+        normalizedDiffChunks: [{ file: 'file.ts', patch: '+value' }],
+      });
+      return {
+        ...createReviewResult(request),
+        sandboxAudit: sandboxOutput.sandboxAudit,
+      };
+    });
+
+    const result = await reviewExecutionStep(request);
+
+    expect(result.sandboxAudit?.sandboxId).toBe('sbx-worker-test');
+    expect(runInSandboxMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commands: [
+          expect.objectContaining({
+            cmd: 'node',
+            args: ['review-runner.mjs'],
+            cwd: '/vercel/sandbox',
+            env: { CI: '1' },
+          }),
+        ],
+        artifacts: [{ path: 'review-output.json' }],
+        policy: expect.objectContaining({
+          networkProfile: 'deny_all',
+          allowlistDomains: [],
+          commandAllowlist: new Set(['node']),
+          envAllowlist: new Set(['CI']),
+        }),
+        runtime: 'node24',
+      })
+    );
   });
 
   it('validates detached request payloads before starting work', async () => {

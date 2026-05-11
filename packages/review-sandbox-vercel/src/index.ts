@@ -37,11 +37,13 @@ export const SandboxCommandSchema = z.strictObject({
   cwd: z.string().transform(sanitizeSandboxCwd).default(SANDBOX_ROOT),
   timeoutMs: z.number().int().positive().optional(),
   env: z.record(z.string(), z.string()).optional(),
+  phase: z.enum(['bootstrap', 'runtime']).default('runtime'),
 });
 
 export type NetworkProfile = z.infer<typeof NetworkProfileSchema>;
 export type SandboxBudget = z.infer<typeof SandboxBudgetSchema>;
 export type SandboxCommand = z.infer<typeof SandboxCommandSchema>;
+export type SandboxCommandInput = z.input<typeof SandboxCommandSchema>;
 
 export type SandboxPolicy = {
   commandAllowlist: Set<string>;
@@ -53,7 +55,8 @@ export type SandboxPolicy = {
 
 export type SandboxExecutionInput = {
   files?: Array<{ path: string; content: Buffer }>;
-  commands: SandboxCommand[];
+  commands: SandboxCommandInput[];
+  artifacts?: Array<{ path: string }>;
   policy: SandboxPolicy;
   runtime?: 'node22' | 'node24' | 'python3.13';
 };
@@ -66,6 +69,11 @@ export type SandboxExecutionOutput = {
     exitCode: number;
     stdout: string;
     stderr: string;
+  }>;
+  artifacts: Array<{
+    path: string;
+    content: string;
+    byteLength: number;
   }>;
   audit: {
     policy: {
@@ -89,6 +97,7 @@ export type SandboxExecutionOutput = {
       cmd: string;
       args: string[];
       cwd: string;
+      phase: SandboxCommand['phase'];
       startedAtMs: number;
       endedAtMs: number;
       durationMs: number;
@@ -166,6 +175,11 @@ function enforceCommandPolicy(
   command: SandboxCommand,
   policy: SandboxPolicy
 ): void {
+  if (command.cmd.includes('/') || command.cmd.includes('\\')) {
+    throw new Error(
+      `command "${command.cmd}" is blocked by sandbox policy: command paths are not allowed`
+    );
+  }
   if (!policy.commandAllowlist.has(command.cmd)) {
     throw new Error(`command "${command.cmd}" is blocked by sandbox policy`);
   }
@@ -240,12 +254,15 @@ export async function runInSandbox(
 
   const startedAt = Date.now();
   const outputs: SandboxExecutionOutput['outputs'] = [];
+  const artifacts: SandboxExecutionOutput['artifacts'] = [];
   const commandAudits: SandboxExecutionOutput['audit']['commands'] = [];
   let outputBytes = 0;
+  let artifactBytes = 0;
   const redactionTotals = {
     apiKeyLike: 0,
     bearer: 0,
   };
+  let denyAllApplied = input.policy.networkProfile !== 'bootstrap_then_deny';
 
   try {
     if (files && files.length > 0) {
@@ -253,6 +270,15 @@ export async function runInSandbox(
     }
 
     for (const command of validatedCommands) {
+      if (
+        input.policy.networkProfile === 'bootstrap_then_deny' &&
+        !denyAllApplied &&
+        command.phase !== 'bootstrap'
+      ) {
+        await sandbox.updateNetworkPolicy('deny-all');
+        denyAllApplied = true;
+      }
+
       const commandId = randomUUID();
       const commandStartedAt = Date.now();
       const timeoutMs = Math.min(
@@ -311,6 +337,7 @@ export async function runInSandbox(
         cmd: command.cmd,
         args: command.args,
         cwd: command.cwd,
+        phase: command.phase,
         startedAtMs: commandStartedAt,
         endedAtMs: commandEndedAt,
         durationMs: commandEndedAt - commandStartedAt,
@@ -324,15 +351,42 @@ export async function runInSandbox(
       }
     }
 
-    if (input.policy.networkProfile === 'bootstrap_then_deny') {
+    if (
+      input.policy.networkProfile === 'bootstrap_then_deny' &&
+      !denyAllApplied
+    ) {
       await sandbox.updateNetworkPolicy('deny-all');
+      denyAllApplied = true;
+    }
+
+    for (const artifact of input.artifacts ?? []) {
+      const artifactPath = sanitizeFilePath(artifact.path);
+      const content = await sandbox.readFileToBuffer({ path: artifactPath });
+      if (!content) {
+        continue;
+      }
+      artifactBytes += content.byteLength;
+      if (artifactBytes > budget.maxArtifactBytes) {
+        throw new Error(
+          `sandbox artifact budget exceeded: ${artifactBytes} > ${budget.maxArtifactBytes}`
+        );
+      }
+
+      const sanitized = redactSecrets(content.toString('utf8'));
+      redactionTotals.apiKeyLike += sanitized.redactions.apiKeyLike;
+      redactionTotals.bearer += sanitized.redactions.bearer;
+      artifacts.push({
+        path: artifactPath,
+        content: sanitized.text,
+        byteLength: content.byteLength,
+      });
     }
 
     const consumed = {
       commandCount: outputs.length,
       wallTimeMs: Date.now() - startedAt,
       outputBytes,
-      artifactBytes: 0,
+      artifactBytes,
     };
     const audit: SandboxExecutionOutput['audit'] = {
       policy: {
@@ -348,15 +402,9 @@ export async function runInSandbox(
     const result: SandboxExecutionOutput = {
       sandboxId: sandbox.sandboxId,
       outputs,
+      artifacts,
       audit,
     };
-    const artifactBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
-    consumed.artifactBytes = artifactBytes;
-    if (artifactBytes > budget.maxArtifactBytes) {
-      throw new Error(
-        `sandbox artifact budget exceeded: ${artifactBytes} > ${budget.maxArtifactBytes}`
-      );
-    }
     return result;
   } finally {
     await sandbox.stop({ blocking: true });
