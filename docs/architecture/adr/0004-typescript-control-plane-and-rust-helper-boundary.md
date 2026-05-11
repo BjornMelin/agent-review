@@ -43,6 +43,14 @@ and parity gate before any Rust helper behavior is allowed to ship.
 CLI collection, while Rust validates the generated `ReviewRequest`, performs
 diff parse/filter/index work, and returns the normalized helper output over a
 stdin/stdout JSON contract.
+`crates/review-runner` is the second admitted helper: TypeScript still owns
+provider orchestration, while Rust validates generated `CommandRunInput`,
+supervises cancellable process groups with bounded output and temporary file
+capture, and returns generated `CommandRunOutput` over the same stdin/stdout
+JSON boundary. The TypeScript adapter may resolve the packaged helper or an
+explicit override, but helper execution uses a filtered environment and graceful
+termination so the Rust process can cancel delegated process groups before a
+hard-kill fallback.
 
 Postgres with Drizzle is the target durable store for run, event, and artifact
 metadata. Vercel Workflow coordinates execution, retries, and resumption; it
@@ -123,5 +131,6 @@ contracts are stable enough to justify a second product surface.
 - https://docs.rs/typify/latest/typify/
 - https://docs.rs/globset/latest/globset/
 - https://docs.rs/command-group/latest/command_group/
+- https://docs.rs/tokio/latest/tokio/process/struct.Command.html
 - https://vercel.com/docs/functions/runtimes/rust
 - https://v2.tauri.app/security/capabilities/

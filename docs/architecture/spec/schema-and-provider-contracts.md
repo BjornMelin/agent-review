@@ -30,6 +30,62 @@ Rust contract gates are part of root validation:
 `pnpm check` runs the TypeScript gates and then `pnpm rust:check`, so CI catches
 contract generation drift before Rust helper behavior can ship.
 
+## CommandRun Contracts
+
+`CommandRunInputSchema` and `CommandRunOutputSchema` define the TypeScript-owned
+contract for bounded local command execution through `packages/review-runner`
+and `crates/review-runner`.
+
+`CommandRunInput` includes:
+
+- optional `commandId`
+- `cmd`, `args`, and `cwd`
+- optional `env` and `stdin`
+- optional `timeoutMs`, `cancelAfterMs`, `maxStdoutBytes`, and
+  `maxStderrBytes`
+- optional `maxFileBytes` for each requested file capture
+- optional `maxTotalFileBytes` for aggregate requested-file capture
+- optional `tempDirPrefix`
+- caller-declared `readFiles` capped at 16 entries
+
+When `tempDirPrefix` is supplied, command args/env/cwd/read-file paths may use
+`{tempDir}` as a placeholder, and the runner also injects
+`REVIEW_RUNNER_TEMP_DIR`.
+
+`CommandRunOutput` includes:
+
+- command identity, redacted cmd/args, cwd, status, optional exit code
+- redacted stdout/stderr plus truncation booleans and output byte count
+- bounded requested-file content with per-file truncation booleans and an
+  aggregate file-capture budget
+- redaction counters compatible with sandbox audit counters
+- lifecycle-style command events
+- caller-requested file contents after redaction
+
+Statuses are `completed`, `failedToStart`, `outputLimitExceeded`, `timedOut`,
+and `cancelled`. Command events include `started`, `failedToStart`,
+`stdoutLimitExceeded`, `stderrLimitExceeded`, `timedOut`, `cancelled`,
+`exited`, `tempFileRead`, `fileLimitExceeded`, `tempDirCleaned`, and
+`tempDirCleanupFailed`.
+
+The Rust runner clears the inherited process environment before spawning a
+child. Callers must pass an explicit env allowlist for command resolution and
+provider auth. The Codex provider passes only path/home/config/auth material
+needed by the Codex CLI, not the service process environment.
+The Node adapter also starts the Rust helper with a filtered helper environment
+and uses graceful termination before hard-kill fallback so the helper can cancel
+and reap delegated process groups.
+Package-local helper tests force a fresh Rust helper build so ignored `dist/bin`
+artifacts cannot hide stale native code.
+
+Byte limits apply to the public redacted UTF-8 output as well as the raw capture
+boundary. Invalid UTF-8 is converted with replacement characters and then
+trimmed on character boundaries so `outputBytes` cannot exceed the configured
+stream/file caps.
+Requested file captures reject non-regular paths before opening them, preventing
+FIFOs or other special files from blocking capture after the delegated command
+exits.
+
 ## ReviewRequest
 
 Required fields:
@@ -192,6 +248,14 @@ Each provider implements:
 
 - `raw` (provider-native output)
 - `text` (string representation)
+- optional `commandRun` when a provider invokes an external local command
+
+If a provider command fails after producing `CommandRunOutput`, it should throw
+`ReviewProviderCommandRunError`. Core emits command-run progress correlation
+from that error before rethrowing, so timeout, cancellation, nonzero exit, and
+output-limit telemetry is not lost on failure paths. Core emits the command
+summary and each structured command event as correlated lifecycle progress so
+event-store consumers can inspect the detailed command timeline.
 
 Optional provider diagnostics hooks:
 
@@ -220,7 +284,9 @@ defaults.
 ### Codex Delegate Provider
 
 - Invokes external `codex` binary (`CODEX_BIN` override supported).
-- Uses codex review command with target-derived args.
+- Uses `@review-agent/review-runner` to invoke `codex review` with
+  target-derived args, process-group timeout enforcement, temporary last-message
+  capture, redaction, and cleanup.
 - Returns parsed JSON when possible; otherwise text fallback.
 
 ### OpenAI-Compatible Provider
