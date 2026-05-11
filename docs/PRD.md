@@ -31,7 +31,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
   - OpenAI-compatible (`gateway:*`, `openrouter:*`)
 - Provider construction, model defaults, model catalog presets, and doctor
   filtering are owned by `packages/review-provider-registry`.
-- Optional sandbox preflight for remote execution mode
+- Detached remote sandbox execution for custom targets with deny-all policy
+  runner, artifact extraction, and sandbox audit propagation
 - Optional Convex metadata mirror writes
 
 ## Out of Scope (Current Implementation)
@@ -39,6 +40,10 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Authentication and authorization layer on HTTP endpoints
 - Multi-tenant isolation, quotas, and billing
 - Provider-specific retry classification beyond Workflow step retry defaults
+- Provider-token execution inside Vercel Sandbox before hosted auth/source
+  binding is implemented
+- Git-backed remote sandbox target execution before sandbox source binding is
+  implemented
 - UI frontend for review authoring or visualization
 - Rust service rewrites, native primary CLI rewrites, Ratatui TUIs, and Tauri
   desktop applications

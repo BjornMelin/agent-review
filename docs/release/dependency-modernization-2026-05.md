@@ -51,7 +51,8 @@ with current upstream support:
 - CLI smoke: `review-agent models`
 - CLI smoke: `review-agent doctor --provider gateway --json`
 - HTTP smoke: `GET /v1/review/missing-id`
-- HTTP smoke: `POST /v1/review/start` with `executionMode=remoteSandbox`
+- HTTP smoke: `POST /v1/review/start` with `executionMode=remoteSandbox`,
+  detached delivery, and a custom target
 
 There is no rendered web frontend or shadcn component surface in this repo, so
 browser visual verification is not applicable for this modernization.

@@ -20,6 +20,11 @@ Runs a review and emits artifacts.
 
 - `--provider <provider>`: `codex|gateway|openrouter` (default `codex`)
 - `--execution <mode>`: `local-trusted|remote-sandbox` (default `local-trusted`)
+- `remote-sandbox` requires `--detached` when sent to the HTTP service; inline
+  service requests are rejected because sandbox execution is owned by
+  `review-worker`.
+- `remote-sandbox` currently supports only custom prompt targets over the
+  service API. Git-backed targets require sandbox source binding first.
 - `--model <modelId>`: provider-specific model string
 - `--reasoning-effort <effort>`: `minimal|low|medium|high|xhigh`
 - `--detached`: request detached execution mode in request payload

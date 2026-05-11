@@ -11,7 +11,8 @@ The platform reviews code changes from git context and produces structured findi
 - Detached worker path with Workflow API orchestration and durable service state
 - Provider registry for Codex delegate and OpenAI-compatible model policy
 - Durable service storage with Drizzle/Postgres when a database URL is configured
-- Optional sandbox policy checks and optional Convex metadata mirroring
+- Detached remote sandbox policy runner with Vercel Sandbox audit metadata
+- Optional Convex metadata mirroring
 
 ## Monorepo Layout
 

@@ -24,7 +24,9 @@ Repository evidence:
 - Service routes are registered in `apps/review-service/src/app.ts`.
 - Service auth currently defaults to allow-all unless an injected auth policy
   denies the request.
-- `remoteSandbox` is currently rejected by `review-service`.
+- `remoteSandbox` is accepted only for detached service requests and is executed
+  through `review-worker`; inline service requests and git-backed remote
+  sandbox targets are rejected until sandbox source binding exists.
 - Worker detached execution uses Vercel Workflow runtime APIs, while durable
   service storage remains the queryable run/event/artifact state boundary.
 - Sandbox policy and audit controls live in
@@ -445,8 +447,9 @@ Mapped issues: [#24](https://github.com/BjornMelin/agent-review/issues/24),
 Future issues must preserve these gates:
 
 - #13 service-worker contract tests must include negative tests for auth-ready
-  request ownership, remote sandbox rejection/current behavior, run status
-  isolation, artifact access, cancellation, and unsafe provider output fixtures.
+  request ownership, inline remote sandbox rejection, detached sandbox behavior,
+  run status isolation, artifact access, cancellation, and unsafe provider
+  output fixtures.
 - #15 durable store must persist status, event sequence, artifact metadata, and
   retention timestamps behind the canonical service `reviewId`; #23, #24, and
   #30 must extend that durable boundary with run owner, repo, installation,
@@ -457,8 +460,9 @@ Future issues must preserve these gates:
 - #16 Workflow integration must prove idempotent steps, redacted durable inputs,
   lifecycle replay integrity, and no duplicate provider/GitHub side effects.
 - #17 sandbox integration must keep network deny-all as default, reject
-  request-owned allowlists, enforce command/env/file/output budgets, and return
-  auditable redaction counters.
+  request-owned allowlists, reject git-backed targets before host Git access,
+  enforce command/env/file/output budgets, and return auditable redaction
+  counters.
 - #18 through #21 Rust lanes must consume generated contracts and cannot create
   a second canonical schema or bypass hosted cwd/sandbox policy.
 - #22 runtime controls must enforce leases, cancellation, concurrency limits,
@@ -500,7 +504,8 @@ Future issues must preserve these gates:
 - No authentication or authorization implementation.
 - No identity-bound durable ownership, permission, or security audit-field
   implementation.
-- No sandbox execution integration into service.
+- No provider-token execution inside Vercel Sandbox.
+- No git-backed remote sandbox target execution before sandbox source binding.
 - No GitHub App auth or publish implementation.
 - No web UI implementation.
 - No change to local-trusted CLI behavior.
