@@ -20,6 +20,9 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Run Biome CI --error-on-warnings
+        run: pnpm exec biome ci --error-on-warnings .
       - run: pnpm format
       - run: pnpm check
+      - run: pnpm git:benchmark
       - run: pnpm build

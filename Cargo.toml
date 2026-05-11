@@ -11,6 +11,7 @@ repository = "https://github.com/BjornMelin/agent-review"
 publish = false
 
 [workspace.dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
 insta = { version = "1.47.2", default-features = false }
 jsonschema = { version = "0.46.4", default-features = false }
 prettyplease = "0.2.37"

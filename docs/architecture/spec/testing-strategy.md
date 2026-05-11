@@ -78,9 +78,8 @@ own suites are hardened under a scoped issue.
 
 ## Rust Contract Parity
 
-`crates/review-contracts` is the only Rust crate admitted before helper behavior
-ships. It validates that committed `review-types` JSON Schema artifacts can
-generate Rust DTOs with `typify`.
+`crates/review-contracts` validates that committed `review-types` JSON Schema
+artifacts can generate Rust DTOs with `typify`.
 
 Coverage expectations:
 
@@ -95,3 +94,47 @@ Coverage expectations:
   boundary structs.
 - Run `pnpm rust:check` or the equivalent Cargo format, clippy, and test ladder
   for any change touching `Cargo.toml`, `Cargo.lock`, or `crates/*`.
+
+## Git Diff Corpus and Rust Candidate Gate
+
+`packages/review-git/test/fixtures/diff-corpus/expected.json` is the stable
+diff/index corpus. The Vitest corpus builds real temporary Git repositories and
+normalizes absolute paths to `<repo>/...` so review diffs stay deterministic
+while still asserting absolute-path semantics.
+
+Coverage expectations:
+
+- Staged, unstaged, untracked, binary, rename, delete, no-newline, large file,
+  quoted path, CRLF, submodule, and path-filter cases.
+- Expected chunk file names, normalized absolute paths, changed-line indexes,
+  Git context, and metadata flags for binary/rename/delete/new-file/submodule
+  behavior.
+- Path-filter fixtures assert the `chunk.file` values consumed by
+  `review-core` include/exclude filtering, even though filtering remains owned
+  by `review-core`.
+
+`crates/review-git-diff` is the Rust candidate helper. It exposes a narrow
+`review-git-diff parse --cwd <repo>` stdin/stdout contract for benchmarks and
+fixtures only; production diff collection still calls the TypeScript parser.
+
+Pass/fail gates:
+
+- `pnpm --filter @review-agent/review-git test` must pass the corpus and the
+  default parser/index performance suite.
+- `pnpm git:benchmark` runs the strict corpus/benchmark gate used by CI.
+- `REVIEW_AGENT_STRICT_PERF=1` turns parser budgets into hard assertions:
+  collecting/parsing the real large uncommitted suite must stay under 15s, and
+  the synthetic 240-file parser/index path must stay under 1.5s.
+- `REVIEW_AGENT_RUST_DIFF_BENCH=1` runs the Rust candidate comparison. The Rust
+  output must match the full corpus and synthetic benchmark chunks for file,
+  absolute path, changed lines, and metadata flags. The benchmark prebuilds the
+  candidate binary before timing parser work. In strict mode the CLI parser
+  comparison must stay under `max(1000ms, TypeScript duration * 20)`.
+
+Kill-switch criteria:
+
+- If the Rust candidate fails corpus parity, regresses benchmark gates, or adds
+  more maintenance weight than it removes, keep `packages/review-git` as the
+  canonical parser and remove the Rust candidate from the migration branch.
+- A later cutover PR must delete the TypeScript parser path it replaces; this
+  issue permits dual code only inside fixtures, tests, and benchmarks.

@@ -36,6 +36,15 @@ pass parity, benchmark, and generated-contract gates.
 - `review-sandbox-vercel`: policy-driven command execution wrapper for remote sandbox mode.
 - `review-convex-bridge`: optional metadata write bridge.
 
+### Rust Helper Workspace
+
+- `review-contracts`: generated DTO parity and schema-validating parser helpers
+  for committed `review-types` JSON Schema artifacts.
+- `review-git-diff`: diff parser/index candidate used by conformance fixtures
+  and benchmarks only. TypeScript remains the production diff owner until a
+  later issue proves parity, performance, and deletion value, then cuts over
+  without a permanent dual path.
+
 ## Core Data Flow
 
 1. Runtime entrypoints normalize provider/model policy through

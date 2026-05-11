@@ -4,6 +4,17 @@ import { devNull } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { ReviewTarget } from '@review-agent/review-types';
+import {
+  buildChangedLineIndex,
+  type DiffChunk,
+  parseUnifiedDiff,
+} from './diff-parser.js';
+
+export {
+  buildChangedLineIndex,
+  type DiffChunk,
+  normalizeFilePath,
+} from './diff-parser.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -12,13 +23,6 @@ export type GitContext = {
   baseRef?: string;
   mergeBaseSha?: string;
   commitSha?: string;
-};
-
-export type DiffChunk = {
-  file: string;
-  absoluteFilePath: string;
-  patch: string;
-  changedLines: number[];
 };
 
 export type DiffContext = {
@@ -165,6 +169,100 @@ function isBinaryBuffer(buffer: Buffer): boolean {
   return buffer.includes(0);
 }
 
+function encodeGitQuotedPath(path: string): string {
+  let encoded = '';
+  for (const char of path) {
+    switch (char) {
+      case '\\':
+        encoded += '\\\\';
+        break;
+      case '"':
+        encoded += '\\"';
+        break;
+      case '\n':
+        encoded += '\\n';
+        break;
+      case '\r':
+        encoded += '\\r';
+        break;
+      case '\t':
+        encoded += '\\t';
+        break;
+      case '\b':
+        encoded += '\\b';
+        break;
+      case '\f':
+        encoded += '\\f';
+        break;
+      case '\v':
+        encoded += '\\v';
+        break;
+      default: {
+        const codePoint = char.codePointAt(0) ?? 0;
+        if (codePoint > 0x7f) {
+          encoded += [...Buffer.from(char, 'utf8')]
+            .map((byte) => `\\${byte.toString(8).padStart(3, '0')}`)
+            .join('');
+          break;
+        }
+        encoded +=
+          codePoint < 0x20 || codePoint === 0x7f
+            ? `\\${codePoint.toString(8).padStart(3, '0')}`
+            : char;
+        break;
+      }
+    }
+  }
+  return `"${encoded}"`;
+}
+
+function needsGitDiffPathQuoting(path: string): boolean {
+  for (const char of path) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (
+      char === '\\' ||
+      char === '"' ||
+      char === ' ' ||
+      codePoint < 0x20 ||
+      codePoint === 0x7f ||
+      codePoint >= 0x80
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatGitDiffPath(side: 'a' | 'b', relativePath: string): string {
+  const path = `${side}/${relativePath}`;
+  return needsGitDiffPathQuoting(path) ? encodeGitQuotedPath(path) : path;
+}
+
+function encodeSyntheticPatchLineContent(value: string): string {
+  return [...value]
+    .map((char) => {
+      switch (char) {
+        case '\\':
+          return '\\\\';
+        case '\n':
+          return '\\n';
+        case '\r':
+          return '\\r';
+        case '\t':
+          return '\\t';
+        case '\b':
+          return '\\b';
+        case '\f':
+          return '\\f';
+        case '\v':
+          return '\\v';
+        default:
+          return char;
+      }
+    })
+    .join('');
+}
+
 function assertPathContained(
   root: string,
   candidate: string,
@@ -184,13 +282,15 @@ function buildUntrackedSymlinkPatch(
   relativePath: string,
   linkTarget: string
 ): string {
+  const oldPath = formatGitDiffPath('a', relativePath);
+  const newPath = formatGitDiffPath('b', relativePath);
   return [
-    `diff --git a/${relativePath} b/${relativePath}`,
+    `diff --git ${oldPath} ${newPath}`,
     'new file mode 120000',
     '--- /dev/null',
-    `+++ b/${relativePath}`,
+    `+++ ${newPath}`,
     '@@ -0,0 +1 @@',
-    `+${linkTarget}`,
+    `+${encodeSyntheticPatchLineContent(linkTarget)}`,
     '\\ No newline at end of file',
     '',
   ].join('\n');
@@ -219,12 +319,14 @@ async function buildUntrackedFilePatch(
   const resolvedPath = await realpath(absolutePath);
   assertPathContained(root, resolvedPath, 'untracked file realpath');
 
+  const oldPath = formatGitDiffPath('a', relativePath);
+  const newPath = formatGitDiffPath('b', relativePath);
   const bytes = await readFile(absolutePath);
   if (isBinaryBuffer(bytes)) {
     return [
-      `diff --git a/${relativePath} b/${relativePath}`,
+      `diff --git ${oldPath} ${newPath}`,
       'new file mode 100644',
-      `Binary files /dev/null and b/${relativePath} differ`,
+      `Binary files /dev/null and ${newPath} differ`,
       '',
     ].join('\n');
   }
@@ -237,10 +339,10 @@ async function buildUntrackedFilePatch(
   const body = lines.map((line) => `+${line}`).join('\n');
   const hunkLineCount = lines.length;
   return [
-    `diff --git a/${relativePath} b/${relativePath}`,
+    `diff --git ${oldPath} ${newPath}`,
     'new file mode 100644',
     '--- /dev/null',
-    `+++ b/${relativePath}`,
+    `+++ ${newPath}`,
     `@@ -0,0 +1,${hunkLineCount} @@`,
     body,
     '',
@@ -272,128 +374,6 @@ async function buildUncommittedPatch(cwd: string): Promise<string> {
   return [staged, unstaged, ...untrackedPatches]
     .filter((chunk) => chunk.trim().length > 0)
     .join('\n');
-}
-
-function extractPathFromDiffHeader(line: string): string | null {
-  const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-  if (!match) {
-    return null;
-  }
-  return match[2] ?? match[1] ?? null;
-}
-
-function extractPathFromPlusHeader(line: string): string | null {
-  if (!line.startsWith('+++ ')) {
-    return null;
-  }
-  const candidate = line.slice(4).trim();
-  if (candidate === '/dev/null') {
-    return null;
-  }
-  return candidate.startsWith('b/') ? candidate.slice(2) : candidate;
-}
-
-function parseUnifiedDiff(cwd: string, patch: string): DiffChunk[] {
-  if (!patch.trim()) {
-    return [];
-  }
-
-  const chunks: DiffChunk[] = [];
-  const lines = patch.split('\n');
-
-  let currentFile = '';
-  let currentPatch: string[] = [];
-  let changedLines = new Set<number>();
-  let newLineCursor = 0;
-  let inHunk = false;
-
-  const flush = () => {
-    if (!currentFile || currentPatch.length === 0) {
-      return;
-    }
-    chunks.push({
-      file: currentFile,
-      absoluteFilePath: resolve(cwd, currentFile),
-      patch: currentPatch.join('\n').trimEnd(),
-      changedLines: [...changedLines].sort((a, b) => a - b),
-    });
-  };
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
-      flush();
-      currentPatch = [line];
-      changedLines = new Set<number>();
-      inHunk = false;
-      newLineCursor = 0;
-      currentFile = extractPathFromDiffHeader(line) ?? '';
-      continue;
-    }
-
-    if (currentPatch.length === 0) {
-      continue;
-    }
-
-    currentPatch.push(line);
-    const plusHeaderPath = extractPathFromPlusHeader(line);
-    if (plusHeaderPath) {
-      currentFile = plusHeaderPath;
-    }
-
-    const hunkMatch = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (hunkMatch) {
-      newLineCursor = Number.parseInt(hunkMatch[1] ?? '0', 10);
-      inHunk = true;
-      continue;
-    }
-
-    if (!inHunk) {
-      continue;
-    }
-
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-      changedLines.add(newLineCursor);
-      newLineCursor += 1;
-      continue;
-    }
-
-    if (line.startsWith('-') && !line.startsWith('---')) {
-      continue;
-    }
-
-    if (line.startsWith(' ')) {
-      newLineCursor += 1;
-      continue;
-    }
-
-    if (line.startsWith('\\ No newline at end of file')) {
-      continue;
-    }
-
-    inHunk = false;
-  }
-
-  flush();
-  return chunks;
-}
-
-export function buildChangedLineIndex(
-  chunks: DiffChunk[]
-): Map<string, Set<number>> {
-  const index = new Map<string, Set<number>>();
-  for (const chunk of chunks) {
-    const key = resolve(chunk.absoluteFilePath);
-    const set = index.get(key) ?? new Set<number>();
-    for (const line of chunk.changedLines) {
-      set.add(line);
-    }
-    index.set(key, set);
-  }
-  return index;
-}
-
-export function normalizeFilePath(cwd: string, filePath: string): string {
-  return resolve(cwd, isAbsolute(filePath) ? filePath : resolve(cwd, filePath));
 }
 
 export async function collectDiffForTarget(

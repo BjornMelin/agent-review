@@ -1,0 +1,568 @@
+[
+  {
+    "name": "staged-change",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/staged.ts",
+          "absoluteFilePath": "<repo>/src/staged.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "unstaged-change",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/unstaged.ts",
+          "absoluteFilePath": "<repo>/src/unstaged.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "untracked-file",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/untracked.ts",
+          "absoluteFilePath": "<repo>/src/untracked.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "added",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "untracked-quoted-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "quoted\tnew.ts",
+          "absoluteFilePath": "<repo>/quoted\tnew.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "added",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": true,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "untracked-non-ascii-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "café-new.ts",
+          "absoluteFilePath": "<repo>/café-new.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "added",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": true,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "untracked-symlink-injection",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "linked-secret",
+          "absoluteFilePath": "<repo>/linked-secret",
+          "changedLines": [1],
+          "metadata": {
+            "status": "added",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": true,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "binary-file",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "assets/blob.bin",
+          "absoluteFilePath": "<repo>/assets/blob.bin",
+          "changedLines": [],
+          "metadata": {
+            "status": "added",
+            "isBinary": true,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "binary-space-b-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "secret b/leak.bin",
+          "absoluteFilePath": "<repo>/secret b/leak.bin",
+          "changedLines": [],
+          "metadata": {
+            "status": "modified",
+            "isBinary": true,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "untracked-binary-space-b-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "secret b/new.bin",
+          "absoluteFilePath": "<repo>/secret b/new.bin",
+          "changedLines": [],
+          "metadata": {
+            "status": "added",
+            "isBinary": true,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": true,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": true,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "rename-file",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/renamed.ts",
+          "absoluteFilePath": "<repo>/src/renamed.ts",
+          "changedLines": [],
+          "metadata": {
+            "status": "renamed",
+            "isBinary": false,
+            "isRename": true,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "rename-space-b-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "secret b/renamed.ts",
+          "absoluteFilePath": "<repo>/secret b/renamed.ts",
+          "changedLines": [],
+          "metadata": {
+            "status": "renamed",
+            "isBinary": false,
+            "isRename": true,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "deleted-file",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/deleted.ts",
+          "absoluteFilePath": "<repo>/src/deleted.ts",
+          "changedLines": [],
+          "metadata": {
+            "status": "deleted",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": true,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "deleted-space-b-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "secret b/leak.ts",
+          "absoluteFilePath": "<repo>/secret b/leak.ts",
+          "changedLines": [],
+          "metadata": {
+            "status": "deleted",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": true,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "no-newline",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/no-newline.ts",
+          "absoluteFilePath": "<repo>/src/no-newline.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": true,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "large-file",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/large.ts",
+          "absoluteFilePath": "<repo>/src/large.ts",
+          "changedLines": [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+            37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+            54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+            71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87,
+            88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103,
+            104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+            117, 118, 119, 120
+          ],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "quoted-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "quoted\tpath.ts",
+          "absoluteFilePath": "<repo>/quoted\tpath.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": true,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "non-ascii-path",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "café.ts",
+          "absoluteFilePath": "<repo>/café.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": true,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "crlf-file",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "src/crlf.txt",
+          "absoluteFilePath": "<repo>/src/crlf.txt",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "submodule-change",
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "chunks": [
+        {
+          "file": "vendor/sub",
+          "absoluteFilePath": "<repo>/vendor/sub",
+          "changedLines": [1],
+          "metadata": {
+            "status": "submodule",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": true,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "path-filter",
+    "filters": {
+      "includePaths": ["src/**"],
+      "excludePaths": ["src/generated/**"]
+    },
+    "expected": {
+      "gitContext": {
+        "mode": "uncommitted"
+      },
+      "filteredFiles": ["src/app.ts"],
+      "chunks": [
+        {
+          "file": "src/app.ts",
+          "absoluteFilePath": "<repo>/src/app.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        },
+        {
+          "file": "src/generated/client.ts",
+          "absoluteFilePath": "<repo>/src/generated/client.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        },
+        {
+          "file": "test/app.test.ts",
+          "absoluteFilePath": "<repo>/test/app.test.ts",
+          "changedLines": [1],
+          "metadata": {
+            "status": "modified",
+            "isBinary": false,
+            "isRename": false,
+            "isDelete": false,
+            "isNewFile": false,
+            "isSubmodule": false,
+            "hasNoNewlineMarker": false,
+            "usesQuotedPath": false,
+            "hasCarriageReturns": false
+          }
+        }
+      ]
+    }
+  }
+]
