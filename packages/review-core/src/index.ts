@@ -16,7 +16,9 @@ import {
   sortFindingsDeterministically,
 } from '@review-agent/review-reporters';
 import {
+  type CommandRunOutput,
   type CorrelationIds,
+  getReviewProviderCommandRun,
   hasFindingsAtOrAboveThreshold,
   type LifecycleEvent,
   type OutputFormat,
@@ -59,6 +61,7 @@ export type ReviewRunResult = {
   prompt: string;
   rubric: string;
   sandboxAudit?: SandboxAudit;
+  commandRuns?: CommandRunOutput[];
 };
 
 export type SandboxReviewRunner = (
@@ -113,6 +116,34 @@ async function emit(
     },
   };
   await context.onEvent?.(enrichedEvent);
+}
+
+async function emitCommandRunProgress(
+  emitContext: EmitContext,
+  commandRuns: CommandRunOutput[]
+): Promise<void> {
+  for (const commandRun of commandRuns) {
+    await emit(
+      emitContext,
+      {
+        type: 'progress',
+        message: `Command ${commandRun.commandId} finished with ${commandRun.status}`,
+      },
+      { commandId: commandRun.commandId }
+    );
+    for (const event of commandRun.events) {
+      await emit(
+        emitContext,
+        {
+          type: 'progress',
+          message: event.message
+            ? `Command ${commandRun.commandId} event ${event.type}: ${event.message}`
+            : `Command ${commandRun.commandId} event ${event.type}`,
+        },
+        { commandId: event.commandId }
+      );
+    }
+  }
 }
 
 function maybeExtractJsonObject(text: string): unknown | null {
@@ -433,13 +464,25 @@ export async function runReview(
       type: 'progress',
       message: `Running provider ${provider.id} on ${normalizedDiffChunks.length} diff chunk(s)`,
     });
-    providerOutput = await provider.run(providerInput);
+    try {
+      providerOutput = await provider.run(providerInput);
+    } catch (error) {
+      const commandRun = getReviewProviderCommandRun(error);
+      if (commandRun) {
+        await emitCommandRunProgress(emitContext, [commandRun]);
+      }
+      throw error;
+    }
   }
 
   const normalized = normalizeModelOutput(
     providerOutput.raw,
     providerOutput.text
   );
+  const commandRuns = providerOutput.commandRun
+    ? [providerOutput.commandRun]
+    : [];
+  await emitCommandRunProgress(emitContext, commandRuns);
   const findingsWithFingerprint: ReviewFinding[] = normalized.findings.map(
     (finding) => {
       const normalizedPath = normalizeFilePath(
@@ -514,6 +557,7 @@ export async function runReview(
     diff,
     prompt: resolved.prompt,
     rubric: REVIEW_RUBRIC_PROMPT,
+    ...(commandRuns.length > 0 ? { commandRuns } : {}),
     ...(sandboxAudit ? { sandboxAudit } : {}),
   };
 }

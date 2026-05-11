@@ -16,9 +16,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "vitest run --passWithNoTests"
+    "test": "node scripts/ensure-test-deps.mjs && vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@review-agent/review-runner": "workspace:*",
     "@review-agent/review-types": "workspace:*"
   }
 }
