@@ -231,6 +231,12 @@ fn validated_review_request_rejects_semantic_ref_and_path_violations() {
         }),
         json!({
             "cwd": "/tmp/repo",
+            "target": { "type": "baseBranch", "branch": "main\u{00a0}HEAD" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
             "target": { "type": "uncommittedChanges" },
             "provider": "codexDelegate",
             "includePaths": ["../secrets"],

@@ -316,7 +316,7 @@ fn validate_git_ref(value: &str, label: &str) -> Result<(), ContractParseError> 
         || value.contains("//")
         || value
             .chars()
-            .any(|character| character.is_ascii_whitespace() || "~^:?*[\\".contains(character));
+            .any(|character| character.is_whitespace() || "~^:?*[\\".contains(character));
     if invalid {
         return Err(ContractParseError::InvalidSemantics {
             schema: "ReviewRequest",
