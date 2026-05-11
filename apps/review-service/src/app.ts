@@ -8,6 +8,7 @@ import { runReview } from '@review-agent/review-core';
 import {
   ARTIFACT_CONTENT_TYPES,
   type CorrelationIds,
+  isTerminalReviewRunStatus,
   type LifecycleEvent,
   OutputFormatSchema,
   type ReviewCancelResponse,
@@ -250,7 +251,7 @@ export function createReviewServiceApp(
       timestampMs: record.updatedAt,
       correlation: {
         reviewId: record.reviewId,
-        workflowRunId: record.detachedRunId,
+        workflowRunId: record.workflowRunId ?? record.detachedRunId,
       },
     };
   }
@@ -303,7 +304,9 @@ export function createReviewServiceApp(
                 ...event.meta.correlation,
                 reviewId: record.reviewId,
                 workflowRunId:
-                  record.detachedRunId ?? event.meta.correlation.workflowRunId,
+                  record.workflowRunId ??
+                  record.detachedRunId ??
+                  event.meta.correlation.workflowRunId,
                 ...(correlationOverride ?? {}),
               },
             },
@@ -315,7 +318,7 @@ export function createReviewServiceApp(
               timestampMs: nowMs(),
               correlation: {
                 reviewId: record.reviewId,
-                workflowRunId: record.detachedRunId,
+                workflowRunId: record.workflowRunId ?? record.detachedRunId,
                 ...(correlationOverride ?? {}),
               },
             },
@@ -376,7 +379,7 @@ export function createReviewServiceApp(
           },
           now: () => new Date(nowMs()),
           correlation: {
-            workflowRunId: record.detachedRunId,
+            workflowRunId: record.workflowRunId ?? record.detachedRunId,
           },
         },
         dependencies.bridge
@@ -396,6 +399,42 @@ export function createReviewServiceApp(
     }
   }
 
+  async function emitDetachedTerminalEvents(
+    record: ReviewRecord
+  ): Promise<void> {
+    if (record.status === 'failed') {
+      await emit(record, {
+        type: 'failed',
+        message: record.error ?? 'detached run failed',
+        meta: detachedTerminalMeta(record, 'failed'),
+      });
+      return;
+    }
+    if (record.status === 'completed' && record.result) {
+      await emit(record, {
+        type: 'exitedReviewMode',
+        review: record.result.result.overallExplanation,
+        meta: detachedTerminalMeta(record, 'completed:exited'),
+      });
+      for (const format of Object.keys(record.result.artifacts) as Array<
+        keyof ReviewRunResult['artifacts']
+      >) {
+        await emit(record, {
+          type: 'artifactReady',
+          format,
+          meta: detachedTerminalMeta(record, `completed:artifact:${format}`),
+        });
+      }
+      return;
+    }
+    if (record.status === 'cancelled') {
+      await emit(record, {
+        type: 'cancelled',
+        meta: detachedTerminalMeta(record, 'cancelled'),
+      });
+    }
+  }
+
   async function syncDetachedRecord(record: ReviewRecord): Promise<void> {
     if (
       !record.detachedRunId ||
@@ -411,9 +450,14 @@ export function createReviewServiceApp(
 
     const previousStatus = record.status;
     const previousError = record.error;
+    const previousWorkflowRunId = record.workflowRunId;
     let changed = false;
 
+    record.workflowRunId = detached.workflowRunId ?? detached.runId;
     record.status = detached.status;
+    if (record.workflowRunId !== previousWorkflowRunId) {
+      changed = true;
+    }
     if (detached.status === 'completed' && detached.result) {
       record.result = detached.result;
       changed = true;
@@ -434,35 +478,7 @@ export function createReviewServiceApp(
       ) {
         setTerminalRetention(record);
       }
-      if (record.status === 'failed') {
-        await emit(record, {
-          type: 'failed',
-          message: record.error ?? 'detached run failed',
-          meta: detachedTerminalMeta(record, 'failed'),
-        });
-      }
-      if (record.status === 'completed' && record.result) {
-        await emit(record, {
-          type: 'exitedReviewMode',
-          review: record.result.result.overallExplanation,
-          meta: detachedTerminalMeta(record, 'completed:exited'),
-        });
-        for (const format of Object.keys(record.result.artifacts) as Array<
-          keyof ReviewRunResult['artifacts']
-        >) {
-          await emit(record, {
-            type: 'artifactReady',
-            format,
-            meta: detachedTerminalMeta(record, `completed:artifact:${format}`),
-          });
-        }
-      }
-      if (record.status === 'cancelled') {
-        await emit(record, {
-          type: 'cancelled',
-          meta: detachedTerminalMeta(record, 'cancelled'),
-        });
-      }
+      await emitDetachedTerminalEvents(record);
     } else if (changed) {
       record.updatedAt = nowMs();
     }
@@ -502,15 +518,44 @@ export function createReviewServiceApp(
       await cleanupReviewRecords();
 
       if (delivery === 'detached' || request.detached) {
-        const detached = await dependencies.worker.startDetached(request);
+        await store.set(record, { reason: 'detached queued' });
+        let detached: DetachedRunRecord;
+        try {
+          detached = await dependencies.worker.startDetached(request);
+        } catch (error) {
+          record.status = 'failed';
+          record.error = error instanceof Error ? error.message : String(error);
+          record.updatedAt = nowMs();
+          setTerminalRetention(record);
+          await emit(record, {
+            type: 'failed',
+            message: record.error,
+            meta: detachedTerminalMeta(record, 'start:failed'),
+          });
+          await store.set(record, { reason: 'detached start failed' });
+          throw error;
+        }
         record.detachedRunId = detached.runId;
-        record.status = detached.status === 'running' ? 'running' : 'queued';
+        record.workflowRunId = detached.workflowRunId ?? detached.runId;
+        record.status = detached.status;
+        if (detached.result) {
+          record.result = detached.result;
+        }
+        if (detached.error) {
+          record.error = detached.error;
+        }
         record.updatedAt = nowMs();
+        if (isTerminalReviewRunStatus(record.status)) {
+          setTerminalRetention(record);
+        }
         await store.set(record, { reason: 'detached started' });
         await emit(record, {
           type: 'enteredReviewMode',
           review: 'review requested',
         });
+        if (isTerminalReviewRunStatus(record.status)) {
+          await emitDetachedTerminalEvents(record);
+        }
         const response: ReviewStartResponse = {
           reviewId,
           status: record.status,
@@ -717,6 +762,15 @@ export function createReviewServiceApp(
       return record;
     }
 
+    if (isTerminalReviewRunStatus(record.status)) {
+      const response: ReviewCancelResponse = {
+        reviewId,
+        status: record.status,
+        cancelled: false,
+      };
+      return context.json(response, 409);
+    }
+
     if (record.detachedRunId) {
       try {
         const cancelled = await dependencies.worker.cancel(
@@ -726,7 +780,10 @@ export function createReviewServiceApp(
           record.status = 'cancelled';
           record.updatedAt = nowMs();
           setTerminalRetention(record);
-          await emit(record, { type: 'cancelled' });
+          await emit(record, {
+            type: 'cancelled',
+            meta: detachedTerminalMeta(record, 'cancelled'),
+          });
           await store.set(record, { reason: 'cancelled' });
           await cleanupReviewRecords();
           const response: ReviewCancelResponse = {

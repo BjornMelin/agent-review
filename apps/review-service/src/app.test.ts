@@ -108,6 +108,7 @@ function createDetachedRun(
 ): DetachedRunRecord {
   return {
     runId: 'detached-run-1',
+    workflowRunId: 'detached-run-1',
     status: 'running',
     startedAt: 1_000,
     ...overrides,
@@ -452,6 +453,151 @@ describe('createReviewServiceApp', () => {
     expect(await missing.json()).toEqual({ error: 'review not found' });
   });
 
+  it('persists queued detached state before dispatching workflow work', async () => {
+    const store = createStore();
+    let observedQueuedRecord: ReviewRecord | undefined;
+    const started: ReviewRequest[] = [];
+    const runs = new Map<string, DetachedRunRecord>();
+    const cancelledRunIds: string[] = [];
+    const worker: FakeReviewWorker = {
+      started,
+      runs,
+      cancelledRunIds,
+      async startDetached(request) {
+        started.push(request);
+        observedQueuedRecord = await store.get('review-durable-start');
+        const run = createDetachedRun({
+          runId: 'workflow-run-1',
+          workflowRunId: 'workflow-run-1',
+        });
+        runs.set(run.runId, run);
+        return run;
+      },
+      async get(runId) {
+        return runs.get(runId) ?? null;
+      },
+      async cancel(runId) {
+        cancelledRunIds.push(runId);
+        return true;
+      },
+    };
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      nowMs: () => 1_250,
+      uuid: createUuid(['review-durable-start', 'event-start']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(observedQueuedRecord).toMatchObject({
+      reviewId: 'review-durable-start',
+      status: 'queued',
+    });
+    await expect(store.get('review-durable-start')).resolves.toMatchObject({
+      detachedRunId: 'workflow-run-1',
+      workflowRunId: 'workflow-run-1',
+      status: 'running',
+    });
+  });
+
+  it('marks detached start failures as durable failed records', async () => {
+    const store = createStore();
+    const worker = createWorker();
+    worker.startDetached = vi.fn(async () => {
+      throw new Error('workflow start unavailable');
+    });
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      nowMs: () => 1_500,
+      uuid: createUuid(['review-start-failed']),
+      logger: { error: vi.fn() },
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: 'failed to start review' });
+    const failedRecord = await store.get('review-start-failed');
+    expect(failedRecord).toMatchObject({
+      status: 'failed',
+      error: 'workflow start unavailable',
+      retentionExpiresAt: 3_601_500,
+    });
+    expect(failedRecord?.events.map((event) => event.type)).toEqual(['failed']);
+  });
+
+  it('emits terminal events when workflow completion is visible at start', async () => {
+    const request = createRequest();
+    const result = createReviewResult(request);
+    const worker = createWorker();
+    worker.startDetached = vi.fn(async () =>
+      createDetachedRun({
+        runId: 'workflow-run-terminal',
+        workflowRunId: 'workflow-run-terminal',
+        status: 'completed',
+        completedAt: 1_250,
+        result,
+      })
+    );
+    const store = createStore();
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      nowMs: () => 1_250,
+      uuid: createUuid(['review-terminal-start', 'event-start']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      reviewId: 'review-terminal-start',
+      status: 'completed',
+      detachedRunId: 'workflow-run-terminal',
+    });
+    const completedRecord = await store.get('review-terminal-start');
+    expect(completedRecord).toMatchObject({
+      status: 'completed',
+      retentionExpiresAt: 3_601_250,
+    });
+    expect(completedRecord?.events.map((event) => event.type)).toEqual([
+      'enteredReviewMode',
+      'exitedReviewMode',
+      'artifactReady',
+      'artifactReady',
+    ]);
+  });
+
   it('syncs detached completion into status and artifact routes', async () => {
     const worker = createWorker();
     const store = createStore();
@@ -514,6 +660,16 @@ describe('createReviewServiceApp', () => {
     });
     const completedRecord = await store.get('review-detached');
     expect(completedRecord?.events.map((event) => event.type)).toEqual([
+      'enteredReviewMode',
+      'exitedReviewMode',
+      'artifactReady',
+      'artifactReady',
+    ]);
+
+    const repeatedStatus = await app.request('/v1/review/review-detached');
+    expect(repeatedStatus.status).toBe(200);
+    const repeatedRecord = await store.get('review-detached');
+    expect(repeatedRecord?.events.map((event) => event.type)).toEqual([
       'enteredReviewMode',
       'exitedReviewMode',
       'artifactReady',

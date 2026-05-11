@@ -59,7 +59,10 @@ Service shall expose endpoints for:
 
 ### FR-8 Detached Execution
 
-System shall support detached review execution through workflow integration with fallback to local asynchronous execution when workflow APIs are unavailable.
+System shall support detached review execution through workflow integration and
+durable service state. If Workflow cannot accept a detached run, the service
+shall persist the failed start state and return an error instead of reporting
+local fallback success.
 
 ### FR-9 Optional Metadata Mirroring
 

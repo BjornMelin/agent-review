@@ -48,9 +48,13 @@ Detached runs are started via `ReviewWorker.startDetached(requestInput)`.
 
 Execution strategy:
 
-1. Attempt `@workflow/core/runtime` `start(reviewWorkflow, [request])`.
-2. If workflow runtime APIs fail/unavailable, fallback to local async in-process
-   run.
+1. Persist the queued service record through `ReviewStoreAdapter`.
+2. Start `@workflow/core/runtime` with `start(reviewWorkflow, [request])`.
+3. Persist `detachedRunId`, `workflowRunId`, and queued acceptance without an
+   immediate Workflow status read; status is reconciled through later
+   `getRun(runId)` lookups.
+4. If Workflow cannot accept the run, persist a failed terminal record and return
+   an error instead of falling back to in-process success.
 
 Run records expose:
 
@@ -61,9 +65,14 @@ Run records expose:
 - optional `result`
 - optional `workflowRunId`
 
-`ReviewWorker.get` resolves current status and captures completed/failure outcomes when workflow API is active.
+`ReviewWorker.get` resolves current status directly from Workflow by run ID and
+captures completed/failure outcomes. Service routes then persist the latest
+snapshot, lifecycle events, artifact metadata, and retention state through the
+durable store.
 
-`ReviewWorker.cancel` attempts workflow cancellation and also updates local record state unless run is already terminal.
+`ReviewWorker.cancel` checks Workflow status by run ID, skips terminal runs, and
+delegates cancellation to Workflow. The service persists cancellation state and
+replayable lifecycle events through `ReviewStoreAdapter`.
 
 ## Metadata Mirroring (`review-convex-bridge`)
 

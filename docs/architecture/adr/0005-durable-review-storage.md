@@ -46,8 +46,9 @@ tests so migration shape, stale-record event appends, cursor replay, restart
 hydration, artifact metadata, retention cleanup, status transitions, and cascade
 deletion stay executable without an external Postgres service.
 
-Worker fallback state remains worker-local until the detached execution storage
-issue moves worker state into the same durable boundary.
+Detached Workflow run identifiers and observed states are persisted through the
+same service store. Workflow coordinates execution and retries; it does not own
+queryable run, event, or artifact state.
 
 ## Consequences
 
@@ -66,8 +67,9 @@ issue moves worker state into the same durable boundary.
 - Hosted deployments now need a PostgreSQL-compatible database for durable
   behavior.
 - The service carries migration ownership in addition to route contracts.
-- Worker-local fallback state remains a temporary split until a follow-up issue
-  unifies detached execution persistence.
+- Detached execution now depends on Workflow acceptance for background work, so
+  local no-database development still needs Workflow runtime availability for
+  detached mode.
 
 ## Alternatives Considered
 

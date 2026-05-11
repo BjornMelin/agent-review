@@ -1,11 +1,13 @@
 # ADR-0003: Detached Execution and Fallback
 
-- Status: Accepted
+- Status: Superseded by ADR-0006
 - Date: 2026-03-01
 
 ## Context
 
-Service workloads can exceed synchronous HTTP tolerances. The platform requires detached review execution while keeping baseline operation possible without mandatory external workflow infrastructure.
+Service workloads can exceed synchronous HTTP tolerances. The platform requires
+detached review execution while keeping baseline operation possible without
+mandatory external workflow infrastructure.
 
 ## Decision
 
@@ -30,4 +32,11 @@ Use workflow-backed detached execution when available, with local asynchronous f
 
 ## Alternatives Considered
 
-- Workflow-only detached execution: rejected because it would make detached mode unavailable when workflow APIs are not configured.
+- Workflow-only detached execution: rejected because it would make detached mode
+  unavailable when workflow APIs are not configured.
+
+## Supersession
+
+ADR-0006 hard-cuts the local asynchronous fallback. Detached execution now fails
+fast when Workflow cannot accept a run, after persisting the failed service
+record through durable storage.

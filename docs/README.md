@@ -30,6 +30,7 @@ This directory contains canonical product and architecture documentation for the
 - [ADR-0003 Detached Execution and Fallback](./architecture/adr/0003-detached-execution-and-fallback.md)
 - [ADR-0004 TypeScript Control Plane and Rust Helper Boundary](./architecture/adr/0004-typescript-control-plane-and-rust-helper-boundary.md)
 - [ADR-0005 Durable Review Storage](./architecture/adr/0005-durable-review-storage.md)
+- [ADR-0006 Durable Workflow Detached Execution](./architecture/adr/0006-durable-workflow-detached-execution.md)
 
 ## Source of Truth
 

@@ -8,7 +8,8 @@ This repository is a TypeScript monorepo managed by pnpm workspaces and Turborep
 
 - `apps/review-cli`: CLI entrypoint (`review-agent`) for local and CI usage.
 - `apps/review-service`: HTTP service for inline and detached review orchestration.
-- `apps/review-worker`: Detached execution adapter (Workflow API with local fallback).
+- `apps/review-worker`: Detached execution adapter using Workflow API and
+  durable service state.
 - `packages/review-core`: Review orchestration, diff filtering, finding validation, artifact rendering.
 - `packages/review-types`: Canonical Zod schemas and shared runtime/type contracts.
 - `packages/review-git`: Git diff collection and changed-line indexing.

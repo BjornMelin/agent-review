@@ -32,9 +32,9 @@ Coverage expectations:
   terminal-state conflicts.
 
 Worker tests mock the Workflow runtime boundary and the review runner. They
-cover Workflow-backed start/status/cancel, failed Workflow status reads, local
-fallback when Workflow start fails, and request validation before any work is
-started.
+cover Workflow-backed start/status/cancel, restart reconciliation by Workflow
+run ID, failed Workflow status reads, fail-fast Workflow start errors, and
+request validation before any work is started.
 
 Contract fixes uncovered by this harness are in scope when they preserve the
 published service/worker contracts. Current harness-backed invariants are:
@@ -47,8 +47,9 @@ published service/worker contracts. Current harness-backed invariants are:
 - Artifact reads sync detached terminal state before deciding readiness.
 - Cancel conflict responses sync detached terminal state before returning the
   current status.
-- Detached worker cancellation keeps the accepted local fallback behavior when
-  Workflow cancellation APIs are unavailable.
+- Detached worker cancellation propagates Workflow cancellation failures instead
+  of marking local success, so service routes can return canonical runtime
+  errors.
 - Durable service storage is exercised with PGlite-backed tests covering schema
   migration, restart hydration, event sequence trimming, artifact metadata,
   status transitions, and cascade deletion.
