@@ -79,6 +79,15 @@ type ParsedSseEvent = {
   data?: unknown;
 };
 
+type SseReaderSession = {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  decoder: {
+    decode(input?: Uint8Array, options?: { stream?: boolean }): string;
+  };
+  buffer: string;
+  queuedEvents: ParsedSseEvent[];
+};
+
 function cloneRecord(record: ReviewRecord): ReviewRecord {
   return {
     ...record,
@@ -91,7 +100,6 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
         },
       },
     })),
-    listeners: new Set(record.listeners),
   };
 }
 
@@ -133,8 +141,10 @@ function createStore(
       records.delete(reviewId);
       deletes.push(reviewId);
     },
-    entries() {
-      return records.entries();
+    *entries() {
+      for (const [reviewId, record] of records.entries()) {
+        yield [reviewId, materialize(record)] as [string, ReviewRecord];
+      }
     },
     size() {
       return records.size;
@@ -225,31 +235,30 @@ function createReviewResult(request: ReviewRequest): ReviewRunResult {
   };
 }
 
+function parseSseEventBlock(block: string): ParsedSseEvent {
+  const event: ParsedSseEvent = {};
+  for (const line of block.split('\n')) {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const field = line.slice(0, separatorIndex);
+    const value = line.slice(separatorIndex + 1).trimStart();
+    if (field === 'id') {
+      event.id = value;
+    }
+    if (field === 'event') {
+      event.event = value;
+    }
+    if (field === 'data' && value) {
+      event.data = JSON.parse(value);
+    }
+  }
+  return event;
+}
+
 function parseSseEvents(text: string): ParsedSseEvent[] {
-  return text
-    .split('\n\n')
-    .filter(Boolean)
-    .map((block) => {
-      const event: ParsedSseEvent = {};
-      for (const line of block.split('\n')) {
-        const separatorIndex = line.indexOf(':');
-        if (separatorIndex === -1) {
-          continue;
-        }
-        const field = line.slice(0, separatorIndex);
-        const value = line.slice(separatorIndex + 1).trimStart();
-        if (field === 'id') {
-          event.id = value;
-        }
-        if (field === 'event') {
-          event.event = value;
-        }
-        if (field === 'data' && value) {
-          event.data = JSON.parse(value);
-        }
-      }
-      return event;
-    });
+  return text.split('\n\n').filter(Boolean).map(parseSseEventBlock);
 }
 
 async function withTimeout<T>(
@@ -287,7 +296,10 @@ async function readSseEvents(
   let text = '';
   try {
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const { done, value } = await reader.read();
+      const { done, value } = await withTimeout(
+        reader.read(),
+        'timed out waiting for replayed SSE events'
+      );
       if (done) {
         break;
       }
@@ -303,22 +315,43 @@ async function readSseEvents(
   return parseSseEvents(text);
 }
 
+function createSseReaderSession(response: Response): SseReaderSession {
+  expect(response.status).toBe(200);
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('SSE response did not include a readable body');
+  }
+  return {
+    reader,
+    decoder: new TextDecoder(),
+    buffer: '',
+    queuedEvents: [],
+  };
+}
+
 async function readNextSseEvent(
-  reader: ReadableStreamDefaultReader<Uint8Array>
+  session: SseReaderSession
 ): Promise<ParsedSseEvent> {
-  const decoder = new TextDecoder();
-  let text = '';
+  const nextQueuedEvent = session.queuedEvents.shift();
+  if (nextQueuedEvent) {
+    return nextQueuedEvent;
+  }
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const { done, value } = await withTimeout(
-      reader.read(),
+      session.reader.read(),
       'timed out waiting for SSE event'
     );
     if (done) {
       break;
     }
-    text += decoder.decode(value, { stream: true });
-    const event = parseSseEvents(text)[0];
+    session.buffer += session.decoder.decode(value, { stream: true });
+    const blocks = session.buffer.split('\n\n');
+    session.buffer = blocks.pop() ?? '';
+    session.queuedEvents.push(
+      ...blocks.filter(Boolean).map(parseSseEventBlock)
+    );
+    const event = session.queuedEvents.shift();
     if (event) {
       return event;
     }
@@ -501,14 +534,12 @@ describe('createReviewServiceApp', () => {
   });
 
   it('records inline failures and replays lifecycle events deterministically', async () => {
-    const store = createStore({ cloneRecords: false });
     const runner = vi.fn<ReviewServiceRunner>(async () => {
       throw new Error('provider fixture failed');
     });
     const app = createReviewServiceApp({
       providers: createProviders(),
       worker: createWorker(),
-      store,
       runner,
       nowMs: () => 3_000,
       uuid: createUuid(['review-failed', 'event-progress', 'event-failed']),
@@ -551,9 +582,6 @@ describe('createReviewServiceApp', () => {
           reviewId: 'review-failed',
         },
       },
-    });
-    await vi.waitFor(() => {
-      expect(store.records.get('review-failed')?.listeners.size).toBe(0);
     });
   });
 
@@ -647,14 +675,10 @@ describe('createReviewServiceApp', () => {
     const eventsResponse = await app.request(
       '/v1/review/review-live-failed/events'
     );
-    expect(eventsResponse.status).toBe(200);
-    const reader = eventsResponse.body?.getReader();
-    if (!reader) {
-      throw new Error('SSE response did not include a readable body');
-    }
+    const session = createSseReaderSession(eventsResponse);
 
     try {
-      await expect(readNextSseEvent(reader)).resolves.toMatchObject({
+      await expect(readNextSseEvent(session)).resolves.toMatchObject({
         event: 'enteredReviewMode',
       });
 
@@ -667,7 +691,7 @@ describe('createReviewServiceApp', () => {
       run.error = 'detached live failure';
       run.completedAt = 3_750;
 
-      await expect(readNextSseEvent(reader)).resolves.toMatchObject({
+      await expect(readNextSseEvent(session)).resolves.toMatchObject({
         event: 'failed',
         data: {
           type: 'failed',
@@ -681,7 +705,7 @@ describe('createReviewServiceApp', () => {
         },
       });
     } finally {
-      await reader.cancel().catch(() => undefined);
+      await session.reader.cancel().catch(() => undefined);
     }
   });
 

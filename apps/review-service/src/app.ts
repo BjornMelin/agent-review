@@ -37,7 +37,6 @@ export type ReviewRecord = {
   error?: string;
   detachedRunId?: string;
   events: LifecycleEvent[];
-  listeners: Set<(event: LifecycleEvent) => void | Promise<void>>;
 };
 
 /**
@@ -184,7 +183,6 @@ function createReviewRecord(
     createdAt: nowMs,
     updatedAt: nowMs,
     events: [],
-    listeners: new Set(),
   };
 }
 
@@ -252,7 +250,6 @@ export function createReviewServiceApp(
         isTerminalReviewRunStatus(record.status) &&
         now - record.updatedAt > config.maxRecordAgeMs
       ) {
-        record.listeners.clear();
         record.events.length = 0;
         clearLiveListeners(reviewId);
         store.delete(reviewId);
@@ -271,7 +268,6 @@ export function createReviewServiceApp(
         break;
       }
       if (isTerminalReviewRunStatus(record.status)) {
-        record.listeners.clear();
         record.events.length = 0;
         clearLiveListeners(reviewId);
         store.delete(reviewId);
@@ -531,20 +527,24 @@ export function createReviewServiceApp(
       const deliveredEventIds = new Set<string>();
       let writeQueue = Promise.resolve();
 
+      const writeQueuedSse = (
+        frame: Parameters<typeof stream.writeSSE>[0]
+      ): Promise<void> => {
+        writeQueue = writeQueue.then(() => stream.writeSSE(frame));
+        return writeQueue;
+      };
+
       const send = async (event: LifecycleEvent) => {
         if (deliveredEventIds.has(event.meta.eventId)) {
           return writeQueue;
         }
         deliveredEventIds.add(event.meta.eventId);
-        writeQueue = writeQueue.then(() =>
-          stream.writeSSE({
-            event: event.type,
-            data: JSON.stringify(event),
-            id: event.meta.eventId,
-            retry: 1000,
-          })
-        );
-        return writeQueue;
+        return writeQueuedSse({
+          event: event.type,
+          data: JSON.stringify(event),
+          id: event.meta.eventId,
+          retry: 1000,
+        });
       };
 
       const cleanup = () => {
@@ -589,7 +589,7 @@ export function createReviewServiceApp(
           if (!streaming) {
             break;
           }
-          await stream.writeSSE({
+          await writeQueuedSse({
             event: 'keepalive',
             data: '',
           });
