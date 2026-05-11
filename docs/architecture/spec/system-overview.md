@@ -33,6 +33,8 @@ pass parity, benchmark, and generated-contract gates.
 - `review-provider-registry`: owns provider construction, CLI provider/model
   normalization, default model policy, model catalog presets, and doctor
   filtering.
+- `review-runner`: TypeScript adapter for the Rust process-group helper used
+  by local-trusted command execution surfaces such as Codex delegation.
 - `review-reporters`: renders `json`, `markdown`, and `sarif`.
 - `review-sandbox-vercel`: policy-driven command execution wrapper for remote sandbox mode.
 - `review-convex-bridge`: optional metadata write bridge.
@@ -45,6 +47,15 @@ pass parity, benchmark, and generated-contract gates.
   the generated `ReviewRequest` contract, parses unified git patches, applies
   include/exclude and byte/file budgets, and returns normalized chunks plus the
   changed-line index.
+- `review-runner`: production stdin/stdout command runner. It validates the
+  generated `CommandRunInput`/`CommandRunOutput` contracts, creates optional
+  temporary directories, enforces process-group cancellation/timeouts/output
+  limits, clears inherited process environment, redacts secret-like command
+  metadata and output, reads requested temp files with byte caps, and performs
+  explicit cleanup. The TypeScript adapter runs the helper under a filtered
+  helper environment and gives it a graceful termination window before hard-kill
+  fallback. Temp directory cleanup is best-effort and reports cleanup failures
+  as structured command events rather than dropping command output.
 
 ## Core Data Flow
 
@@ -58,11 +69,17 @@ pass parity, benchmark, and generated-contract gates.
    which applies include/exclude paths and byte/file budgets before provider
    execution.
 6. Selected provider executes using prompt + rubric + normalized diff chunks.
+   Local Codex delegation runs through `review-runner` so the command path has
+   process-group timeout/cancellation and structured command telemetry.
 7. Provider output is normalized to `ReviewResult` shape.
-8. Finding locations are normalized to absolute paths and validated against changed line index.
-9. Artifacts are rendered for requested formats.
-10. Optional mirror write is attempted.
-11. Result and artifacts are returned.
+8. Command-run telemetry, when returned by a provider or attached to a provider
+   failure, is surfaced through lifecycle progress correlation, including each
+   structured runner event. Successful provider runs also include the command
+   run in the review result.
+9. Finding locations are normalized to absolute paths and validated against changed line index.
+10. Artifacts are rendered for requested formats.
+11. Optional mirror write is attempted.
+12. Result and artifacts are returned.
 
 ## Persistence Model
 

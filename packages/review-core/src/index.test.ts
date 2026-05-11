@@ -1,6 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ReviewProviderRunInput } from '@review-agent/review-types';
+import type {
+  LifecycleEvent,
+  ReviewProviderRunInput,
+} from '@review-agent/review-types';
+import { ReviewProviderCommandRunError } from '@review-agent/review-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   computeExitCode,
@@ -52,6 +56,181 @@ describe('runReview', () => {
       expect(review.artifacts.sarif).toContain('"runs"');
       expect(review.artifacts.markdown).toContain('# Review Report');
       expect(computeExitCode(review.result, 'p1')).toBe(1);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('surfaces provider command runs with command correlation events', async () => {
+    const repo = await makeRepo();
+    try {
+      const raw = {
+        findings: [],
+        overall_correctness: 'patch is correct',
+        overall_explanation: 'ok',
+        overall_confidence_score: 0.99,
+      };
+      const events: LifecycleEvent[] = [];
+      const providerRun = vi.fn(async () => ({
+        raw,
+        text: JSON.stringify(raw),
+        commandRun: {
+          commandId: 'codex-review',
+          cmd: 'codex',
+          args: ['review', '--uncommitted'],
+          cwd: repo.cwd,
+          status: 'completed' as const,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          startedAtMs: 1,
+          endedAtMs: 2,
+          durationMs: 1,
+          outputBytes: 0,
+          redactions: { apiKeyLike: 0, bearer: 0 },
+          events: [
+            {
+              type: 'started' as const,
+              commandId: 'codex-review',
+              timestampMs: 1,
+            },
+            {
+              type: 'exited' as const,
+              commandId: 'codex-review',
+              timestampMs: 2,
+            },
+          ],
+          files: [],
+        },
+      }));
+      const provider = {
+        ...makeProvider(raw, 'codexDelegate'),
+        run: providerRun,
+      };
+
+      const review = await runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          outputFormats: ['json'],
+        },
+        {
+          providers: {
+            codexDelegate: provider,
+            openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+          },
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }
+      );
+
+      expect(review.commandRuns?.[0]?.commandId).toBe('codex-review');
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'progress' &&
+            event.meta.correlation.commandId === 'codex-review' &&
+            event.message.includes('finished with completed')
+        )
+      ).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'progress' &&
+            event.meta.correlation.commandId === 'codex-review' &&
+            event.message.includes('event started')
+        )
+      ).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('emits provider command-run telemetry before rethrowing provider failures', async () => {
+    const repo = await makeRepo();
+    try {
+      const raw = {
+        findings: [],
+        overall_correctness: 'patch is correct',
+        overall_explanation: 'ok',
+        overall_confidence_score: 0.99,
+      };
+      const commandRun = {
+        commandId: 'codex-review',
+        cmd: 'codex',
+        args: ['review', '--uncommitted'],
+        cwd: repo.cwd,
+        status: 'timedOut' as const,
+        exitCode: null,
+        stdout: '',
+        stderr: 'timed out',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        startedAtMs: 1,
+        endedAtMs: 2,
+        durationMs: 1,
+        outputBytes: 9,
+        redactions: { apiKeyLike: 0, bearer: 0 },
+        events: [
+          {
+            type: 'timedOut' as const,
+            commandId: 'codex-review',
+            timestampMs: 2,
+          },
+        ],
+        files: [],
+      };
+      const events: LifecycleEvent[] = [];
+      const provider = {
+        ...makeProvider(raw, 'codexDelegate'),
+        run: vi.fn(async () => {
+          throw new ReviewProviderCommandRunError(
+            'codex delegate failed: timed out',
+            commandRun
+          );
+        }),
+      };
+
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: provider,
+              openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+            },
+            onEvent: (event) => {
+              events.push(event);
+            },
+          }
+        )
+      ).rejects.toBeInstanceOf(ReviewProviderCommandRunError);
+
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'progress' &&
+            event.meta.correlation.commandId === 'codex-review' &&
+            event.message.includes('finished with timedOut')
+        )
+      ).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'progress' &&
+            event.meta.correlation.commandId === 'codex-review' &&
+            event.message.includes('event timedOut')
+        )
+      ).toBe(true);
     } finally {
       await repo.cleanup();
     }

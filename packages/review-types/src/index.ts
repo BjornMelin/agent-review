@@ -294,6 +294,93 @@ const SandboxAuditRedactionsSchema = z.strictObject({
   bearer: z.number().int().nonnegative(),
 });
 
+const CommandRunStatusSchema = z.enum([
+  'completed',
+  'failedToStart',
+  'outputLimitExceeded',
+  'timedOut',
+  'cancelled',
+]);
+
+const CommandRunEventSchema = z.strictObject({
+  type: z.enum([
+    'started',
+    'failedToStart',
+    'stdoutLimitExceeded',
+    'stderrLimitExceeded',
+    'timedOut',
+    'cancelled',
+    'exited',
+    'tempFileRead',
+    'fileLimitExceeded',
+    'tempDirCleaned',
+    'tempDirCleanupFailed',
+  ]),
+  commandId: z.string().min(1),
+  timestampMs: z.number().int().nonnegative(),
+  message: z.string().min(1).optional(),
+});
+
+const CommandRunFileSchema = z.strictObject({
+  key: z.string().min(1),
+  path: z.string().min(1),
+  content: z.string(),
+  byteLength: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  redactions: SandboxAuditRedactionsSchema,
+});
+
+/**
+ * Validates command execution requests sent from TypeScript packages to the runner helper.
+ */
+export const CommandRunInputSchema = z.strictObject({
+  commandId: z.string().min(1).optional(),
+  cmd: z.string().min(1),
+  args: z.array(z.string()),
+  cwd: z.string().min(1),
+  env: z.record(z.string(), z.string()).optional(),
+  stdin: z.string().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  cancelAfterMs: z.number().int().positive().optional(),
+  maxStdoutBytes: z.number().int().positive().optional(),
+  maxStderrBytes: z.number().int().positive().optional(),
+  maxFileBytes: z.number().int().positive().optional(),
+  maxTotalFileBytes: z.number().int().positive().optional(),
+  tempDirPrefix: z.string().min(1).optional(),
+  readFiles: z
+    .array(
+      z.strictObject({
+        key: z.string().min(1),
+        path: z.string().min(1),
+        optional: z.boolean().optional(),
+      })
+    )
+    .max(16),
+});
+
+/**
+ * Validates structured command execution telemetry returned by the runner helper.
+ */
+export const CommandRunOutputSchema = z.strictObject({
+  commandId: z.string().min(1),
+  cmd: z.string().min(1),
+  args: z.array(z.string()),
+  cwd: z.string().min(1),
+  status: CommandRunStatusSchema,
+  exitCode: z.number().int().nullable(),
+  stdout: z.string(),
+  stderr: z.string(),
+  stdoutTruncated: z.boolean(),
+  stderrTruncated: z.boolean(),
+  startedAtMs: z.number().int().nonnegative(),
+  endedAtMs: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+  outputBytes: z.number().int().nonnegative(),
+  redactions: SandboxAuditRedactionsSchema,
+  events: z.array(CommandRunEventSchema),
+  files: z.array(CommandRunFileSchema),
+});
+
 /**
  * Validates sandbox audit records including policy, resource use, redactions, and commands.
  */
@@ -399,6 +486,14 @@ export type ReviewEventCursor = z.infer<typeof ReviewEventCursorSchema>;
 export type ReviewArtifactMetadata = z.infer<
   typeof ReviewArtifactMetadataSchema
 >;
+/**
+ * Command execution request accepted by the local runner helper.
+ */
+export type CommandRunInput = z.infer<typeof CommandRunInputSchema>;
+/**
+ * Structured command execution result emitted by the local runner helper.
+ */
+export type CommandRunOutput = z.infer<typeof CommandRunOutputSchema>;
 export type SandboxAudit = z.infer<typeof SandboxAuditSchema>;
 export type ReviewRunStoreRecord = z.infer<typeof ReviewRunStoreRecordSchema>;
 export type ReviewEventStoreRecord = z.infer<
@@ -427,11 +522,49 @@ export type ReviewProviderRunInput = {
   normalizedDiffChunks: Array<{ file: string; patch: string }>;
 };
 
+/**
+ * Normalized review provider result, optionally including command-run telemetry.
+ */
 export type ReviewProviderRunOutput = {
   raw: unknown;
   text: string;
   resolvedModel?: string;
+  commandRun?: CommandRunOutput;
 };
+
+/**
+ * Provider failure that carries the command-run payload that caused the error.
+ */
+export class ReviewProviderCommandRunError extends Error {
+  readonly commandRun: CommandRunOutput;
+
+  constructor(message: string, commandRun: CommandRunOutput) {
+    super(message);
+    this.name = 'ReviewProviderCommandRunError';
+    this.commandRun = commandRun;
+  }
+}
+
+/**
+ * Extracts structured command-run telemetry from provider errors.
+ *
+ * @param error - Unknown error value thrown by a provider call.
+ * @returns Validated command-run output when present, otherwise undefined.
+ */
+export function getReviewProviderCommandRun(
+  error: unknown
+): CommandRunOutput | undefined {
+  if (error instanceof ReviewProviderCommandRunError) {
+    return error.commandRun;
+  }
+  if (!error || typeof error !== 'object' || !('commandRun' in error)) {
+    return undefined;
+  }
+  const parsed = CommandRunOutputSchema.safeParse(
+    (error as { commandRun: unknown }).commandRun
+  );
+  return parsed.success ? parsed.data : undefined;
+}
 
 export interface ReviewProvider {
   id: ReviewProviderKind;
@@ -441,6 +574,9 @@ export interface ReviewProvider {
   run(input: ReviewProviderRunInput): Promise<ReviewProviderRunOutput>;
 }
 
+/**
+ * Generated JSON Schema bundle used for cross-runtime contract parity.
+ */
 export type JsonSchemaSet = {
   outputFormat: unknown;
   reviewRunStatus: unknown;
@@ -457,6 +593,8 @@ export type JsonSchemaSet = {
   reviewCancelResponse: unknown;
   reviewEventCursor: unknown;
   reviewArtifactMetadata: unknown;
+  commandRunInput: unknown;
+  commandRunOutput: unknown;
   sandboxAudit: unknown;
   reviewRunStoreRecord: unknown;
   reviewEventStoreRecord: unknown;
@@ -489,6 +627,8 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     reviewCancelResponse: toDraft7JsonSchema(ReviewCancelResponseSchema),
     reviewEventCursor: toDraft7JsonSchema(ReviewEventCursorSchema),
     reviewArtifactMetadata: toDraft7JsonSchema(ReviewArtifactMetadataSchema),
+    commandRunInput: toDraft7JsonSchema(CommandRunInputSchema),
+    commandRunOutput: toDraft7JsonSchema(CommandRunOutputSchema),
     sandboxAudit: toDraft7JsonSchema(SandboxAuditSchema),
     reviewRunStoreRecord: toDraft7JsonSchema(ReviewRunStoreRecordSchema),
     reviewEventStoreRecord: toDraft7JsonSchema(ReviewEventStoreRecordSchema),

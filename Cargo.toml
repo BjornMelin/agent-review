@@ -12,14 +12,27 @@ publish = false
 
 [workspace.dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
+command-group = { version = "5.0.1", features = ["with-tokio"] }
 globset = "0.4.18"
 insta = { version = "1.47.2", default-features = false }
 jsonschema = { version = "0.46.4", default-features = false }
 prettyplease = "0.2.37"
+regex = "1.12.2"
 schemars = "0.8.22"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 syn = { version = "2.0.117", features = ["full"] }
+tempfile = "3.27.0"
+tokio = { version = "1.52.3", features = [
+  "io-util",
+  "macros",
+  "process",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "time",
+] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
 typify = { version = "0.6.2", default-features = false }
 
 [workspace.lints.rust]

@@ -169,6 +169,9 @@ importers:
 
   packages/review-provider-codex:
     dependencies:
+      '@review-agent/review-runner':
+        specifier: workspace:*
+        version: link:../review-runner
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../review-types
@@ -204,6 +207,12 @@ importers:
         version: link:../review-types
 
   packages/review-reporters:
+    dependencies:
+      '@review-agent/review-types':
+        specifier: workspace:*
+        version: link:../review-types
+
+  packages/review-runner:
     dependencies:
       '@review-agent/review-types':
         specifier: workspace:*

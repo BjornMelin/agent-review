@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ARTIFACT_CONTENT_TYPES,
   buildJsonSchemaSet,
+  CommandRunInputSchema,
+  CommandRunOutputSchema,
   isTerminalReviewRunStatus,
   OutputFormatSchema,
   parseRawModelOutput,
@@ -122,6 +124,64 @@ describe('review-types schemas', () => {
     ).toMatchObject({
       sandboxId: 'sandbox-1',
       policy: { networkProfile: 'deny_all' },
+    });
+  });
+
+  it('validates command runner input and output contracts', () => {
+    expect(
+      CommandRunInputSchema.parse({
+        commandId: 'codex-review',
+        cmd: 'codex',
+        args: ['review', '--uncommitted'],
+        cwd: '/tmp/repo',
+        timeoutMs: 1000,
+        maxFileBytes: 1000,
+        maxTotalFileBytes: 1000,
+        readFiles: [],
+      })
+    ).toMatchObject({
+      commandId: 'codex-review',
+      cmd: 'codex',
+    });
+
+    expect(
+      CommandRunOutputSchema.parse({
+        commandId: 'codex-review',
+        cmd: 'codex',
+        args: ['review', '--uncommitted'],
+        cwd: '/tmp/repo',
+        status: 'completed',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        startedAtMs: 1,
+        endedAtMs: 2,
+        durationMs: 1,
+        outputBytes: 0,
+        redactions: { apiKeyLike: 0, bearer: 0 },
+        events: [
+          {
+            type: 'started',
+            commandId: 'codex-review',
+            timestampMs: 1,
+          },
+        ],
+        files: [
+          {
+            key: 'lastMessage',
+            path: '/tmp/last-message.txt',
+            content: '{}',
+            byteLength: 2,
+            truncated: false,
+            redactions: { apiKeyLike: 0, bearer: 0 },
+          },
+        ],
+      })
+    ).toMatchObject({
+      commandId: 'codex-review',
+      status: 'completed',
     });
   });
 

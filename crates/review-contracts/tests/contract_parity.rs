@@ -1,6 +1,6 @@
 use review_agent_contracts::{
-    ContractParseError, JSON_SCHEMA_MANIFEST, parse_review_request, parse_review_result,
-    parse_sandbox_audit,
+    ContractParseError, JSON_SCHEMA_MANIFEST, parse_command_run_input, parse_command_run_output,
+    parse_review_request, parse_review_result, parse_sandbox_audit,
 };
 use serde_json::{Number, Value, json};
 
@@ -148,6 +148,62 @@ fn generated_sandbox_audit_dto_round_trips_command_phase() {
     assert_eq!(
         normalize_value(serde_json::to_value(dto).expect("sandbox audit DTO serializes")),
         normalize_value(input)
+    );
+}
+
+#[test]
+fn generated_command_run_dtos_round_trip_runner_contracts() {
+    let input = json!({
+        "commandId": "codex-review",
+        "cmd": "codex",
+        "args": ["review", "--uncommitted"],
+        "cwd": "/tmp/repo",
+        "timeoutMs": 30000,
+        "maxStdoutBytes": 1024,
+        "maxStderrBytes": 1024,
+        "maxFileBytes": 1024,
+        "maxTotalFileBytes": 1024,
+        "tempDirPrefix": "review-agent-codex-",
+        "readFiles": [{
+            "key": "lastMessage",
+            "path": "{tempDir}/last-message.txt",
+            "optional": true
+        }]
+    });
+    let output = json!({
+        "commandId": "codex-review",
+        "cmd": "codex",
+        "args": ["review", "--uncommitted"],
+        "cwd": "/tmp/repo",
+        "status": "completed",
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "stdoutTruncated": false,
+        "stderrTruncated": false,
+        "startedAtMs": 1,
+        "endedAtMs": 2,
+        "durationMs": 1,
+        "outputBytes": 0,
+        "redactions": { "apiKeyLike": 0, "bearer": 0 },
+        "events": [{
+            "type": "started",
+            "commandId": "codex-review",
+            "timestampMs": 1
+        }],
+        "files": []
+    });
+
+    let input_dto = parse_command_run_input(&input).expect("command input DTO parses");
+    let output_dto = parse_command_run_output(&output).expect("command output DTO parses");
+
+    assert_eq!(
+        serde_json::to_value(input_dto).expect("command input DTO serializes"),
+        input
+    );
+    assert_eq!(
+        serde_json::to_value(output_dto).expect("command output DTO serializes"),
+        output
     );
 }
 

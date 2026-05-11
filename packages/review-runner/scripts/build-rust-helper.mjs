@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const binaryName =
-  process.platform === 'win32' ? 'review-git-diff.exe' : 'review-git-diff';
+  process.platform === 'win32' ? 'review-runner.exe' : 'review-runner';
 const targetDir = process.env.CARGO_TARGET_DIR
   ? resolve(repoRoot, process.env.CARGO_TARGET_DIR)
   : join(repoRoot, 'target');
@@ -59,7 +59,7 @@ function runCargoBuild() {
   return new Promise((resolveBuild, reject) => {
     const child = spawn(
       'cargo',
-      ['build', '--quiet', '--locked', '-p', 'review-git-diff'],
+      ['build', '--quiet', '--locked', '-p', 'review-runner'],
       {
         cwd: repoRoot,
         env: helperEnv(),

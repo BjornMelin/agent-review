@@ -1,8 +1,8 @@
 # Review Agent Platform
 
 Codex-grade review agent platform implemented as a pnpm/Turborepo monorepo with
-a small Rust helper workspace for generated contract parity and production
-diff indexing.
+a small Rust helper workspace for generated contract parity, production diff
+indexing, and bounded process-group command execution.
 
 ## What It Does
 
@@ -32,6 +32,7 @@ packages/
   review-provider-codex/
   review-provider-openai/
   review-provider-registry/
+  review-runner/
   review-reporters/
   review-sandbox-vercel/
   review-types/
@@ -112,7 +113,17 @@ pnpm --filter @review-agent/review-service db:migrate
 | `REVIEW_AGENT_DIFF_INDEX_BUILD_TIMEOUT_MS` | `packages/review-git` | Overrides the development-only Rust helper build timeout (default `120000`) |
 | `REVIEW_AGENT_DIFF_INDEX_MAX_STDOUT_BYTES` / `REVIEW_AGENT_DIFF_INDEX_MAX_STDERR_BYTES` | `packages/review-git` | Caps Rust helper output collected by the Node adapter |
 | `REVIEW_AGENT_DIFF_INDEX_TIMEOUT_MS` | `packages/review-git` | Overrides the Rust diff-index helper execution timeout (default `30000`) |
+| `REVIEW_AGENT_RUNNER_BIN` | `packages/review-runner` | Overrides the Rust process runner helper binary path; package builds otherwise resolve `dist/bin/review-runner` |
+| `REVIEW_AGENT_RUNNER_ALLOW_BUILD=1` | `packages/review-runner` | Enables development-only Cargo build fallback when the runner helper binary is missing |
+| `REVIEW_AGENT_RUNNER_BUILD_TIMEOUT_MS` | `packages/review-runner` | Overrides the development-only Rust runner build timeout (default `120000`) |
+| `REVIEW_AGENT_RUNNER_HELPER_TIMEOUT_MS` | `packages/review-runner` | Minimum timeout for the helper process wrapper; command timeout plus padding can extend this |
+| `REVIEW_AGENT_RUNNER_HELPER_TIMEOUT_PADDING_MS` | `packages/review-runner` | Extra helper-process time added beyond each requested command timeout (default `10000`) |
+| `REVIEW_AGENT_RUNNER_HELPER_MAX_STDOUT_BYTES` / `REVIEW_AGENT_RUNNER_HELPER_MAX_STDERR_BYTES` | `packages/review-runner` | Caps helper stdout/stderr collected by the Node adapter |
 | `REVIEW_AGENT_STRICT_PERF=1` | `packages/review-git` tests | Enables strict parser/diff performance thresholds |
+
+The runner adapter starts the Rust helper with a filtered environment. Delegated
+commands still receive only the explicit env allowlist supplied in
+`CommandRunInput`.
 
 ## Build and CI
 

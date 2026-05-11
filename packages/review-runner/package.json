@@ -1,5 +1,5 @@
 {
-  "name": "@review-agent/review-git",
+  "name": "@review-agent/review-runner",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,8 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "node scripts/ensure-test-deps.mjs && vitest run --passWithNoTests",
-    "benchmark": "pnpm run build:rust && node scripts/benchmark.mjs"
+    "test": "node scripts/ensure-test-deps.mjs && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@review-agent/review-types": "workspace:*"

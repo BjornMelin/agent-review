@@ -8,7 +8,7 @@
         "$TURBO_ROOT$/Cargo.lock",
         "$TURBO_ROOT$/Cargo.toml",
         "$TURBO_ROOT$/crates/review-contracts/**",
-        "$TURBO_ROOT$/crates/review-git-diff/**",
+        "$TURBO_ROOT$/crates/review-runner/**",
         "$TURBO_ROOT$/packages/review-types/generated/json-schema/**"
       ],
       "outputs": ["dist/**"]

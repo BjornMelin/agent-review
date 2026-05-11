@@ -1,0 +1,207 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "commandId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cmd": {
+      "type": "string",
+      "minLength": 1
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failedToStart",
+        "outputLimitExceeded",
+        "timedOut",
+        "cancelled"
+      ]
+    },
+    "exitCode": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stdoutTruncated": {
+      "type": "boolean"
+    },
+    "stderrTruncated": {
+      "type": "boolean"
+    },
+    "startedAtMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "endedAtMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "outputBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "redactions": {
+      "type": "object",
+      "properties": {
+        "apiKeyLike": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bearer": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["apiKeyLike", "bearer"],
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "started",
+              "failedToStart",
+              "stdoutLimitExceeded",
+              "stderrLimitExceeded",
+              "timedOut",
+              "cancelled",
+              "exited",
+              "tempFileRead",
+              "fileLimitExceeded",
+              "tempDirCleaned",
+              "tempDirCleanupFailed"
+            ]
+          },
+          "commandId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timestampMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["type", "commandId", "timestampMs"],
+        "additionalProperties": false
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "string"
+          },
+          "byteLength": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "redactions": {
+            "type": "object",
+            "properties": {
+              "apiKeyLike": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "bearer": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["apiKeyLike", "bearer"],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "key",
+          "path",
+          "content",
+          "byteLength",
+          "truncated",
+          "redactions"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "commandId",
+    "cmd",
+    "args",
+    "cwd",
+    "status",
+    "exitCode",
+    "stdout",
+    "stderr",
+    "stdoutTruncated",
+    "stderrTruncated",
+    "startedAtMs",
+    "endedAtMs",
+    "durationMs",
+    "outputBytes",
+    "redactions",
+    "events",
+    "files"
+  ],
+  "additionalProperties": false
+}

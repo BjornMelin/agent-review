@@ -1,9 +1,9 @@
-import { execFile } from 'node:child_process';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { access } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
+import { runCommand } from '@review-agent/review-runner';
 import type {
+  CommandRunOutput,
   ProviderDiagnostic,
   ReviewProvider,
   ReviewProviderCapabilities,
@@ -12,11 +12,29 @@ import type {
   ReviewProviderValidationInput,
   ReviewTarget,
 } from '@review-agent/review-types';
-
-const execFileAsync = promisify(execFile);
+import { ReviewProviderCommandRunError } from '@review-agent/review-types';
 
 const CODEX_DOCTOR_TIMEOUT_MS = 10_000;
 const CODEX_REVIEW_TIMEOUT_MS = 5 * 60_000;
+const CODEX_OUTPUT_BYTES = 16 * 1024 * 1024;
+const LAST_MESSAGE_KEY = 'lastMessage';
+const TEMP_DIR_PLACEHOLDER = '{tempDir}';
+const CODEX_ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'CODEX_HOME',
+  'CODEX_API_KEY',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+] as const;
 
 function targetToArgs(target: ReviewTarget): string[] {
   switch (target.type) {
@@ -40,14 +58,41 @@ function targetToArgs(target: ReviewTarget): string[] {
 
 export type CodexProviderOptions = {
   codexBin?: string;
+  outputBytes?: number;
 };
 
+function commandText(output: CommandRunOutput): string {
+  return (
+    output.files
+      .find((file) => file.key === LAST_MESSAGE_KEY)
+      ?.content.trim() ||
+    output.stdout.trim() ||
+    output.stderr.trim()
+  );
+}
+
+function codexEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of CODEX_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (value) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+/**
+ * Review provider that delegates requests to a local Codex CLI binary through the command runner.
+ */
 export class CodexDelegateProvider implements ReviewProvider {
   id = 'codexDelegate' as const;
   private readonly codexBin: string;
+  private readonly outputBytes: number;
 
   constructor(options: CodexProviderOptions = {}) {
     this.codexBin = options.codexBin ?? process.env.CODEX_BIN ?? 'codex';
+    this.outputBytes = options.outputBytes ?? CODEX_OUTPUT_BYTES;
   }
 
   capabilities(): ReviewProviderCapabilities {
@@ -76,20 +121,18 @@ export class CodexDelegateProvider implements ReviewProvider {
   async doctor(): Promise<ProviderDiagnostic[]> {
     const diagnostics: ProviderDiagnostic[] = [];
     try {
-      await execFileAsync(this.codexBin, ['--version'], {
-        encoding: 'utf8',
-        maxBuffer: 1024 * 1024,
-        timeout: CODEX_DOCTOR_TIMEOUT_MS,
+      const output = await runCommand({
+        commandId: 'codex-doctor',
+        cmd: this.codexBin,
+        args: ['--version'],
+        cwd: process.cwd(),
+        env: codexEnv(),
+        timeoutMs: CODEX_DOCTOR_TIMEOUT_MS,
+        maxStdoutBytes: 1024 * 1024,
+        maxStderrBytes: 1024 * 1024,
+        readFiles: [],
       });
-      diagnostics.push({
-        code: 'provider_unavailable',
-        ok: true,
-        severity: 'info',
-        detail: `codex binary is available at "${this.codexBin}"`,
-      });
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code === 'ENOENT') {
+      if (output.status === 'failedToStart') {
         diagnostics.push({
           code: 'binary_missing',
           ok: false,
@@ -100,6 +143,25 @@ export class CodexDelegateProvider implements ReviewProvider {
         });
         return diagnostics;
       }
+      if (output.status !== 'completed' || output.exitCode !== 0) {
+        diagnostics.push({
+          code: 'provider_unavailable',
+          ok: false,
+          severity: 'error',
+          detail: `codex binary check failed: ${commandText(output) || output.status}`,
+          remediation:
+            'Verify codex CLI installation and executable permissions.',
+        });
+        return diagnostics;
+      }
+      diagnostics.push({
+        code: 'provider_unavailable',
+        ok: true,
+        severity: 'info',
+        detail: `codex binary is available at "${this.codexBin}"`,
+      });
+    } catch (error) {
+      const err = error as Error;
       diagnostics.push({
         code: 'provider_unavailable',
         ok: false,
@@ -140,12 +202,9 @@ export class CodexDelegateProvider implements ReviewProvider {
   }
 
   async run(input: ReviewProviderRunInput): Promise<ReviewProviderRunOutput> {
-    const tempDir = await mkdtemp(join(tmpdir(), 'review-agent-codex-'));
-    const lastMessagePath = join(tempDir, 'last-message.txt');
-
     const args = [
       '--output-last-message',
-      lastMessagePath,
+      `${TEMP_DIR_PLACEHOLDER}/last-message.txt`,
       'review',
       ...targetToArgs(input.request.target),
     ];
@@ -153,43 +212,48 @@ export class CodexDelegateProvider implements ReviewProvider {
       args.unshift('--model', input.request.model);
     }
 
-    try {
-      const { stdout, stderr } = await execFileAsync(this.codexBin, args, {
-        cwd: input.request.cwd,
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-        timeout: CODEX_REVIEW_TIMEOUT_MS,
-      });
+    const output = await runCommand({
+      commandId: 'codex-review',
+      cmd: this.codexBin,
+      args,
+      cwd: input.request.cwd,
+      env: codexEnv(),
+      timeoutMs: CODEX_REVIEW_TIMEOUT_MS,
+      maxStdoutBytes: this.outputBytes,
+      maxStderrBytes: this.outputBytes,
+      maxFileBytes: this.outputBytes,
+      maxTotalFileBytes: this.outputBytes,
+      tempDirPrefix: 'review-agent-codex-',
+      readFiles: [
+        {
+          key: LAST_MESSAGE_KEY,
+          path: `${TEMP_DIR_PLACEHOLDER}/last-message.txt`,
+          optional: true,
+        },
+      ],
+    });
 
-      const outputText = (
-        await readFile(lastMessagePath, 'utf8').catch(() => '')
-      ).trim();
-      const text = outputText || stdout.trim() || stderr.trim();
-
-      let raw: unknown = null;
-      try {
-        raw = JSON.parse(text);
-      } catch {
-        raw = null;
-      }
-
-      return {
-        raw,
-        text,
-        resolvedModel: input.request.model ?? 'codexDelegate:default',
-      };
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException & {
-        stderr?: string | Buffer;
-        stdout?: string | Buffer;
-      };
-      const stderr = String(err.stderr ?? '').trim();
-      const stdout = String(err.stdout ?? '').trim();
-      const detail = stderr || stdout || err.message;
-      throw new Error(`codex delegate failed: ${detail}`);
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
+    const text = commandText(output);
+    if (output.status !== 'completed' || output.exitCode !== 0) {
+      throw new ReviewProviderCommandRunError(
+        `codex delegate failed: ${text || output.status}`,
+        output
+      );
     }
+
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      raw = null;
+    }
+
+    return {
+      raw,
+      text,
+      resolvedModel: input.request.model ?? 'codexDelegate:default',
+      commandRun: output,
+    };
   }
 }
 

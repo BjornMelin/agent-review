@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ReviewProviderCommandRunError } from '@review-agent/review-types';
 import { describe, expect, it } from 'vitest';
 import { CodexDelegateProvider } from './index.js';
 
@@ -37,6 +38,18 @@ JSON
   return { bin, argsLogPath };
 }
 
+async function makeFailingCodexBinary(dir: string): Promise<string> {
+  const bin = join(dir, 'codex-fail.sh');
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+echo "codex rejected input" >&2
+exit 2
+`;
+  await writeFile(bin, script, 'utf8');
+  await chmod(bin, 0o755);
+  return bin;
+}
+
 describe('codex provider contract', () => {
   it('maps targets to codex review args and parses last message json', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'review-provider-codex-'));
@@ -60,6 +73,12 @@ describe('codex provider contract', () => {
 
       expect(run.raw).toEqual(REVIEW_OUTPUT);
       expect(run.text).toContain('patch is correct');
+      expect(run.commandRun?.status).toBe('completed');
+      expect(run.commandRun?.commandId).toBe('codex-review');
+      expect(run.commandRun?.files[0]?.key).toBe('lastMessage');
+      expect(
+        run.commandRun?.events.some((event) => event.type === 'tempDirCleaned')
+      ).toBe(true);
 
       const args = (await readFile(argsLogPath, 'utf8'))
         .split('\n')
@@ -72,6 +91,79 @@ describe('codex provider contract', () => {
       expect(args).toContain('abc123');
       expect(args).toContain('--title');
       expect(args).toContain('Fix parser');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('raises provider errors with runner stderr when codex exits nonzero', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-provider-codex-'));
+    try {
+      const bin = await makeFailingCodexBinary(dir);
+      const provider = new CodexDelegateProvider({ codexBin: bin });
+
+      const run = provider.run({
+        request: {
+          cwd: process.cwd(),
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          executionMode: 'localTrusted',
+          outputFormats: ['json'],
+        },
+        resolvedPrompt: 'prompt',
+        rubric: 'rubric',
+        normalizedDiffChunks: [],
+      });
+
+      await expect(run).rejects.toThrow(
+        /codex delegate failed: codex rejected input/
+      );
+      await expect(run).rejects.toMatchObject({
+        commandRun: {
+          commandId: 'codex-review',
+          status: 'completed',
+          exitCode: 2,
+        },
+      });
+      await expect(run).rejects.toBeInstanceOf(ReviewProviderCommandRunError);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('raises provider errors with runner status when codex output is capped', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-provider-codex-'));
+    try {
+      const bin = join(dir, 'codex-noisy.sh');
+      const script = `#!/usr/bin/env bash
+dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' x
+`;
+      await writeFile(bin, script, 'utf8');
+      await chmod(bin, 0o755);
+      const provider = new CodexDelegateProvider({
+        codexBin: bin,
+        outputBytes: 1024,
+      });
+
+      const run = provider.run({
+        request: {
+          cwd: process.cwd(),
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          executionMode: 'localTrusted',
+          outputFormats: ['json'],
+        },
+        resolvedPrompt: 'prompt',
+        rubric: 'rubric',
+        normalizedDiffChunks: [],
+      });
+
+      await expect(run).rejects.toMatchObject({
+        commandRun: {
+          commandId: 'codex-review',
+          status: 'outputLimitExceeded',
+        },
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
