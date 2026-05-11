@@ -10,7 +10,11 @@
     "lint": "turbo run lint --concurrency=1",
     "test": "turbo run test",
     "format": "turbo run format",
-    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "rust:fmt": "cargo fmt --all -- --check",
+    "rust:clippy": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "rust:test": "cargo test --workspace --all-targets --all-features --locked",
+    "rust:check": "pnpm rust:fmt && pnpm rust:clippy && pnpm rust:test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm rust:check",
     "repro-check": "bash scripts/repro-check.sh",
     "dev": "turbo run dev"
   },

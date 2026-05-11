@@ -75,3 +75,23 @@ own suites are hardened under a scoped issue.
   fields that matter.
 - Keep failure fixtures explicit: invalid payloads, provider failures, Workflow
   failures, lifecycle replay, cancellation, and terminal states.
+
+## Rust Contract Parity
+
+`crates/review-contracts` is the only Rust crate admitted before helper behavior
+ships. It validates that committed `review-types` JSON Schema artifacts can
+generate Rust DTOs with `typify`.
+
+Coverage expectations:
+
+- Snapshot the schema manifest so additions/removals are reviewed deliberately.
+- Compile and test representative generated DTOs for `ReviewRequest`,
+  `ReviewResult`, and `SandboxAudit`.
+- Exercise the Rust parser helpers with positive payloads and invalid
+  constraint cases, including explicit semantic guards for Zod refinements that
+  JSON Schema cannot encode, so generated DTOs are never treated as validation
+  owners.
+- Keep Rust DTOs generated from JSON Schema only; do not hand-write duplicate
+  boundary structs.
+- Run `pnpm rust:check` or the equivalent Cargo format, clippy, and test ladder
+  for any change touching `Cargo.toml`, `Cargo.lock`, or `crates/*`.

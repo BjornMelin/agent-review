@@ -6,6 +6,7 @@ allowBuilds:
   cbor-extract: true
   esbuild: true
 overrides:
+  '@esbuild-kit/core-utils>esbuild': 0.25.12
   devalue: 5.8.0
   picomatch: 4.0.4
   postcss: 8.5.14

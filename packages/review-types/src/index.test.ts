@@ -5,9 +5,11 @@ import {
   buildJsonSchemaSet,
   isTerminalReviewRunStatus,
   OutputFormatSchema,
+  parseRawModelOutput,
   ReviewArtifactMetadataSchema,
   ReviewEventCursorSchema,
   ReviewRequestSchema,
+  ReviewResultSchema,
   ReviewRunStatusSchema,
   ReviewStartRequestSchema,
   ReviewStatusResponseSchema,
@@ -121,6 +123,54 @@ describe('review-types schemas', () => {
       sandboxId: 'sandbox-1',
       policy: { networkProfile: 'deny_all' },
     });
+  });
+
+  it('rejects inverted line ranges at normalized and raw model boundaries', () => {
+    expect(() =>
+      ReviewResultSchema.parse({
+        findings: [
+          {
+            title: 'Bad location',
+            body: 'The model produced an inverted location range.',
+            confidenceScore: 0.9,
+            codeLocation: {
+              absoluteFilePath: '/tmp/repo/src/index.ts',
+              lineRange: { start: 10, end: 2 },
+            },
+            fingerprint: 'finding-1',
+          },
+        ],
+        overallCorrectness: 'patch is incorrect',
+        overallExplanation: 'Invalid line range.',
+        overallConfidenceScore: 0.9,
+        metadata: {
+          provider: 'codexDelegate',
+          modelResolved: 'codex',
+          executionMode: 'localTrusted',
+          promptPack: 'default',
+          gitContext: { mode: 'custom' },
+        },
+      })
+    ).toThrow(/end must be >= start/);
+
+    expect(() =>
+      parseRawModelOutput({
+        findings: [
+          {
+            title: 'Bad location',
+            body: 'The model produced an inverted location range.',
+            confidence_score: 0.9,
+            code_location: {
+              absolute_file_path: '/tmp/repo/src/index.ts',
+              line_range: { start: 10, end: 2 },
+            },
+          },
+        ],
+        overall_correctness: 'patch is incorrect',
+        overall_explanation: 'Invalid line range.',
+        overall_confidence_score: 0.9,
+      })
+    ).toThrow(/end must be >= start/);
   });
 
   it('emits json schemas', () => {

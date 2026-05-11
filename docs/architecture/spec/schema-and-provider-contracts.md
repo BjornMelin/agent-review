@@ -9,6 +9,27 @@ back to the live Zod schemas. Future Rust helpers must consume those generated
 artifacts rather than hand-maintaining duplicate DTOs. Schema generation uses
 Zod input mode so defaulted boundary fields remain optional in JSON Schema.
 
+`crates/review-contracts` is the Rust parity crate. Its build script consumes
+the committed schema manifest, injects deterministic Rust type titles, and
+generates DTOs with `typify`. The generator normalizes value-level validation
+keywords that Rust DTOs do not own, such as string lengths and numeric bounds;
+Zod remains the canonical runtime validation owner. The crate exposes parser
+helpers for Rust consumers that validate untrusted JSON against the committed
+JSON Schema, apply explicit Rust guards for known Zod refinements that draft-07
+JSON Schema cannot encode, and only then deserialize into generated DTOs.
+Downstream Rust helpers can compile against those canonical JSON Schema shapes,
+but they must not define hand-written request, result, lifecycle, provider,
+sandbox, or service DTO structs.
+
+Rust contract gates are part of root validation:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- `cargo test --workspace --all-targets --all-features --locked`
+
+`pnpm check` runs the TypeScript gates and then `pnpm rust:check`, so CI catches
+contract generation drift before Rust helper behavior can ship.
+
 ## ReviewRequest
 
 Required fields:

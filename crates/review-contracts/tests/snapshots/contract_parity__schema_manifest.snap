@@ -1,0 +1,27 @@
+---
+source: crates/review-contracts/tests/contract_parity.rs
+expression: snapshot
+---
+schemaSetVersion: 1
+source: packages/review-types/src/index.ts
+generator: packages/review-types/scripts/generate-json-schema.mjs
+schemas:
+  - lifecycleEvent -> lifecycle-event.schema.json
+  - outputFormat -> output-format.schema.json
+  - providerDiagnostic -> provider-diagnostic.schema.json
+  - rawModelOutput -> raw-model-output.schema.json
+  - reviewArtifactMetadata -> review-artifact-metadata.schema.json
+  - reviewArtifactStoreRecord -> review-artifact-store-record.schema.json
+  - reviewCancelResponse -> review-cancel-response.schema.json
+  - reviewErrorResponse -> review-error-response.schema.json
+  - reviewEventCursor -> review-event-cursor.schema.json
+  - reviewEventStoreRecord -> review-event-store-record.schema.json
+  - reviewFinding -> review-finding.schema.json
+  - reviewRequest -> review-request.schema.json
+  - reviewResult -> review-result.schema.json
+  - reviewRunStatus -> review-run-status.schema.json
+  - reviewRunStoreRecord -> review-run-store-record.schema.json
+  - reviewStartRequest -> review-start-request.schema.json
+  - reviewStartResponse -> review-start-response.schema.json
+  - reviewStatusResponse -> review-status-response.schema.json
+  - sandboxAudit -> sandbox-audit.schema.json

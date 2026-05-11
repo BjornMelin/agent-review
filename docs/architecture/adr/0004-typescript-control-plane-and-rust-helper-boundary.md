@@ -37,6 +37,8 @@ delete more complexity than they introduce. The first eligible Rust helpers are:
 types must be generated from the emitted JSON Schema, checked for drift in CI,
 and treated as downstream artifacts. Rust code must not define a competing
 canonical request, result, lifecycle event, provider, sandbox, or API schema.
+The root Cargo workspace and `crates/review-contracts` provide that generation
+and parity gate before any Rust helper behavior is allowed to ship.
 
 Postgres with Drizzle is the target durable store for run, event, and artifact
 metadata. Vercel Workflow coordinates execution, retries, and resumption; it
@@ -59,7 +61,9 @@ A Rust helper is admissible only when all of these are true:
   exercised without booting the service.
 - TypeScript remains the caller and orchestration owner.
 - Contract types are generated from `review-types` JSON Schema and validated by
-  CI; hand-authored duplicate DTOs are not accepted.
+  CI; hand-authored duplicate DTOs are not accepted, and Rust callers must parse
+  external payloads through schema-validating helpers with explicit guards for
+  non-JSON-Schema Zod refinements before constructing DTOs.
 - A conformance corpus proves parity with the existing TypeScript behavior
   before the call site is switched.
 - Benchmarks or targeted runtime tests prove the helper is measurably better for
