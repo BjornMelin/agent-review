@@ -94,3 +94,9 @@ Remote sandbox execution shall enforce:
 ### NFR-5 CI Compatibility
 
 CI pipeline shall run install, format check, lint, typecheck, test, and build on pull requests and pushes to main.
+
+### NFR-6 Hosted Review Security Gates
+
+Hosted review service work shall satisfy the acceptance gates in
+[`docs/architecture/security/threat-model.md`](./security/threat-model.md)
+before production deployment.
