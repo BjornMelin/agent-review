@@ -6,6 +6,12 @@ The system performs automated review of code changes and returns prioritized fin
 
 ## Runtime Topology
 
+ADR-0004 defines the language boundary for the roadmap: TypeScript remains the
+control plane for service, worker, providers, Vercel Workflow/Sandbox
+orchestration, shared Zod contracts, CLI, and the future Review Room. Rust is
+admissible only for helper crates that delete fragile implementation details and
+pass parity, benchmark, and generated-contract gates.
+
 ### Applications
 
 - `apps/review-cli`: user-facing CLI to run reviews locally.
@@ -41,6 +47,9 @@ The system performs automated review of code changes and returns prioritized fin
 - Service review records are maintained in an in-memory map.
 - Worker detached records are maintained in an in-memory map.
 - No durable store is required for baseline behavior.
+- The roadmap target is a Postgres/Drizzle store for durable run, event, and
+  artifact metadata. Vercel Workflow coordinates execution, but does not replace
+  queryable state.
 
 ## Failure Behavior
 
