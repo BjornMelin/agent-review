@@ -15,6 +15,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Produce deterministic artifacts (`json`, `markdown`, `sarif`) for automation and human consumption.
 - Validate finding locations against changed diff lines to reduce false-positive locations.
 - Support detached execution for longer-running review tasks.
+- Preserve a TypeScript control plane while allowing narrowly gated Rust helpers
+  that delete fragile implementation paths.
 
 ## In Scope (Current Implementation)
 
@@ -35,6 +37,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Multi-tenant isolation, quotas, and billing
 - Automatic retry/backoff orchestration for failed provider invocations
 - UI frontend for review authoring or visualization
+- Rust service rewrites, native primary CLI rewrites, Ratatui TUIs, and Tauri
+  desktop applications
 
 ## Primary Users
 
@@ -54,3 +58,7 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Strict runtime validation with Zod at API and provider boundaries
 - TypeScript strict mode across monorepo packages
 - Reproducible pipeline (`lint`, `typecheck`, `test`, `build`) through root scripts
+- Architecture changes that introduce Rust helpers must follow
+  [ADR-0004](./architecture/adr/0004-typescript-control-plane-and-rust-helper-boundary.md):
+  generated contracts, conformance tests, benchmark gates, and no permanent
+  dual canonical paths.
