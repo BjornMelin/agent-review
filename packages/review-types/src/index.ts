@@ -213,6 +213,10 @@ const PathFilterSchema = boundedString(
   }
 });
 
+/**
+ * Validates the review target contract for working-tree, branch, commit, or
+ * custom-instruction reviews.
+ */
 export const ReviewTargetSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('uncommittedChanges') }),
   z.strictObject({
@@ -237,10 +241,17 @@ export const ReviewTargetSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
+/**
+ * Lists supported provider adapters for running review generation.
+ */
 export const ReviewProviderKindSchema = z.enum([
   'codexDelegate',
   'openaiCompatible',
 ]);
+
+/**
+ * Defines where review execution is allowed to run.
+ */
 export const ExecutionModeSchema = z.enum(['localTrusted', 'remoteSandbox']);
 /**
  * Defines the lifecycle states shared by review service, worker, and durable store records.
@@ -252,6 +263,9 @@ export const ReviewRunStatusSchema = z.enum([
   'failed',
   'cancelled',
 ]);
+/**
+ * Defines provider reasoning-effort values accepted by review requests.
+ */
 export const ReasoningEffortSchema = z.enum([
   'minimal',
   'low',
@@ -259,6 +273,9 @@ export const ReasoningEffortSchema = z.enum([
   'high',
   'xhigh',
 ]);
+/**
+ * Defines artifact formats produced by review runs.
+ */
 export const OutputFormatSchema = z.enum(['sarif', 'json', 'markdown']);
 const OutputFormatListSchema = z
   .array(OutputFormatSchema)
@@ -285,6 +302,9 @@ export const ARTIFACT_CONTENT_TYPES = {
   markdown: 'text/markdown; charset=utf-8',
   sarif: 'application/json; charset=utf-8',
 } as const satisfies Record<z.infer<typeof OutputFormatSchema>, string>;
+/**
+ * Defines minimum severity thresholds for reporting review findings.
+ */
 export const SeverityThresholdSchema = z.enum(['p0', 'p1', 'p2', 'p3']);
 /**
  * Lists review run statuses that represent terminal states with no further transitions.
@@ -294,11 +314,17 @@ export const TERMINAL_REVIEW_RUN_STATUSES = [
   'failed',
   'cancelled',
 ] as const satisfies readonly z.infer<typeof ReviewRunStatusSchema>[];
+/**
+ * Defines severity levels for provider diagnostics and readiness checks.
+ */
 export const ProviderDiagnosticSeveritySchema = z.enum([
   'info',
   'warning',
   'error',
 ]);
+/**
+ * Defines stable diagnostic codes emitted by provider validation and doctor checks.
+ */
 export const ProviderDiagnosticCodeSchema = z.enum([
   'binary_missing',
   'auth_missing',
@@ -309,6 +335,10 @@ export const ProviderDiagnosticCodeSchema = z.enum([
   'configuration_error',
 ]);
 
+/**
+ * Validates the canonical review request contract after request-surface
+ * hardening and before provider execution.
+ */
 export const ReviewRequestSchema = z.strictObject({
   cwd: boundedString('cwd', DEFAULT_REVIEW_SECURITY_LIMITS.maxCwdBytes),
   target: ReviewTargetSchema,
@@ -366,6 +396,9 @@ const LineRangeSchema = z
     }
   });
 
+/**
+ * Validates normalized review findings returned by providers.
+ */
 export const ReviewFindingSchema = z.strictObject({
   title: z.string().min(1),
   body: z.string().min(1),
@@ -378,6 +411,9 @@ export const ReviewFindingSchema = z.strictObject({
   fingerprint: z.string().min(1),
 });
 
+/**
+ * Validates the normalized review result returned to callers and rendered into artifacts.
+ */
 export const ReviewResultSchema = z.strictObject({
   findings: z.array(ReviewFindingSchema),
   overallCorrectness: z.enum([
@@ -402,6 +438,9 @@ export const ReviewResultSchema = z.strictObject({
   }),
 });
 
+/**
+ * Validates the snake_case structured output expected from model providers.
+ */
 export const RawModelOutputSchema = z.strictObject({
   findings: z.array(
     z.strictObject({
@@ -420,6 +459,9 @@ export const RawModelOutputSchema = z.strictObject({
   overall_confidence_score: z.number().min(0).max(1),
 });
 
+/**
+ * Validates IDs that correlate lifecycle events, workflow runs, sandboxes, and commands.
+ */
 export const CorrelationIdsSchema = z.strictObject({
   reviewId: z.string().min(1),
   workflowRunId: z.string().min(1).optional(),
@@ -427,12 +469,18 @@ export const CorrelationIdsSchema = z.strictObject({
   commandId: z.string().min(1).optional(),
 });
 
+/**
+ * Validates lifecycle event metadata used for replay ordering and correlation.
+ */
 export const LifecycleEventMetaSchema = z.strictObject({
   eventId: z.string().min(1),
   timestampMs: z.number().int().nonnegative(),
   correlation: CorrelationIdsSchema,
 });
 
+/**
+ * Validates lifecycle events streamed and persisted for review run progress.
+ */
 export const LifecycleEventSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('enteredReviewMode'),
@@ -465,6 +513,9 @@ export const LifecycleEventSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
+/**
+ * Validates provider diagnostic records for readiness and request validation.
+ */
 export const ProviderDiagnosticSchema = z.strictObject({
   code: ProviderDiagnosticCodeSchema,
   ok: z.boolean(),
@@ -730,28 +781,97 @@ export const ReviewArtifactStoreRecordSchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
 });
 
+/**
+ * Review target selected for a run.
+ */
 export type ReviewTarget = z.infer<typeof ReviewTargetSchema>;
+/**
+ * Provider adapter identifier.
+ */
 export type ReviewProviderKind = z.infer<typeof ReviewProviderKindSchema>;
+/**
+ * Review execution placement.
+ */
 export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
+/**
+ * Durable review run lifecycle status.
+ */
 export type ReviewRunStatus = z.infer<typeof ReviewRunStatusSchema>;
+/**
+ * Provider reasoning-effort value.
+ */
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
+/**
+ * Generated artifact format.
+ */
 export type OutputFormat = z.infer<typeof OutputFormatSchema>;
+/**
+ * Minimum finding severity threshold.
+ */
 export type SeverityThreshold = z.infer<typeof SeverityThresholdSchema>;
+/**
+ * Canonical review request payload.
+ */
 export type ReviewRequest = z.infer<typeof ReviewRequestSchema>;
+/**
+ * Normalized review finding.
+ */
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
+/**
+ * Normalized review result.
+ */
 export type ReviewResult = z.infer<typeof ReviewResultSchema>;
+/**
+ * Raw structured model output before normalization.
+ */
 export type RawModelOutput = z.infer<typeof RawModelOutputSchema>;
+/**
+ * Review lifecycle event.
+ */
 export type LifecycleEvent = z.infer<typeof LifecycleEventSchema>;
+/**
+ * Correlation identifiers shared across review telemetry.
+ */
 export type CorrelationIds = z.infer<typeof CorrelationIdsSchema>;
+/**
+ * Metadata attached to each lifecycle event.
+ */
 export type LifecycleEventMeta = z.infer<typeof LifecycleEventMetaSchema>;
+/**
+ * Provider diagnostic emitted by readiness or request checks.
+ */
 export type ProviderDiagnostic = z.infer<typeof ProviderDiagnosticSchema>;
+/**
+ * Delivery mode for the review service start endpoint.
+ */
 export type ReviewDelivery = z.infer<typeof ReviewDeliverySchema>;
+/**
+ * Request body accepted by the review service start endpoint.
+ */
 export type ReviewStartRequest = z.infer<typeof ReviewStartRequestSchema>;
+/**
+ * Error response returned by review service endpoints.
+ */
 export type ReviewErrorResponse = z.infer<typeof ReviewErrorResponseSchema>;
+/**
+ * Response returned by the review service start endpoint.
+ */
 export type ReviewStartResponse = z.infer<typeof ReviewStartResponseSchema>;
+/**
+ * Response returned by the review status endpoint.
+ */
 export type ReviewStatusResponse = z.infer<typeof ReviewStatusResponseSchema>;
+/**
+ * Response returned by the review cancellation endpoint.
+ */
 export type ReviewCancelResponse = z.infer<typeof ReviewCancelResponseSchema>;
+/**
+ * Cursor accepted when replaying review lifecycle events.
+ */
 export type ReviewEventCursor = z.infer<typeof ReviewEventCursorSchema>;
+/**
+ * Metadata describing a generated review artifact.
+ */
 export type ReviewArtifactMetadata = z.infer<
   typeof ReviewArtifactMetadataSchema
 >;
@@ -767,15 +887,30 @@ export type CommandRunInput = z.infer<typeof CommandRunInputSchema>;
  * Structured command execution result emitted by the local runner helper.
  */
 export type CommandRunOutput = z.infer<typeof CommandRunOutputSchema>;
+/**
+ * Sandbox execution policy, resource, redaction, and command audit record.
+ */
 export type SandboxAudit = z.infer<typeof SandboxAuditSchema>;
+/**
+ * Durable run-store record.
+ */
 export type ReviewRunStoreRecord = z.infer<typeof ReviewRunStoreRecordSchema>;
+/**
+ * Durable event-store record.
+ */
 export type ReviewEventStoreRecord = z.infer<
   typeof ReviewEventStoreRecordSchema
 >;
+/**
+ * Durable artifact-store record.
+ */
 export type ReviewArtifactStoreRecord = z.infer<
   typeof ReviewArtifactStoreRecordSchema
 >;
 
+/**
+ * Provider feature flags used to gate request options before execution.
+ */
 export type ReviewProviderCapabilities = {
   jsonSchemaOutput: boolean;
   reasoningControl: boolean;
@@ -783,6 +918,9 @@ export type ReviewProviderCapabilities = {
   maxInputChars?: number;
 };
 
+/**
+ * Inputs used when validating a request against provider capabilities.
+ */
 export type ReviewProviderValidationInput = {
   request: ReviewRequest;
   capabilities: ReviewProviderCapabilities;
@@ -843,6 +981,9 @@ export function getReviewProviderCommandRun(
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * Provider adapter interface implemented by local and OpenAI-compatible review runners.
+ */
 export interface ReviewProvider {
   id: ReviewProviderKind;
   capabilities(): ReviewProviderCapabilities;
@@ -1314,6 +1455,11 @@ function toDraft7JsonSchema(schema: z.ZodType): unknown {
   return z.toJSONSchema(schema, JSON_SCHEMA_OPTIONS);
 }
 
+/**
+ * Builds the committed JSON Schema bundle used by non-TypeScript contract tests.
+ *
+ * @returns Draft-7-compatible JSON Schema objects for exported review contracts.
+ */
 export function buildJsonSchemaSet(): JsonSchemaSet {
   return {
     outputFormat: toDraft7JsonSchema(OutputFormatSchema),
@@ -1354,14 +1500,32 @@ export function isTerminalReviewRunStatus(status: ReviewRunStatus): boolean {
   );
 }
 
+/**
+ * Parses and validates unknown input as a review request.
+ *
+ * @param input - Unknown value to validate.
+ * @returns Parsed review request.
+ */
 export function parseReviewRequest(input: unknown): ReviewRequest {
   return ReviewRequestSchema.parse(input);
 }
 
+/**
+ * Parses and validates provider model output before normalization.
+ *
+ * @param input - Unknown value to validate.
+ * @returns Parsed raw model output.
+ */
 export function parseRawModelOutput(input: unknown): RawModelOutput {
   return RawModelOutputSchema.parse(input);
 }
 
+/**
+ * Converts a severity threshold to the numeric priority scale.
+ *
+ * @param threshold - Severity threshold to convert.
+ * @returns Numeric priority value where lower values are more severe.
+ */
 export function severityToPriority(
   threshold: SeverityThreshold
 ): 0 | 1 | 2 | 3 {
@@ -1377,6 +1541,13 @@ export function severityToPriority(
   }
 }
 
+/**
+ * Checks whether any finding meets or exceeds the selected threshold.
+ *
+ * @param findings - Findings to inspect.
+ * @param threshold - Minimum severity threshold to report.
+ * @returns True when at least one finding is at or above the threshold.
+ */
 export function hasFindingsAtOrAboveThreshold(
   findings: ReviewFinding[],
   threshold: SeverityThreshold
@@ -1385,6 +1556,12 @@ export function hasFindingsAtOrAboveThreshold(
   return findings.some((finding) => (finding.priority ?? 3) <= maxPriority);
 }
 
+/**
+ * Converts one raw model finding into the normalized provider finding shape.
+ *
+ * @param input - Raw model finding to normalize.
+ * @returns Normalized finding without a fingerprint.
+ */
 export function normalizeRawFinding(
   input: RawModelOutput['findings'][number]
 ): Omit<ReviewFinding, 'fingerprint'> {
