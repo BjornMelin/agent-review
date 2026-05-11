@@ -75,9 +75,21 @@ function runPnpm(args) {
   });
 }
 
+function isMissingArtifactError(error) {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ENOENT'
+  );
+}
+
 try {
   await access(reviewTypesDist);
-} catch {
+} catch (error) {
+  if (!isMissingArtifactError(error)) {
+    throw error;
+  }
   await rm(reviewTypesBuildInfo, { force: true });
   await runPnpm(['--filter', '@review-agent/review-types', 'build']);
 }

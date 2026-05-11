@@ -82,6 +82,9 @@ function codexEnv(): Record<string, string> {
   return env;
 }
 
+/**
+ * Review provider that delegates requests to a local Codex CLI binary through the command runner.
+ */
 export class CodexDelegateProvider implements ReviewProvider {
   id = 'codexDelegate' as const;
   private readonly codexBin: string;

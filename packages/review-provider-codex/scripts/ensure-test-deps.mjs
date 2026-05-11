@@ -94,10 +94,22 @@ function runPnpm(args) {
   });
 }
 
+function isMissingArtifactError(error) {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ENOENT'
+  );
+}
+
 async function ensureDist(path, buildArgs) {
   try {
     await access(path);
-  } catch {
+  } catch (error) {
+    if (!isMissingArtifactError(error)) {
+      throw error;
+    }
     if (path === reviewTypesDist) {
       await rm(reviewTypesBuildInfo, { force: true });
     }

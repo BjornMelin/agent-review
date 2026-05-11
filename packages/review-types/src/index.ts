@@ -330,6 +330,9 @@ const CommandRunFileSchema = z.strictObject({
   redactions: SandboxAuditRedactionsSchema,
 });
 
+/**
+ * Validates command execution requests sent from TypeScript packages to the runner helper.
+ */
 export const CommandRunInputSchema = z.strictObject({
   commandId: z.string().min(1).optional(),
   cmd: z.string().min(1),
@@ -355,6 +358,9 @@ export const CommandRunInputSchema = z.strictObject({
     .max(16),
 });
 
+/**
+ * Validates structured command execution telemetry returned by the runner helper.
+ */
 export const CommandRunOutputSchema = z.strictObject({
   commandId: z.string().min(1),
   cmd: z.string().min(1),
@@ -480,7 +486,13 @@ export type ReviewEventCursor = z.infer<typeof ReviewEventCursorSchema>;
 export type ReviewArtifactMetadata = z.infer<
   typeof ReviewArtifactMetadataSchema
 >;
+/**
+ * Command execution request accepted by the local runner helper.
+ */
 export type CommandRunInput = z.infer<typeof CommandRunInputSchema>;
+/**
+ * Structured command execution result emitted by the local runner helper.
+ */
 export type CommandRunOutput = z.infer<typeof CommandRunOutputSchema>;
 export type SandboxAudit = z.infer<typeof SandboxAuditSchema>;
 export type ReviewRunStoreRecord = z.infer<typeof ReviewRunStoreRecordSchema>;
@@ -510,6 +522,9 @@ export type ReviewProviderRunInput = {
   normalizedDiffChunks: Array<{ file: string; patch: string }>;
 };
 
+/**
+ * Normalized review provider result, optionally including command-run telemetry.
+ */
 export type ReviewProviderRunOutput = {
   raw: unknown;
   text: string;
@@ -517,6 +532,9 @@ export type ReviewProviderRunOutput = {
   commandRun?: CommandRunOutput;
 };
 
+/**
+ * Provider failure that carries the command-run payload that caused the error.
+ */
 export class ReviewProviderCommandRunError extends Error {
   readonly commandRun: CommandRunOutput;
 
@@ -527,6 +545,12 @@ export class ReviewProviderCommandRunError extends Error {
   }
 }
 
+/**
+ * Extracts structured command-run telemetry from provider errors.
+ *
+ * @param error - Unknown error value thrown by a provider call.
+ * @returns Validated command-run output when present, otherwise undefined.
+ */
 export function getReviewProviderCommandRun(
   error: unknown
 ): CommandRunOutput | undefined {
@@ -550,6 +574,9 @@ export interface ReviewProvider {
   run(input: ReviewProviderRunInput): Promise<ReviewProviderRunOutput>;
 }
 
+/**
+ * Generated JSON Schema bundle used for cross-runtime contract parity.
+ */
 export type JsonSchemaSet = {
   outputFormat: unknown;
   reviewRunStatus: unknown;

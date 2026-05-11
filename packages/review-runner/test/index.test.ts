@@ -41,6 +41,7 @@ describe('review runner adapter', () => {
   });
 
   it('does not inherit parent environment into delegated commands', async () => {
+    const originalSecret = process.env.REVIEW_RUNNER_SECRET_FOR_TEST;
     process.env.REVIEW_RUNNER_SECRET_FOR_TEST = 'leaked';
     try {
       const result = await runCommand({
@@ -58,7 +59,11 @@ describe('review runner adapter', () => {
       expect(result.status).toBe('completed');
       expect(result.stdout).toBe('');
     } finally {
-      delete process.env.REVIEW_RUNNER_SECRET_FOR_TEST;
+      if (originalSecret === undefined) {
+        delete process.env.REVIEW_RUNNER_SECRET_FOR_TEST;
+      } else {
+        process.env.REVIEW_RUNNER_SECRET_FOR_TEST = originalSecret;
+      }
     }
   });
 });
