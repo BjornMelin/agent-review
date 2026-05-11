@@ -24,6 +24,9 @@ Turborepo, with a root Cargo workspace for narrow Rust helpers.
 - `crates/review-contracts`: Rust DTO generation from committed
   `packages/review-types` JSON Schema artifacts. This is parity
   infrastructure only; it must not become a competing schema source of truth.
+- `crates/review-git-diff`: Rust candidate helper for diff parser/index
+  parity and benchmarks. This is not on the production call path until the
+  corpus and performance gates justify a hard cut.
 
 ## Verification Commands
 
@@ -58,7 +61,8 @@ Update documentation for any of the following:
 - New/changed CLI commands, flags, defaults, or exit codes.
 - New/changed HTTP endpoints, payloads, status values, or streaming events.
 - New/changed schema fields/enums in `packages/review-types`.
-- New/changed Rust contract generation or Cargo workspace gates.
+- New/changed Rust contract generation, helper behavior, corpus fixtures, or
+  Cargo workspace gates.
 - Provider behavior or environment-variable requirements.
 - Sandbox policy/budget/network model changes.
 - Detached execution semantics and fallback behavior.

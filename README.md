@@ -1,7 +1,8 @@
 # Review Agent Platform
 
 Codex-grade review agent platform implemented as a pnpm/Turborepo monorepo with
-a small Rust helper workspace for generated contract parity.
+a small Rust helper workspace for generated contract parity and gated helper
+candidates.
 
 ## What It Does
 
@@ -36,6 +37,7 @@ packages/
   review-types/
 crates/
   review-contracts/
+  review-git-diff/
 docs/
   architecture/
 ```
@@ -105,6 +107,8 @@ pnpm --filter @review-agent/review-service db:migrate
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
 | `OPENROUTER_API_KEY` | `packages/review-provider-openai` via provider registry | API key for OpenRouter |
 | `CONVEX_URL` | `packages/review-convex-bridge` | Enables optional metadata mirror mutation |
+| `REVIEW_AGENT_STRICT_PERF=1` | `packages/review-git` tests | Enables strict parser/diff performance thresholds |
+| `REVIEW_AGENT_RUST_DIFF_BENCH=1` | `packages/review-git` tests | Compares the TypeScript parser/index path with the Rust `review-git-diff` candidate |
 
 ## Build and CI
 
@@ -115,11 +119,12 @@ Root scripts:
 - `pnpm lint`
 - `pnpm test`
 - `pnpm rust:check`
+- `pnpm git:benchmark`
 - `pnpm check`
 - `bash scripts/repro-check.sh`
 
 CI workflow: `.github/workflows/ci.yml` installs Node/pnpm and stable Rust, then
-runs install, format, lint, typecheck, test, Rust contract gates, and build.
+runs install, format, lint, typecheck, test, Rust helper gates, and build.
 
 ## Documentation
 

@@ -22,4 +22,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm format
       - run: pnpm check
+      - run: pnpm git:benchmark
       - run: pnpm build
