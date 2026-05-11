@@ -54,6 +54,8 @@ async function initRepo(): Promise<string> {
   await runGit(cwd, ['init', '--initial-branch=main']);
   await runGit(cwd, ['config', 'user.name', 'Tester']);
   await runGit(cwd, ['config', 'user.email', 'tester@example.com']);
+  await runGit(cwd, ['config', 'core.autocrlf', 'input']);
+  await runGit(cwd, ['config', 'core.quotePath', 'true']);
   return cwd;
 }
 
