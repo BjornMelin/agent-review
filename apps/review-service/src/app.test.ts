@@ -2366,6 +2366,7 @@ describe('createReviewServiceApp', () => {
         reviewLimits: {
           maxMaxFiles: 5,
           maxMaxDiffBytes: 1024,
+          maxModelBytes: 4,
         },
       },
     });
@@ -2385,6 +2386,21 @@ describe('createReviewServiceApp', () => {
     expect(runner.mock.calls[0]?.[0]).toMatchObject({
       maxFiles: 5,
       maxDiffBytes: 1024,
+    });
+
+    const rejected = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest({
+          model: 'long-model-name',
+        }),
+      }),
+    });
+
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({
+      error: 'model exceeds configured byte limit',
     });
   });
 });

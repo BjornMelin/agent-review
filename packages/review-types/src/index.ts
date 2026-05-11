@@ -154,6 +154,7 @@ const SafeGitRefSchema = boundedString(
   'git ref',
   DEFAULT_REVIEW_SECURITY_LIMITS.maxGitRefBytes
 ).superRefine((value, context) => {
+  const segments = value.split('/');
   const invalidReasons = [
     value.startsWith('-') ? 'must not start with "-"' : undefined,
     value.startsWith('/') || value.endsWith('/')
@@ -163,7 +164,12 @@ const SafeGitRefSchema = boundedString(
     value.includes('@{') ? 'must not contain "@{"' : undefined,
     value === '@' ? 'must not be "@"' : undefined,
     value.endsWith('.') ? 'must not end with "."' : undefined,
-    value.includes('.lock') ? 'must not contain ".lock"' : undefined,
+    segments.some((segment) => segment.startsWith('.'))
+      ? 'must not contain segments starting with "."'
+      : undefined,
+    segments.some((segment) => segment.endsWith('.lock'))
+      ? 'must not contain segments ending with ".lock"'
+      : undefined,
     value.includes('//') ? 'must not contain "//"' : undefined,
     /[\s~^:?*[\\]/.test(value)
       ? 'must not contain whitespace or Git ref control characters'
@@ -1126,10 +1132,121 @@ export function redactCommandRunOutput(
 export function resolveReviewSecurityLimits(
   overrides: Partial<ReviewSecurityLimits> = {}
 ): ReviewSecurityLimits {
-  return {
-    ...DEFAULT_REVIEW_SECURITY_LIMITS,
-    ...overrides,
+  const resolveLimit = (field: keyof ReviewSecurityLimits): number => {
+    const value = overrides[field];
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+      ? Math.min(value, DEFAULT_REVIEW_SECURITY_LIMITS[field])
+      : DEFAULT_REVIEW_SECURITY_LIMITS[field];
   };
+  const resolved: ReviewSecurityLimits = {
+    maxCwdBytes: resolveLimit('maxCwdBytes'),
+    maxCustomInstructionsBytes: resolveLimit('maxCustomInstructionsBytes'),
+    maxGitRefBytes: resolveLimit('maxGitRefBytes'),
+    maxCommitTitleBytes: resolveLimit('maxCommitTitleBytes'),
+    maxModelBytes: resolveLimit('maxModelBytes'),
+    maxPathFilters: resolveLimit('maxPathFilters'),
+    maxPathFilterBytes: resolveLimit('maxPathFilterBytes'),
+    maxOutputFormats: resolveLimit('maxOutputFormats'),
+    defaultMaxFiles: resolveLimit('defaultMaxFiles'),
+    maxMaxFiles: resolveLimit('maxMaxFiles'),
+    defaultMaxDiffBytes: resolveLimit('defaultMaxDiffBytes'),
+    maxMaxDiffBytes: resolveLimit('maxMaxDiffBytes'),
+    maxPromptBytes: resolveLimit('maxPromptBytes'),
+    maxArtifactBytes: resolveLimit('maxArtifactBytes'),
+  };
+  return {
+    ...resolved,
+    defaultMaxFiles: Math.min(resolved.defaultMaxFiles, resolved.maxMaxFiles),
+    defaultMaxDiffBytes: Math.min(
+      resolved.defaultMaxDiffBytes,
+      resolved.maxMaxDiffBytes
+    ),
+  };
+}
+
+function assertStringWithinSecurityLimit(
+  value: string | undefined,
+  label: string,
+  maxBytes: number
+): void {
+  if (value !== undefined && utf8ByteLength(value) > maxBytes) {
+    throw new Error(`${label} exceeds configured byte limit`);
+  }
+}
+
+function assertPathFiltersWithinSecurityLimit(
+  filters: string[] | undefined,
+  label: string,
+  limits: ReviewSecurityLimits
+): void {
+  if (filters === undefined) {
+    return;
+  }
+  if (filters.length > limits.maxPathFilters) {
+    throw new Error(`${label} exceeds configured path filter count limit`);
+  }
+  for (const filter of filters) {
+    assertStringWithinSecurityLimit(
+      filter,
+      `${label} item`,
+      limits.maxPathFilterBytes
+    );
+  }
+}
+
+/**
+ * Enforces resolved security limits that can be stricter than static schema caps.
+ *
+ * @param request - Parsed review request to validate against resolved limits.
+ * @param limits - Fully resolved security limits.
+ */
+export function assertReviewRequestWithinSecurityLimits(
+  request: ReviewRequest,
+  limits: ReviewSecurityLimits = DEFAULT_REVIEW_SECURITY_LIMITS
+): void {
+  assertStringWithinSecurityLimit(request.cwd, 'cwd', limits.maxCwdBytes);
+  assertStringWithinSecurityLimit(request.model, 'model', limits.maxModelBytes);
+  assertPathFiltersWithinSecurityLimit(
+    request.includePaths,
+    'includePaths',
+    limits
+  );
+  assertPathFiltersWithinSecurityLimit(
+    request.excludePaths,
+    'excludePaths',
+    limits
+  );
+  if (request.outputFormats.length > limits.maxOutputFormats) {
+    throw new Error('outputFormats exceeds configured count limit');
+  }
+  switch (request.target.type) {
+    case 'baseBranch':
+      assertStringWithinSecurityLimit(
+        request.target.branch,
+        'target.branch',
+        limits.maxGitRefBytes
+      );
+      break;
+    case 'commit':
+      assertStringWithinSecurityLimit(
+        request.target.sha,
+        'target.sha',
+        limits.maxGitRefBytes
+      );
+      assertStringWithinSecurityLimit(
+        request.target.title,
+        'target.title',
+        limits.maxCommitTitleBytes
+      );
+      break;
+    case 'custom':
+      assertStringWithinSecurityLimit(
+        request.target.instructions,
+        'target.instructions',
+        limits.maxCustomInstructionsBytes
+      );
+      break;
+  }
 }
 
 /**
@@ -1152,11 +1269,13 @@ export function withReviewRequestSecurityDefaults(
     request.maxDiffBytes ?? limits.defaultMaxDiffBytes,
     limits.maxMaxDiffBytes
   );
-  return {
+  const bounded = {
     ...request,
     maxFiles,
     maxDiffBytes,
   };
+  assertReviewRequestWithinSecurityLimits(bounded, limits);
+  return bounded;
 }
 
 /**

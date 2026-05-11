@@ -87,6 +87,12 @@ export type SandboxReviewRunner = (
   input: ReviewProviderRunInput
 ) => Promise<ReviewProviderRunOutput & { sandboxAudit: SandboxAudit }>;
 
+/**
+ * Redacts sensitive substrings from a review request before persistence or response use.
+ *
+ * @param request - Parsed review request to sanitize.
+ * @returns A redacted review request copy.
+ */
 export function redactReviewRequest(request: ReviewRequest): ReviewRequest {
   const redact = (value: string) => redactSensitiveText(value).text;
   const target =
@@ -168,6 +174,12 @@ function redactDiffContext(diff: DiffContext): DiffContext {
   };
 }
 
+/**
+ * Redacts sensitive substrings from the full review run payload.
+ *
+ * @param result - Review run result to sanitize.
+ * @returns A redacted review run result copy.
+ */
 export function redactReviewRunResult(
   result: ReviewRunResult
 ): ReviewRunResult {

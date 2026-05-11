@@ -64,6 +64,7 @@ function assertSafeGitRevisionArgument(value: string, label: string): void {
   if (value.includes('\0')) {
     throw new Error(`${label} must not contain NUL bytes`);
   }
+  const segments = value.split('/');
   if (
     value.startsWith('/') ||
     value.endsWith('/') ||
@@ -71,7 +72,9 @@ function assertSafeGitRevisionArgument(value: string, label: string): void {
     value.includes('@{') ||
     value === '@' ||
     value.endsWith('.') ||
-    value.includes('.lock') ||
+    segments.some(
+      (segment) => segment.startsWith('.') || segment.endsWith('.lock')
+    ) ||
     value.includes('//') ||
     /[\s~^:?*[\\]/.test(value)
   ) {

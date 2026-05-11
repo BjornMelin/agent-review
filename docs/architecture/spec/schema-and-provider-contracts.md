@@ -209,6 +209,9 @@ CLI, service, core, and Rust contract validation:
 - `withReviewRequestSecurityDefaults()` fills bounded diff defaults when a
   caller omits `maxFiles` or `maxDiffBytes`, and clamps explicit values to the
   resolved service/core ceilings.
+- `resolveReviewSecurityLimits()` accepts stricter runtime overrides, ignores
+  non-positive values, and never allows configuration to widen the compiled
+  shared defaults.
 
 `redactSensitiveText()`, `redactLifecycleEvent()`, and
 `redactReviewResult()` are the canonical redaction helpers for provider output,

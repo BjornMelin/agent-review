@@ -18,6 +18,7 @@ import {
   ReviewStatusResponseSchema,
   redactReviewResult,
   redactSensitiveText,
+  resolveReviewSecurityLimits,
   SandboxAuditSchema,
   withReviewRequestSecurityDefaults,
 } from './index.js';
@@ -85,11 +86,32 @@ describe('review-types schemas', () => {
       type: 'custom',
       instructions: 'line one\nline two\tok',
     });
+    expect(
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'release.lockstep' },
+      }).target
+    ).toEqual({
+      type: 'baseBranch',
+      branch: 'release.lockstep',
+    });
 
     expect(() =>
       ReviewRequestSchema.parse({
         ...request,
         target: { type: 'baseBranch', branch: 'main..HEAD' },
+      })
+    ).toThrow(/git ref/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'feature/.tmp' },
+      })
+    ).toThrow(/git ref/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'feature/topic.lock' },
       })
     ).toThrow(/git ref/);
     expect(() =>
@@ -148,6 +170,26 @@ describe('review-types schemas', () => {
       maxFiles: 10,
       maxDiffBytes: 8,
     });
+    expect(
+      resolveReviewSecurityLimits({
+        defaultMaxFiles: 500,
+        maxMaxFiles: 5,
+        maxPromptBytes: -1,
+      })
+    ).toMatchObject({
+      defaultMaxFiles: 5,
+      maxMaxFiles: 5,
+      maxPromptBytes: DEFAULT_REVIEW_SECURITY_LIMITS.maxPromptBytes,
+    });
+    expect(() =>
+      withReviewRequestSecurityDefaults(
+        ReviewRequestSchema.parse({
+          ...request,
+          model: 'long-model-name',
+        }),
+        { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxModelBytes: 4 }
+      )
+    ).toThrow(/model exceeds/);
 
     const secret =
       'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 Bearer abc.def.ghi';

@@ -17,6 +17,7 @@ import {
   collectDiffForTarget,
   ensureRustDiffIndexBinary,
   mergeBaseWithHead,
+  resolveBranchRef,
 } from './index.js';
 
 const execFileAsync = promisify(execFile);
@@ -184,6 +185,21 @@ describe('collectDiffForTarget', () => {
           branch: 'main:path',
         })
       ).rejects.toThrow('target.branch must be a simple Git ref name');
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'baseBranch',
+          branch: 'feature/.tmp',
+        })
+      ).rejects.toThrow('target.branch must be a simple Git ref name');
+      await expect(
+        collectDiffForTarget(cwd, {
+          type: 'baseBranch',
+          branch: 'feature/topic.lock',
+        })
+      ).rejects.toThrow('target.branch must be a simple Git ref name');
+      await expect(
+        resolveBranchRef(cwd, 'release.lockstep')
+      ).resolves.toBeNull();
       await expect(access(outputPath)).rejects.toThrow();
     } finally {
       await rm(cwd, { recursive: true, force: true });

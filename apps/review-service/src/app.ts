@@ -231,13 +231,19 @@ function prepareReviewRequestForService(
       'cwd is outside configured review roots'
     );
   }
-  return withReviewRequestSecurityDefaults(
-    {
-      ...request,
-      cwd: canonicalCwd,
-    },
-    config.reviewLimits
-  );
+  try {
+    return withReviewRequestSecurityDefaults(
+      {
+        ...request,
+        cwd: canonicalCwd,
+      },
+      config.reviewLimits
+    );
+  } catch (error) {
+    throw new ReviewRequestPolicyError(
+      redactErrorMessage(error, 'review request exceeds configured limits')
+    );
+  }
 }
 
 function logError(

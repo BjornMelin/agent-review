@@ -305,6 +305,7 @@ fn validate_string_value(
 
 fn validate_git_ref(value: &str, label: &str) -> Result<(), ContractParseError> {
     validate_string_value(value, label, MAX_GIT_REF_BYTES, false)?;
+    let segments = value.split('/').collect::<Vec<_>>();
     let invalid = value.starts_with('-')
         || value.starts_with('/')
         || value.ends_with('/')
@@ -312,7 +313,9 @@ fn validate_git_ref(value: &str, label: &str) -> Result<(), ContractParseError> 
         || value.contains("@{")
         || value == "@"
         || value.ends_with('.')
-        || value.contains(".lock")
+        || segments
+            .iter()
+            .any(|segment| segment.starts_with('.') || segment.ends_with(".lock"))
         || value.contains("//")
         || value
             .chars()

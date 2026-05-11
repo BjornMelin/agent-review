@@ -237,6 +237,18 @@ fn validated_review_request_rejects_semantic_ref_and_path_violations() {
         }),
         json!({
             "cwd": "/tmp/repo",
+            "target": { "type": "baseBranch", "branch": "feature/.tmp" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "baseBranch", "branch": "feature/topic.lock" },
+            "provider": "codexDelegate",
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
             "target": { "type": "uncommittedChanges" },
             "provider": "codexDelegate",
             "includePaths": ["../secrets"],
@@ -255,20 +267,29 @@ fn validated_review_request_rejects_semantic_ref_and_path_violations() {
 
 #[test]
 fn validated_review_request_preserves_multiline_custom_prompts() {
-    let request = json!({
-        "cwd": "/tmp/repo",
-        "target": { "type": "custom", "instructions": "line one\nline two\tok" },
-        "provider": "codexDelegate",
-        "executionMode": "localTrusted",
-        "outputFormats": ["json"]
-    });
+    for request in [
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "custom", "instructions": "line one\nline two\tok" },
+            "provider": "codexDelegate",
+            "executionMode": "localTrusted",
+            "outputFormats": ["json"]
+        }),
+        json!({
+            "cwd": "/tmp/repo",
+            "target": { "type": "baseBranch", "branch": "release.lockstep" },
+            "provider": "codexDelegate",
+            "executionMode": "localTrusted",
+            "outputFormats": ["json"]
+        }),
+    ] {
+        let dto = parse_review_request(&request).expect("request parses");
 
-    let dto = parse_review_request(&request).expect("multiline custom request parses");
-
-    assert_eq!(
-        serde_json::to_value(dto).expect("request DTO serializes"),
-        request
-    );
+        assert_eq!(
+            serde_json::to_value(dto).expect("request DTO serializes"),
+            request
+        );
+    }
 }
 
 #[test]

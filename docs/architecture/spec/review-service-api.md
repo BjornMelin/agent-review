@@ -87,8 +87,10 @@ are normalized with review security defaults from `review-types`:
   absolute paths, `..` segments, negation syntax, or Git pathspec magic.
 - service-level `reviewLimits` may be stricter than the shared schema defaults;
   explicit client `maxFiles` and `maxDiffBytes` values are clamped to those
-  configured service ceilings before the runner, worker, or git collector sees
-  the request.
+  configured service ceilings, and all other bounded request fields are checked
+  against the stricter resolved service limits before the runner, worker, or git
+  collector sees the request. Configured limits cannot widen the compiled
+  shared defaults.
 
 Hosted service construction must set `allowedCwdRoots`; `src/server.ts`
 defaults this to the service process cwd and accepts a comma-separated override
