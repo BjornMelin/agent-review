@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import type { ReviewRunResult } from '@review-agent/review-core';
 import type {
@@ -18,7 +19,6 @@ import {
   listStatusTransitions,
   type ReviewRecord,
 } from './index.js';
-import { REVIEW_STORAGE_SCHEMA_SQL } from './migration.js';
 import * as schema from './schema.js';
 import { reviewEvents, reviewRuns } from './schema.js';
 
@@ -29,13 +29,20 @@ type TestStoreContext = Awaited<ReturnType<typeof createTestStore>>;
 async function createTestStore() {
   const client = new PGlite();
   await client.waitReady;
-  await client.exec(REVIEW_STORAGE_SCHEMA_SQL);
+  await client.exec(await readInitialMigrationSql());
   const db = drizzle(client, { schema });
   return {
     client,
     db,
     store: createDrizzleReviewStore(db),
   };
+}
+
+async function readInitialMigrationSql(): Promise<string> {
+  return readFile(
+    new URL('../../drizzle/0000_initial_review_storage.sql', import.meta.url),
+    'utf8'
+  );
 }
 
 async function withTestStore<T>(
@@ -286,18 +293,23 @@ describe('review storage', () => {
 
   it('keeps in-memory stale appends aligned with durable event semantics', async () => {
     const store = createInMemoryReviewStore();
-    await store.set(createRecord(), { reason: 'created' });
+    await store.set(
+      createRecord({ events: [createEvent('review-1', 1, 'one')] }),
+      {
+        reason: 'created',
+      }
+    );
     const first = await store.get('review-1');
     const second = await store.get('review-1');
     if (!first || !second) {
       throw new Error('expected hydrated records');
     }
 
-    await store.appendEvent(first, createEvent('review-1', 1, 'one'), {
+    await store.appendEvent(first, createEvent('review-1', 2, 'two'), {
       maxEvents: 10,
       reason: 'first append',
     });
-    await store.appendEvent(second, createEvent('review-1', 2, 'two'), {
+    await store.appendEvent(second, createEvent('review-1', 3, 'three'), {
       maxEvents: 10,
       reason: 'second append',
     });
@@ -306,7 +318,42 @@ describe('review storage', () => {
     expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
       'event-1',
       'event-2',
+      'event-3',
     ]);
+  });
+
+  it('deduplicates retried event appends without advancing stored sequence', async () => {
+    await withTestStore(async ({ db, store }) => {
+      await store.set(createRecord(), { reason: 'created' });
+      const first = await store.get('review-1');
+      const second = await store.get('review-1');
+      if (!first || !second) {
+        throw new Error('expected hydrated records');
+      }
+
+      const event = createEvent('review-1', 1, 'one');
+      await Promise.all([
+        store.appendEvent(first, event, {
+          maxEvents: 10,
+          reason: 'first append',
+        }),
+        store.appendEvent(second, event, {
+          maxEvents: 10,
+          reason: 'retry append',
+        }),
+      ]);
+
+      const actual = await store.get('review-1');
+      const [run] = await db
+        .select({ eventSequence: reviewRuns.eventSequence })
+        .from(reviewRuns)
+        .where(eq(reviewRuns.reviewId, 'review-1'));
+
+      expect(actual?.events.map((item) => item.meta.eventId)).toEqual([
+        'event-1',
+      ]);
+      expect(run?.eventSequence).toBe(1);
+    });
   });
 
   it('preserves stored events when stale records update run state', async () => {
@@ -492,8 +539,8 @@ describe('review storage', () => {
     });
 
     expect(migrations).toHaveLength(1);
-    expect(migrations[0]?.sql.join('\n')).toContain(
-      'CREATE TABLE IF NOT EXISTS review_runs'
+    expect(migrations[0]?.sql.join('\n').trim()).toBe(
+      (await readInitialMigrationSql()).trim()
     );
   });
 });

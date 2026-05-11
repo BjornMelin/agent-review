@@ -361,12 +361,12 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
       const existing = records.get(record.reviewId);
       const next = cloneRecord(record);
       if (existing) {
-        const eventIds = new Set(next.events.map((item) => item.meta.eventId));
+        const eventIds = new Set(
+          existing.events.map((item) => item.meta.eventId)
+        );
         next.events = [
-          ...existing.events
-            .filter((item) => !eventIds.has(item.meta.eventId))
-            .map(cloneLifecycleEvent),
-          ...next.events,
+          ...existing.events.map(cloneLifecycleEvent),
+          ...next.events.filter((item) => !eventIds.has(item.meta.eventId)),
         ];
       }
       if (
@@ -554,6 +554,14 @@ export function createDrizzleReviewStore(
             target: reviewRuns.reviewId,
             set: rowUpdateFor(record),
           });
+        if (record.events.length > 0) {
+          await tx.execute(sql`
+            SELECT ${reviewRuns.reviewId}
+            FROM ${reviewRuns}
+            WHERE ${reviewRuns.reviewId} = ${record.reviewId}
+            FOR UPDATE
+          `);
+        }
 
         if (!existing || existing.status !== record.status) {
           await tx
@@ -582,13 +590,16 @@ export function createDrizzleReviewStore(
             .set({ eventSequence: sql`${reviewRuns.eventSequence} + 1` })
             .where(eq(reviewRuns.reviewId, record.reviewId))
             .returning();
-          await tx.insert(reviewEvents).values({
-            reviewId: record.reviewId,
-            eventId: event.meta.eventId,
-            sequence: sequenceRow?.eventSequence ?? 0,
-            event: cloneLifecycleEvent(event),
-            createdAt: new Date(event.meta.timestampMs),
-          });
+          await tx
+            .insert(reviewEvents)
+            .values({
+              reviewId: record.reviewId,
+              eventId: event.meta.eventId,
+              sequence: sequenceRow?.eventSequence ?? 0,
+              event: cloneLifecycleEvent(event),
+              createdAt: new Date(event.meta.timestampMs),
+            })
+            .onConflictDoNothing({ target: reviewEvents.eventId });
         }
 
         if (record.result) {
@@ -627,6 +638,12 @@ export function createDrizzleReviewStore(
               target: reviewRuns.reviewId,
               set: rowUpdateFor(record),
             });
+          await tx.execute(sql`
+            SELECT ${reviewRuns.reviewId}
+            FROM ${reviewRuns}
+            WHERE ${reviewRuns.reviewId} = ${record.reviewId}
+            FOR UPDATE
+          `);
 
           if (!existing || existing.status !== record.status) {
             await tx
@@ -662,13 +679,16 @@ export function createDrizzleReviewStore(
               .set({ eventSequence: sql`${reviewRuns.eventSequence} + 1` })
               .where(eq(reviewRuns.reviewId, record.reviewId))
               .returning();
-            await tx.insert(reviewEvents).values({
-              reviewId: record.reviewId,
-              eventId: event.meta.eventId,
-              sequence: sequenceRow?.eventSequence ?? 0,
-              event: cloneLifecycleEvent(event),
-              createdAt: new Date(event.meta.timestampMs),
-            });
+            await tx
+              .insert(reviewEvents)
+              .values({
+                reviewId: record.reviewId,
+                eventId: event.meta.eventId,
+                sequence: sequenceRow?.eventSequence ?? 0,
+                event: cloneLifecycleEvent(event),
+                createdAt: new Date(event.meta.timestampMs),
+              })
+              .onConflictDoNothing({ target: reviewEvents.eventId });
           }
 
           const retainedEvents = await tx
