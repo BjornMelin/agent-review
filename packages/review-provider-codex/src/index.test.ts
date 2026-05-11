@@ -136,11 +136,14 @@ describe('codex provider contract', () => {
     try {
       const bin = join(dir, 'codex-noisy.sh');
       const script = `#!/usr/bin/env bash
-dd if=/dev/zero bs=1048576 count=17 2>/dev/null | tr '\\0' x
+dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' x
 `;
       await writeFile(bin, script, 'utf8');
       await chmod(bin, 0o755);
-      const provider = new CodexDelegateProvider({ codexBin: bin });
+      const provider = new CodexDelegateProvider({
+        codexBin: bin,
+        outputBytes: 1024,
+      });
 
       const run = provider.run({
         request: {

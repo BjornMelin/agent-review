@@ -58,6 +58,7 @@ function targetToArgs(target: ReviewTarget): string[] {
 
 export type CodexProviderOptions = {
   codexBin?: string;
+  outputBytes?: number;
 };
 
 function commandText(output: CommandRunOutput): string {
@@ -84,9 +85,11 @@ function codexEnv(): Record<string, string> {
 export class CodexDelegateProvider implements ReviewProvider {
   id = 'codexDelegate' as const;
   private readonly codexBin: string;
+  private readonly outputBytes: number;
 
   constructor(options: CodexProviderOptions = {}) {
     this.codexBin = options.codexBin ?? process.env.CODEX_BIN ?? 'codex';
+    this.outputBytes = options.outputBytes ?? CODEX_OUTPUT_BYTES;
   }
 
   capabilities(): ReviewProviderCapabilities {
@@ -213,10 +216,10 @@ export class CodexDelegateProvider implements ReviewProvider {
       cwd: input.request.cwd,
       env: codexEnv(),
       timeoutMs: CODEX_REVIEW_TIMEOUT_MS,
-      maxStdoutBytes: CODEX_OUTPUT_BYTES,
-      maxStderrBytes: CODEX_OUTPUT_BYTES,
-      maxFileBytes: CODEX_OUTPUT_BYTES,
-      maxTotalFileBytes: CODEX_OUTPUT_BYTES,
+      maxStdoutBytes: this.outputBytes,
+      maxStderrBytes: this.outputBytes,
+      maxFileBytes: this.outputBytes,
+      maxTotalFileBytes: this.outputBytes,
       tempDirPrefix: 'review-agent-codex-',
       readFiles: [
         {
