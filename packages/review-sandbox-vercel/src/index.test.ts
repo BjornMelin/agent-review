@@ -73,7 +73,7 @@ describe('sandbox policy and budget enforcement', () => {
 
   it('blocks path-like command names even when the basename is allowlisted', async () => {
     const policy = createDefaultPolicy();
-    policy.commandAllowlist = new Set(['./node']);
+    policy.commandAllowlist = new Set(['node']);
 
     await expect(
       runInSandbox({
