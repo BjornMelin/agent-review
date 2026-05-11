@@ -8,6 +8,13 @@ import {
   type ReviewRunStatus,
 } from '@review-agent/review-types';
 
+/**
+ * Describes the observable state for a detached review run.
+ *
+ * @remarks
+ * `runId` is the service-facing identifier. `workflowRunId` is present when
+ * Vercel Workflow accepted the run.
+ */
 export type DetachedRunRecord = {
   runId: string;
   status: ReviewRunStatus;
@@ -100,11 +107,25 @@ async function runLocallyDetached(
     } finally {
       cleanupLocalRuns();
     }
-  })();
+  })().catch((error: unknown) => {
+    if (record.status === 'cancelled') {
+      return;
+    }
+    record.status = 'failed';
+    record.error = error instanceof Error ? error.message : String(error);
+    record.completedAt = Date.now();
+    cleanupLocalRuns();
+  });
 
   return record;
 }
 
+/**
+ * Runs a validated review request inside the Workflow runtime.
+ *
+ * @param request - Review request payload parsed before Workflow starts.
+ * @returns Completed review result emitted by the review core.
+ */
 export async function reviewWorkflow(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
@@ -119,7 +140,17 @@ async function executeReviewStep(
   return withProviders(request);
 }
 
+/**
+ * Coordinates detached review execution with Workflow runtime and local fallback.
+ */
 export class ReviewWorker {
+  /**
+   * Starts a detached review run after validating the request payload.
+   *
+   * @param requestInput - Unknown request payload to parse with ReviewRequestSchema.
+   * @returns Initial run record for workflow-backed or local fallback execution.
+   * @throws ZodError when the payload does not satisfy ReviewRequestSchema.
+   */
   async startDetached(requestInput: unknown): Promise<DetachedRunRecord> {
     const request = ReviewRequestSchema.parse(requestInput);
     try {
@@ -139,10 +170,21 @@ export class ReviewWorker {
     }
   }
 
+  /**
+   * Reads the current state of a detached run.
+   *
+   * @param runId - Detached run identifier returned by startDetached.
+   * @returns Current run record, or null when the run is unknown.
+   */
   async get(runId: string): Promise<DetachedRunRecord | null> {
     const local = localRunStore.get(runId);
     if (!local) {
       return null;
+    }
+
+    if (isTerminalReviewRunStatus(local.status)) {
+      cleanupLocalRuns();
+      return local;
     }
 
     if (local.workflowRunId) {
@@ -177,9 +219,23 @@ export class ReviewWorker {
     return local;
   }
 
+  /**
+   * Attempts to cancel a queued or running detached review.
+   *
+   * @param runId - Detached run identifier returned by startDetached.
+   * @returns True when cancellation was recorded, otherwise false.
+   */
   async cancel(runId: string): Promise<boolean> {
     const record = localRunStore.get(runId);
     if (!record) {
+      return false;
+    }
+
+    if (
+      record.status === 'completed' ||
+      record.status === 'failed' ||
+      record.status === 'cancelled'
+    ) {
       return false;
     }
 
@@ -193,12 +249,6 @@ export class ReviewWorker {
       }
     }
 
-    if (record.status === 'completed' || record.status === 'failed') {
-      return false;
-    }
-    if (record.status === 'cancelled') {
-      return false;
-    }
     record.status = 'cancelled';
     record.completedAt = Date.now();
     cleanupLocalRuns();

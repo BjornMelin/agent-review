@@ -37,7 +37,6 @@ export type ReviewRecord = {
   error?: string;
   detachedRunId?: string;
   events: LifecycleEvent[];
-  listeners: Set<(event: LifecycleEvent) => void | Promise<void>>;
 };
 
 /**
@@ -91,6 +90,7 @@ export type ReviewServiceConfig = {
   maxRecordAgeMs: number;
   maxRecordEvents: number;
   recordCleanupIntervalMs: number | false;
+  eventStreamPollIntervalMs: number;
   unsupportedRemoteSandboxError: string;
 };
 
@@ -115,6 +115,7 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
   maxRecordAgeMs: 60 * 60 * 1000,
   maxRecordEvents: 200,
   recordCleanupIntervalMs: 60_000,
+  eventStreamPollIntervalMs: 15_000,
   unsupportedRemoteSandboxError:
     'executionMode "remoteSandbox" is not supported by review-service',
 };
@@ -125,6 +126,7 @@ type LifecycleEventPayload = {
     'meta'
   >;
 }[LifecycleEvent['type']];
+type ReviewLifecycleListener = (event: LifecycleEvent) => void | Promise<void>;
 
 /**
  * Creates a process-local review store for one service app instance.
@@ -181,7 +183,6 @@ function createReviewRecord(
     createdAt: nowMs,
     updatedAt: nowMs,
     events: [],
-    listeners: new Set(),
   };
 }
 
@@ -216,6 +217,31 @@ export function createReviewServiceApp(
   const authPolicy = dependencies.authPolicy ?? (() => null);
   const runner = dependencies.runner ?? runReview;
   const app = new Hono();
+  const liveListeners = new Map<string, Set<ReviewLifecycleListener>>();
+
+  function getLiveListeners(reviewId: string): Set<ReviewLifecycleListener> {
+    let listeners = liveListeners.get(reviewId);
+    if (!listeners) {
+      listeners = new Set();
+      liveListeners.set(reviewId, listeners);
+    }
+    return listeners;
+  }
+
+  function removeLiveListener(
+    reviewId: string,
+    listener: ReviewLifecycleListener
+  ): void {
+    const listeners = liveListeners.get(reviewId);
+    listeners?.delete(listener);
+    if (listeners?.size === 0) {
+      liveListeners.delete(reviewId);
+    }
+  }
+
+  function clearLiveListeners(reviewId: string): void {
+    liveListeners.delete(reviewId);
+  }
 
   function cleanupReviewRecords(): void {
     const now = nowMs();
@@ -224,8 +250,8 @@ export function createReviewServiceApp(
         isTerminalReviewRunStatus(record.status) &&
         now - record.updatedAt > config.maxRecordAgeMs
       ) {
-        record.listeners.clear();
         record.events.length = 0;
+        clearLiveListeners(reviewId);
         store.delete(reviewId);
       }
     }
@@ -242,8 +268,8 @@ export function createReviewServiceApp(
         break;
       }
       if (isTerminalReviewRunStatus(record.status)) {
-        record.listeners.clear();
         record.events.length = 0;
+        clearLiveListeners(reviewId);
         store.delete(reviewId);
       }
     }
@@ -294,8 +320,14 @@ export function createReviewServiceApp(
       record.events.shift();
     }
     record.events.push(enriched);
+    store.set(record);
 
-    for (const listener of [...record.listeners]) {
+    const listeners = liveListeners.get(record.reviewId);
+    if (!listeners) {
+      return enriched;
+    }
+
+    for (const listener of [...listeners]) {
       try {
         const result = listener(enriched);
         if (result instanceof Promise) {
@@ -304,7 +336,7 @@ export function createReviewServiceApp(
               `[review-service] dropping failed lifecycle listener for ${record.reviewId}:`,
               'listener promise rejected'
             );
-            record.listeners.delete(listener);
+            removeLiveListener(record.reviewId, listener);
           });
         }
       } catch (error) {
@@ -312,7 +344,7 @@ export function createReviewServiceApp(
           `[review-service] dropping failed lifecycle listener for ${record.reviewId}:`,
           error
         );
-        record.listeners.delete(listener);
+        removeLiveListener(record.reviewId, listener);
       }
     }
     return enriched;
@@ -346,11 +378,13 @@ export function createReviewServiceApp(
       record.result = review;
       record.status = 'completed';
       record.updatedAt = nowMs();
+      store.set(record);
     } catch (error) {
       record.status = 'failed';
       record.error = error instanceof Error ? error.message : String(error);
       record.updatedAt = nowMs();
       emit(record, { type: 'failed', message: record.error });
+      store.set(record);
     }
   }
 
@@ -369,20 +403,37 @@ export function createReviewServiceApp(
 
     const previousStatus = record.status;
     const previousError = record.error;
+    let changed = false;
 
     record.status = detached.status;
     if (detached.status === 'completed' && detached.result) {
       record.result = detached.result;
-      record.updatedAt = nowMs();
+      changed = true;
     }
     if (detached.status === 'failed') {
       record.error = detached.error ?? 'detached run failed';
       if (record.error !== previousError) {
-        record.updatedAt = nowMs();
+        changed = true;
       }
     }
     if (record.status !== previousStatus) {
+      changed = true;
       record.updatedAt = nowMs();
+      if (record.status === 'failed') {
+        emit(record, {
+          type: 'failed',
+          message: record.error ?? 'detached run failed',
+        });
+      }
+      if (record.status === 'cancelled') {
+        emit(record, { type: 'cancelled' });
+      }
+    } else if (changed) {
+      record.updatedAt = nowMs();
+    }
+
+    if (changed) {
+      store.set(record);
     }
   }
 
@@ -460,9 +511,35 @@ export function createReviewServiceApp(
       return jsonError(context, 'review not found', 404);
     }
 
+    try {
+      await syncDetachedRecord(record);
+    } catch (error) {
+      logger.error(
+        '[review-service] failed to sync event stream status',
+        error
+      );
+      return jsonError(context, 'failed to fetch event stream status', 502);
+    }
+
     return streamSSE(context, async (stream) => {
+      let streaming = true;
+      let cleanedUp = false;
+      const deliveredEventIds = new Set<string>();
+      let writeQueue = Promise.resolve();
+
+      const writeQueuedSse = (
+        frame: Parameters<typeof stream.writeSSE>[0]
+      ): Promise<void> => {
+        writeQueue = writeQueue.then(() => stream.writeSSE(frame));
+        return writeQueue;
+      };
+
       const send = async (event: LifecycleEvent) => {
-        await stream.writeSSE({
+        if (deliveredEventIds.has(event.meta.eventId)) {
+          return writeQueue;
+        }
+        deliveredEventIds.add(event.meta.eventId);
+        return writeQueuedSse({
           event: event.type,
           data: JSON.stringify(event),
           id: event.meta.eventId,
@@ -470,33 +547,20 @@ export function createReviewServiceApp(
         });
       };
 
-      for (const event of record.events) {
-        await send(event);
-      }
-
-      record.listeners.add(send);
-
-      const heartbeat = setInterval(() => {
-        stream
-          .writeSSE({
-            event: 'keepalive',
-            data: '',
-          })
-          .catch((error) => {
-            logger.error('[review-service] events heartbeat error', error);
-            cleanup();
-          });
-      }, 15000);
-
-      let cleanedUp = false;
       const cleanup = () => {
         if (cleanedUp) {
           return;
         }
         cleanedUp = true;
-        clearInterval(heartbeat);
-        record.listeners.delete(send);
+        streaming = false;
+        removeLiveListener(record.reviewId, send);
       };
+
+      getLiveListeners(record.reviewId).add(send);
+
+      for (const event of record.events) {
+        await send(event);
+      }
 
       stream.onAbort(() => {
         cleanup();
@@ -509,12 +573,49 @@ export function createReviewServiceApp(
         logger.error('[review-service] events stream error', error);
         cleanup();
       });
+
+      try {
+        while (streaming) {
+          await stream.sleep(config.eventStreamPollIntervalMs);
+          if (!streaming) {
+            break;
+          }
+          const latestRecord = store.get(record.reviewId);
+          if (!latestRecord) {
+            cleanup();
+            break;
+          }
+          await syncDetachedRecord(latestRecord);
+          if (!streaming) {
+            break;
+          }
+          await writeQueuedSse({
+            event: 'keepalive',
+            data: '',
+          });
+        }
+      } catch (error) {
+        logger.error('[review-service] events stream error', error);
+      } finally {
+        cleanup();
+      }
     });
   });
 
-  app.get('/v1/review/:reviewId/artifacts/:format', (context) => {
+  app.get('/v1/review/:reviewId/artifacts/:format', async (context) => {
     const record = store.get(context.req.param('reviewId'));
-    if (!record?.result) {
+    if (!record) {
+      return jsonError(context, 'artifact not ready', 404);
+    }
+
+    try {
+      await syncDetachedRecord(record);
+    } catch (error) {
+      logger.error('[review-service] failed to sync artifact status', error);
+      return jsonError(context, 'failed to fetch artifact status', 502);
+    }
+
+    if (!record.result) {
       return jsonError(context, 'artifact not ready', 404);
     }
 
@@ -553,6 +654,7 @@ export function createReviewServiceApp(
           record.status = 'cancelled';
           record.updatedAt = nowMs();
           emit(record, { type: 'cancelled' });
+          store.set(record);
           cleanupReviewRecords();
           const response: ReviewCancelResponse = {
             reviewId,
@@ -560,6 +662,7 @@ export function createReviewServiceApp(
           };
           return context.json(response);
         }
+        await syncDetachedRecord(record);
       } catch (error) {
         logger.error('[review-service] failed to cancel run', error);
         return jsonError(context, 'failed to cancel run', 502);

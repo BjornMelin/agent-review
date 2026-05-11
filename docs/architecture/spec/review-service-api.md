@@ -83,7 +83,7 @@ Server-Sent Events stream of lifecycle events.
 
 - Replays historical events first.
 - Streams live events while connection remains open.
-- Sends heartbeat comments every 15 seconds (`: keepalive`).
+- Sends a `keepalive` SSE event with empty data every 15 seconds.
 - Event payload shape follows `LifecycleEvent`, including `meta.correlation.reviewId` and event IDs/timestamps.
 
 Returns `404` when review ID is unknown.

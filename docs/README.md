@@ -15,6 +15,7 @@ This directory contains canonical product and architecture documentation for the
 - [Review Service API](./architecture/spec/review-service-api.md)
 - [Schema and Provider Contracts](./architecture/spec/schema-and-provider-contracts.md)
 - [Sandbox, Detached Execution, and Mirroring](./architecture/spec/sandbox-detached-and-mirroring.md)
+- [Testing Strategy](./architecture/spec/testing-strategy.md)
 - [Hosted Review Service Threat Model](./architecture/security/threat-model.md)
 
 ## Architecture Decision Records
