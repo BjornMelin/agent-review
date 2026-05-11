@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "binary_missing",
+        "auth_missing",
+        "auth_available",
+        "invalid_model_id",
+        "unsupported_reasoning_effort",
+        "provider_unavailable",
+        "configuration_error"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warning", "error"]
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remediation": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": ["code", "ok", "severity", "detail"],
+  "additionalProperties": false
+}

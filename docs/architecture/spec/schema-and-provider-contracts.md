@@ -2,6 +2,13 @@
 
 Canonical contracts are defined in `packages/review-types/src/index.ts`.
 
+Generated JSON Schema artifacts are committed under
+`packages/review-types/generated/json-schema/`. The manifest in that directory
+is generated from `buildJsonSchemaSet()` and tests compare every generated file
+back to the live Zod schemas. Future Rust helpers must consume those generated
+artifacts rather than hand-maintaining duplicate DTOs. Schema generation uses
+Zod input mode so defaulted boundary fields remain optional in JSON Schema.
+
 ## ReviewRequest
 
 Required fields:
@@ -86,6 +93,48 @@ Each event includes `meta` with:
   - `commandId` (optional)
 
 Used by CLI logging and service SSE streaming.
+
+## Service API DTO Contracts
+
+The review service uses `review-types` for request parsing and response DTOs.
+
+- `ReviewStartRequestSchema`: wraps `ReviewRequest` with `delivery`
+  (`inline|detached`, default `inline`).
+- `ReviewStartResponseSchema`: start response with `reviewId`, run `status`,
+  optional `detachedRunId`, and optional `result`.
+- `ReviewStatusResponseSchema`: status response with timestamps, optional
+  `error`, and optional `result`.
+- `ReviewCancelResponseSchema`: cancel response with `reviewId`, run `status`,
+  and optional `cancelled=false` for conflict responses.
+- `ReviewErrorResponseSchema`: canonical `{ error }` response body.
+
+`ReviewRunStatusSchema` is the single run-status owner:
+
+- `queued`
+- `running`
+- `completed`
+- `failed`
+- `cancelled`
+
+Artifact route parsing uses `OutputFormatSchema`. Content types are centralized
+in `ARTIFACT_CONTENT_TYPES`.
+
+## Durable Store DTO Contracts
+
+The durable-store target uses `review-types` DTOs before a database schema is
+introduced:
+
+- `ReviewRunStoreRecordSchema`: run metadata keyed by `reviewId` and `runId`
+  with status, request, timestamps, optional workflow/sandbox IDs, and optional
+  terminal error.
+- `ReviewEventStoreRecordSchema`: lifecycle event persistence with review ID,
+  event ID, sequence number, event payload, and creation timestamp.
+- `ReviewArtifactStoreRecordSchema`: artifact metadata with format, content
+  type, byte length, checksum, storage key, and creation timestamp.
+- `ReviewArtifactMetadataSchema`: service-facing artifact metadata shape.
+- `ReviewEventCursorSchema`: event replay cursor with bounded `limit` default.
+- `SandboxAuditSchema`: sandbox policy, budget consumption, redaction counters,
+  and per-command audit records.
 
 ## Provider Interface Contract
 

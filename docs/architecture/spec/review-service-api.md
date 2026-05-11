@@ -7,6 +7,8 @@ Base path: `/v1/review`
 
 ## Status Model
 
+Defined by `ReviewRunStatusSchema` in `@review-agent/review-types`.
+
 - `queued`
 - `running`
 - `completed`
@@ -36,6 +38,7 @@ Starts a review.
 - `delivery`: optional `inline|detached` (default `inline`)
 
 Detached mode is active when `delivery=detached` or `request.detached=true`.
+The request body is parsed by `ReviewStartRequestSchema`.
 
 ### Responses
 
@@ -57,6 +60,7 @@ Returns review status and result summary when available.
 - `updatedAt`
 
 Returns `404` when review ID is unknown.
+The response body follows `ReviewStatusResponseSchema`.
 
 ## `GET /v1/review/:reviewId/events`
 
@@ -99,9 +103,11 @@ Fetches generated artifact string for a completed review run.
 Returns:
 
 - `404` when review/result/artifact is unavailable.
+- `400` when `:format` does not parse through `OutputFormatSchema`.
 
 ## Notes and Constraints
 
 - Service state is in-memory only.
 - No authentication layer is currently implemented.
 - `remoteSandbox` execution mode is currently rejected with `400`.
+- Service error bodies follow `ReviewErrorResponseSchema`.

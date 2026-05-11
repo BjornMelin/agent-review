@@ -3,20 +3,15 @@ import { type ReviewRunResult, runReview } from '@review-agent/review-core';
 import { createCodexDelegateProvider } from '@review-agent/review-provider-codex';
 import { createOpenAICompatibleReviewProvider } from '@review-agent/review-provider-openai';
 import {
+  isTerminalReviewRunStatus,
   type ReviewRequest,
   ReviewRequestSchema,
+  type ReviewRunStatus,
 } from '@review-agent/review-types';
-
-export type DetachedStatus =
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
 
 export type DetachedRunRecord = {
   runId: string;
-  status: DetachedStatus;
+  status: ReviewRunStatus;
   startedAt: number;
   completedAt?: number;
   error?: string;
@@ -33,18 +28,13 @@ const localRunStore = new Map<string, DetachedRunRecord>();
 const MAX_LOCAL_RUNS = 500;
 const MAX_LOCAL_RUN_AGE_MS = 2 * 60 * 60 * 1000;
 const LOCAL_RUN_CLEANUP_INTERVAL_MS = 60_000;
-const terminalStatuses: Set<DetachedStatus> = new Set([
-  'completed',
-  'failed',
-  'cancelled',
-]);
 
 function cleanupLocalRuns(): void {
   const now = Date.now();
   for (const [runId, run] of localRunStore) {
     const terminalAgeRef = run.completedAt ?? run.startedAt;
     if (
-      terminalStatuses.has(run.status) &&
+      isTerminalReviewRunStatus(run.status) &&
       now - terminalAgeRef > MAX_LOCAL_RUN_AGE_MS
     ) {
       localRunStore.delete(runId);
@@ -64,7 +54,7 @@ function cleanupLocalRuns(): void {
     if (localRunStore.size <= MAX_LOCAL_RUNS) {
       break;
     }
-    if (terminalStatuses.has(run.status)) {
+    if (isTerminalReviewRunStatus(run.status)) {
       localRunStore.delete(runId);
     }
   }
