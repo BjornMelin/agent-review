@@ -529,6 +529,9 @@ export type ReviewProviderValidationInput = {
   capabilities: ReviewProviderCapabilities;
 };
 
+/**
+ * Defines the prompt, diff, request, and cancellation inputs passed to providers.
+ */
 export type ReviewProviderRunInput = {
   request: ReviewRequest;
   resolvedPrompt: string;

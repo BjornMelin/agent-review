@@ -316,6 +316,7 @@ function signalChild(
  * Runs a bounded command through the Rust process-group runner.
  *
  * @param input Command request validated against the shared review-types contract.
+ * @param options Optional configuration for the command run, including abort signals.
  * @returns Structured command result with redacted output and command events.
  */
 export async function runCommand(
