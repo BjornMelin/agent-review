@@ -128,27 +128,69 @@ function createStore(
     records,
     writes,
     deletes,
-    get(reviewId) {
+    async get(reviewId) {
       const record = records.get(reviewId);
       return record ? materialize(record) : undefined;
     },
-    set(record) {
+    async set(record) {
       const nextRecord = materialize(record);
       records.set(record.reviewId, nextRecord);
       writes.push(nextRecord);
     },
-    delete(reviewId) {
+    async appendEvent(record, event, options) {
+      const nextRecord = materialize(record);
+      if (nextRecord.events.length >= options.maxEvents) {
+        nextRecord.events.shift();
+      }
+      nextRecord.events.push(event);
+      records.set(record.reviewId, nextRecord);
+      writes.push(nextRecord);
+      record.events = nextRecord.events;
+    },
+    async delete(reviewId) {
       records.delete(reviewId);
       deletes.push(reviewId);
     },
-    *entries() {
+    async cleanup({ nowMs }) {
+      const deletedReviewIds: string[] = [];
       for (const [reviewId, record] of records.entries()) {
-        yield [reviewId, materialize(record)] as [string, ReviewRecord];
+        const explicitExpiry = record.retentionExpiresAt;
+        if (
+          ['completed', 'failed', 'cancelled'].includes(record.status) &&
+          explicitExpiry !== undefined &&
+          explicitExpiry <= nowMs
+        ) {
+          records.delete(reviewId);
+          deletes.push(reviewId);
+          deletedReviewIds.push(reviewId);
+        }
       }
+      return deletedReviewIds;
     },
-    size() {
+    async entries() {
+      return [...records.entries()].map(
+        ([reviewId, record]) =>
+          [reviewId, materialize(record)] as [string, ReviewRecord]
+      );
+    },
+    async size() {
       return records.size;
     },
+  };
+}
+
+function createThrowingStore(error = new Error('db down')): ReviewStoreAdapter {
+  const fail = async () => {
+    throw error;
+  };
+  return {
+    get: fail,
+    set: fail,
+    appendEvent: fail,
+    delete: fail,
+    cleanup: fail,
+    entries: fail,
+    size: fail,
   };
 }
 
@@ -419,7 +461,13 @@ describe('createReviewServiceApp', () => {
       worker,
       store,
       nowMs: () => 1_000,
-      uuid: createUuid(['review-detached', 'event-start']),
+      uuid: createUuid([
+        'review-detached',
+        'event-start',
+        'event-exited',
+        'event-artifact-json',
+        'event-artifact-markdown',
+      ]),
       config: { recordCleanupIntervalMs: false },
     });
 
@@ -460,7 +508,17 @@ describe('createReviewServiceApp', () => {
         overallCorrectness: 'patch is correct',
       },
     });
-    expect(store.records.get('review-detached')?.status).toBe('completed');
+    await expect(store.get('review-detached')).resolves.toMatchObject({
+      status: 'completed',
+      retentionExpiresAt: 3_601_000,
+    });
+    const completedRecord = await store.get('review-detached');
+    expect(completedRecord?.events.map((event) => event.type)).toEqual([
+      'enteredReviewMode',
+      'exitedReviewMode',
+      'artifactReady',
+      'artifactReady',
+    ]);
   });
 
   it('runs inline reviews through the injected runner and serves artifacts', async () => {
@@ -583,6 +641,50 @@ describe('createReviewServiceApp', () => {
         },
       },
     });
+  });
+
+  it('replays lifecycle events after the requested cursor', async () => {
+    const runner = vi.fn<ReviewServiceRunner>(async () => {
+      throw new Error('provider fixture failed');
+    });
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      runner,
+      nowMs: () => 3_250,
+      uuid: createUuid(['review-cursor', 'event-progress', 'event-failed']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+    expect(start.status).toBe(200);
+
+    const events = await readSseEvents(
+      await app.request(
+        '/v1/review/review-cursor/events?afterEventId=event-progress&limit=1'
+      ),
+      1
+    );
+
+    expect(events.map((event) => event.event)).toEqual(['failed']);
+    expect(events[0]?.id).toBe('event-failed');
+
+    const reconnectEvents = await readSseEvents(
+      await app.request('/v1/review/review-cursor/events', {
+        headers: {
+          'Last-Event-ID': 'event-progress',
+        },
+      }),
+      1
+    );
+
+    expect(reconnectEvents.map((event) => event.event)).toEqual(['failed']);
   });
 
   it('syncs detached failures into status and lifecycle replay', async () => {
@@ -779,7 +881,13 @@ describe('createReviewServiceApp', () => {
       providers: createProviders(),
       worker,
       nowMs: () => 4_500,
-      uuid: createUuid(['review-terminal-cancel', 'event-start']),
+      uuid: createUuid([
+        'review-terminal-cancel',
+        'event-start',
+        'event-exited',
+        'event-artifact-json',
+        'event-artifact-markdown',
+      ]),
       config: { recordCleanupIntervalMs: false },
     });
 
@@ -839,6 +947,55 @@ describe('createReviewServiceApp', () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: 'unauthorized' });
     expect(worker.started).toEqual([]);
+  });
+
+  it('returns canonical storage errors for start and read routes', async () => {
+    const logger = { error: vi.fn() };
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store: createThrowingStore(),
+      logger,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+
+    expect(start.status).toBe(502);
+    expect(await start.json()).toEqual({ error: 'failed to start review' });
+
+    const status = await app.request('/v1/review/review-storage');
+    expect(status.status).toBe(502);
+    expect(await status.json()).toEqual({
+      error: 'failed to fetch run status',
+    });
+
+    const events = await app.request('/v1/review/review-storage/events');
+    expect(events.status).toBe(502);
+    expect(await events.json()).toEqual({
+      error: 'failed to fetch event stream status',
+    });
+
+    const artifact = await app.request(
+      '/v1/review/review-storage/artifacts/json'
+    );
+    expect(artifact.status).toBe(502);
+    expect(await artifact.json()).toEqual({
+      error: 'failed to fetch artifact status',
+    });
+
+    const cancel = await app.request('/v1/review/review-storage/cancel', {
+      method: 'POST',
+    });
+    expect(cancel.status).toBe(502);
+    expect(await cancel.json()).toEqual({ error: 'failed to cancel run' });
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('rejects unsupported remote sandbox requests before dispatch', async () => {

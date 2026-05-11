@@ -10,9 +10,12 @@ This document defines the security model for hosted review execution before the
 service processes private repository paths, prompts, artifacts, provider output,
 GitHub write operations, durable workflow state, or sandbox commands.
 
-This is a design and acceptance-gate document. It does not implement
-authentication, authorization, storage, sandbox execution, GitHub publishing, or
-web UI controls.
+This is a design and acceptance-gate document. It does not itself implement
+authentication, authorization, sandbox execution, GitHub publishing, or web UI
+controls. Service durable storage is implemented separately under
+[ADR-0005](../adr/0005-durable-review-storage.md); identity-bound ownership and
+security audit fields remain gated by the later auth, enforcement, and
+observability issues mapped below.
 
 ## Source Evidence
 
@@ -33,6 +36,9 @@ Repository evidence:
 - Optional Convex metadata mirroring is wired from
   `apps/review-service/src/server.ts` through
   `packages/review-convex-bridge/src/index.ts`.
+- Service durable storage is selected from `DATABASE_URL` or `POSTGRES_URL` in
+  `apps/review-service/src/server.ts` and implemented by
+  `apps/review-service/src/storage`.
 
 External authority:
 
@@ -157,8 +163,11 @@ repository's status, events, artifacts, or cancellation state.
 
 Required controls:
 
-- Every persisted run stores principal, GitHub installation, repo owner/name,
-  repo visibility, commit/ref, request hash, and created-by actor.
+- Before hosted production, every persisted run stores principal, GitHub
+  installation, repo owner/name, repo visibility, commit/ref, request hash, and
+  created-by actor.
+- #15 provides the base durable run record and retention/event/artifact metadata;
+  #23, #24, and #30 add the identity, authorization, and security-audit fields.
 - Read/cancel/artifact/event endpoints authorize against stored run ownership,
   not only token validity.
 - Review IDs remain unguessable, but secrecy of IDs is not the authorization
@@ -437,11 +446,13 @@ Future issues must preserve these gates:
 - #13 service-worker contract tests must include negative tests for auth-ready
   request ownership, remote sandbox rejection/current behavior, run status
   isolation, artifact access, cancellation, and unsafe provider output fixtures.
-- #15 durable store must persist run owner, repo, installation, request hash,
-  commit/ref, status, event sequence, artifact metadata, retention timestamps,
-  and security decision audit events; optional metadata mirrors must be opt-in
-  and inherit the same canonical service/durable `reviewId`, owner, request
-  hash, repo, retention, and redaction decisions.
+- #15 durable store must persist status, event sequence, artifact metadata, and
+  retention timestamps behind the canonical service `reviewId`; #23, #24, and
+  #30 must extend that durable boundary with run owner, repo, installation,
+  request hash, commit/ref, and security decision audit fields before hosted
+  production use. Optional metadata mirrors must be opt-in and inherit the same
+  canonical service/durable `reviewId`, owner, request hash, repo, retention,
+  and redaction decisions once those fields exist.
 - #16 Workflow integration must prove idempotent steps, redacted durable inputs,
   lifecycle replay integrity, and no duplicate provider/GitHub side effects.
 - #17 sandbox integration must keep network deny-all as default, reject
@@ -486,7 +497,8 @@ Future issues must preserve these gates:
 ## Explicit Non-Goals for This Issue
 
 - No authentication or authorization implementation.
-- No durable store implementation.
+- No identity-bound durable ownership, permission, or security audit-field
+  implementation.
 - No sandbox execution integration into service.
 - No GitHub App auth or publish implementation.
 - No web UI implementation.
@@ -495,7 +507,10 @@ Future issues must preserve these gates:
 ## Open Assumptions for Later Issues
 
 - GitHub identity and scoped service tokens are the production auth model.
-- Postgres/Drizzle will be the durable queryable metadata store.
+- Postgres/Drizzle is the durable queryable service store for run, event, and
+  artifact metadata.
+- Identity-bound durable ownership and security audit rows must be added before
+  hosted production authorization is accepted.
 - Workflow is orchestration and replay infrastructure, not the queryable
   security ledger.
 - Convex metadata mirroring remains optional and non-authoritative unless a

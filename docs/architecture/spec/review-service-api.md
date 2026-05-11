@@ -14,9 +14,25 @@ auth policy, config, and inline runner. The package entrypoint `src/index.ts`
 re-exports the factory, while `src/server.ts` constructs production
 dependencies and calls `serve()`.
 
-The default store remains process-local memory through
-`createInMemoryReviewStore()`. Future durable store adapters must satisfy the
-same service store boundary without changing endpoint payloads.
+The service store uses the async `ReviewStoreAdapter` boundary exported from
+`apps/review-service/src/storage/index.ts`. Production startup selects a
+Drizzle/node-postgres store when `DATABASE_URL` or `POSTGRES_URL` is configured.
+No-database local development falls back to `createInMemoryReviewStore()` with
+the same async contract. `NODE_ENV=production` requires `DATABASE_URL` or
+`POSTGRES_URL` unless volatile memory is selected explicitly with
+`REVIEW_SERVICE_STORAGE=memory`.
+
+Drizzle schema and migration ownership lives in `apps/review-service`:
+
+- `src/storage/schema.ts`
+- `drizzle/0000_initial_review_storage.sql`
+- `drizzle.config.ts`
+
+Run migrations from the service package with:
+
+```bash
+pnpm --filter @review-agent/review-service db:migrate
+```
 
 ## Status Model
 
@@ -57,7 +73,8 @@ The request body is parsed by `ReviewStartRequestSchema`.
 
 - `200`: inline run finished; response includes `result` summary payload
 - `202`: detached accepted; response includes `detachedRunId`
-- `400`: request parse/validation or startup error
+- `400`: request parse/validation error
+- `502`: worker or storage startup error
 
 ## `GET /v1/review/:reviewId`
 
@@ -81,7 +98,11 @@ Server-Sent Events stream of lifecycle events.
 
 ### Behavior
 
-- Replays historical events first.
+- Attaches the live process-local listener before replay so events emitted
+  during stream setup are not missed.
+- Replays historical events selected by the cursor.
+- Supports cursor replay with `afterEventId` query parameter or `Last-Event-ID`
+  header, plus optional bounded `limit` query parameter.
 - Streams live events while connection remains open.
 - Sends a `keepalive` SSE event with empty data every 15 seconds.
 - Event payload shape follows `LifecycleEvent`, including `meta.correlation.reviewId` and event IDs/timestamps.
@@ -120,7 +141,14 @@ Returns:
 
 ## Notes and Constraints
 
-- Service state defaults to in-memory storage.
+- Service state is durable when `DATABASE_URL` or `POSTGRES_URL` is configured.
+- Service state defaults to in-memory storage only for local no-database
+  development. Production startup fails without a database URL unless
+  `REVIEW_SERVICE_STORAGE=memory` is set.
+- Worker fallback state remains worker-local until detached execution storage is
+  unified in a follow-up issue.
 - Authentication defaults to allow-all through an injected auth policy hook.
 - `remoteSandbox` execution mode is currently rejected with `400`.
 - Service error bodies follow `ReviewErrorResponseSchema`.
+- Store and worker runtime failures return `502` JSON errors without exposing
+  raw database or provider details.

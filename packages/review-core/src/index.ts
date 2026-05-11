@@ -52,9 +52,12 @@ export type ReviewRunResult = {
   rubric: string;
 };
 
+/**
+ * Configures provider selection, lifecycle event handling, and correlation metadata for one review run.
+ */
 export type RunReviewOptions = {
   providers: Record<ReviewRequest['provider'], ReviewProvider>;
-  onEvent?: (event: LifecycleEvent) => void;
+  onEvent?: (event: LifecycleEvent) => void | Promise<void>;
   now?: () => Date;
   correlation?: Omit<CorrelationIds, 'reviewId'>;
 };
@@ -78,11 +81,11 @@ type LifecycleEventPayload = {
   >;
 }[LifecycleEvent['type']];
 
-function emit(
+async function emit(
   context: EmitContext,
   event: LifecycleEventPayload,
   correlationOverride?: Partial<CorrelationIds>
-): void {
+): Promise<void> {
   const correlation: CorrelationIds = {
     ...context.correlation,
     ...correlationOverride,
@@ -95,7 +98,7 @@ function emit(
       correlation,
     },
   };
-  context.onEvent?.(enrichedEvent);
+  await context.onEvent?.(enrichedEvent);
 }
 
 function maybeExtractJsonObject(text: string): unknown | null {
@@ -393,11 +396,14 @@ export async function runReview(
     },
     request.cwd
   );
-  emit(emitContext, {
+  await emit(emitContext, {
     type: 'enteredReviewMode',
     review: resolved.userFacingHint,
   });
-  emit(emitContext, { type: 'progress', message: 'Collecting diff context' });
+  await emit(emitContext, {
+    type: 'progress',
+    message: 'Collecting diff context',
+  });
 
   const rawDiff = await collectDiffForTarget(request.cwd, request.target);
   const diff = filterDiffContext(request, rawDiff);
@@ -406,7 +412,7 @@ export async function runReview(
     patch: chunk.patch,
   }));
 
-  emit(emitContext, {
+  await emit(emitContext, {
     type: 'progress',
     message: `Running provider ${provider.id} on ${normalizedDiffChunks.length} diff chunk(s)`,
   });
@@ -461,19 +467,19 @@ export async function runReview(
   };
 
   const artifacts = renderArtifacts(result, request.outputFormats);
-  emit(emitContext, {
+  await emit(emitContext, {
     type: 'exitedReviewMode',
     review: result.overallExplanation,
   });
   for (const format of Object.keys(artifacts) as OutputFormat[]) {
-    emit(emitContext, { type: 'artifactReady', format });
+    await emit(emitContext, { type: 'artifactReady', format });
   }
 
   if (bridge) {
     try {
       await bridge.mirrorWrite(reviewId, result);
     } catch (error) {
-      emit(emitContext, {
+      await emit(emitContext, {
         type: 'progress',
         message: `non-blocking mirror write failed: ${String(error)}`,
       });
@@ -481,7 +487,7 @@ export async function runReview(
   }
 
   // Keep a low-noise progress marker for logs/telemetry consumers.
-  emit(emitContext, {
+  await emit(emitContext, {
     type: 'progress',
     message: `Review ${reviewId} completed at ${now().toISOString()}`,
   });

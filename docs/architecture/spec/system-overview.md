@@ -54,12 +54,19 @@ pass parity, benchmark, and generated-contract gates.
 
 ## Persistence Model
 
-- Service review records are maintained in an in-memory map.
-- Worker detached records are maintained in an in-memory map.
-- No durable store is required for baseline behavior.
-- The roadmap target is a Postgres/Drizzle store for durable run, event, and
-  artifact metadata. Vercel Workflow coordinates execution, but does not replace
-  queryable state.
+- Service review records use the async `ReviewStoreAdapter` boundary.
+- Production service startup uses a Drizzle/node-postgres store when
+  `DATABASE_URL` or `POSTGRES_URL` is configured, and `NODE_ENV=production`
+  fails without one unless volatile memory is explicitly selected.
+- The durable schema stores review runs, request summaries, lifecycle events,
+  artifact metadata/content, status transitions, retention timestamps, and
+  deletion markers.
+- Local no-database development falls back to the same async adapter contract
+  backed by an in-memory map.
+- Worker detached fallback records remain worker-local until detached execution
+  persistence moves worker state into the same durable boundary.
+- Vercel Workflow coordinates execution, retries, and resumption; it does not
+  replace queryable service state.
 
 ## Failure Behavior
 

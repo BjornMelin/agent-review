@@ -23,6 +23,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - CLI command surface (`run`, `models`, `doctor`, `completion`)
 - HTTP review service with start/status/events/cancel/artifacts endpoints
 - Detached worker integration with Workflow API and in-process fallback
+- Durable Postgres/Drizzle service storage for review runs, lifecycle events,
+  artifact metadata, status transitions, and retention markers
 - Review targets: uncommitted changes, base branch comparison, commit SHA, custom instructions
 - Provider modes:
   - Codex delegate (`codexDelegate`)
@@ -34,7 +36,7 @@ Engineering teams need repeatable, machine-readable code review output that can 
 
 ## Out of Scope (Current Implementation)
 
-- Persistent datastore for review runs (service and worker stores are in-memory)
+- Worker-local detached fallback persistence beyond the service store
 - Authentication and authorization layer on HTTP endpoints
 - Multi-tenant isolation, quotas, and billing
 - Automatic retry/backoff orchestration for failed provider invocations
