@@ -1,0 +1,25 @@
+{
+  "name": "@review-agent/review-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "pnpm run build:rust && tsc -p tsconfig.json",
+    "build:rust": "node scripts/build-rust-helper.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "node scripts/ensure-test-deps.mjs && vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@review-agent/review-types": "workspace:*"
+  }
+}
