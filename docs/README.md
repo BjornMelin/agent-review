@@ -8,6 +8,11 @@ This directory contains canonical product and architecture documentation for the
 - [Architecture Requirements](./architecture/requirements.md)
 - [Release Checklist](./release/release-checklist.md)
 
+## Release Docs
+
+- [One-Issue-One-PR Release Playbook](./release/one-issue-one-pr-playbook.md)
+- [Dependency Modernization Ledger](./release/dependency-modernization-2026-05.md)
+
 ## Architecture Specifications
 
 - [System Overview](./architecture/spec/system-overview.md)
