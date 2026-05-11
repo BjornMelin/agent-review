@@ -9,6 +9,7 @@ import {
   index,
   integer,
   jsonb,
+  pgEnum,
   pgTable,
   primaryKey,
   text,
@@ -16,12 +17,29 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
+/** Defines allowed lifecycle states for persisted review runs and transitions. */
+export const reviewRunStatusEnum = pgEnum('review_run_status', [
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+/** Defines allowed generated artifact formats for persisted artifact metadata. */
+export const outputFormatEnum = pgEnum('review_output_format', [
+  'sarif',
+  'json',
+  'markdown',
+]);
+
+/** Stores canonical review run records, retention markers, and event cursors. */
 export const reviewRuns = pgTable(
   'review_runs',
   {
     reviewId: text('review_id').primaryKey(),
     runId: text('run_id').notNull(),
-    status: text('status').$type<ReviewRunStatus>().notNull(),
+    status: reviewRunStatusEnum('status').$type<ReviewRunStatus>().notNull(),
     request: jsonb('request').$type<ReviewRequest>().notNull(),
     requestSummary: jsonb('request_summary')
       .$type<{
@@ -68,6 +86,7 @@ export const reviewRuns = pgTable(
   ]
 );
 
+/** Stores ordered lifecycle events for replay and server-sent event cursors. */
 export const reviewEvents = pgTable(
   'review_events',
   {
@@ -95,6 +114,7 @@ export const reviewEvents = pgTable(
   ]
 );
 
+/** Stores generated artifact metadata and bodies outside the run result JSON. */
 export const reviewArtifacts = pgTable(
   'review_artifacts',
   {
@@ -102,7 +122,7 @@ export const reviewArtifacts = pgTable(
     reviewId: text('review_id')
       .notNull()
       .references(() => reviewRuns.reviewId, { onDelete: 'cascade' }),
-    format: text('format').$type<OutputFormat>().notNull(),
+    format: outputFormatEnum('format').$type<OutputFormat>().notNull(),
     contentType: text('content_type').notNull(),
     byteLength: integer('byte_length').notNull(),
     sha256: text('sha256').notNull(),
@@ -122,6 +142,7 @@ export const reviewArtifacts = pgTable(
   ]
 );
 
+/** Stores append-only review status transitions for audit and diagnostics. */
 export const reviewStatusTransitions = pgTable(
   'review_status_transitions',
   {
@@ -129,8 +150,10 @@ export const reviewStatusTransitions = pgTable(
     reviewId: text('review_id')
       .notNull()
       .references(() => reviewRuns.reviewId, { onDelete: 'cascade' }),
-    fromStatus: text('from_status').$type<ReviewRunStatus>(),
-    toStatus: text('to_status').$type<ReviewRunStatus>().notNull(),
+    fromStatus: reviewRunStatusEnum('from_status').$type<ReviewRunStatus>(),
+    toStatus: reviewRunStatusEnum('to_status')
+      .$type<ReviewRunStatus>()
+      .notNull(),
     reason: text('reason').notNull(),
     createdAt: timestamp('created_at', {
       mode: 'date',
@@ -145,12 +168,14 @@ export const reviewStatusTransitions = pgTable(
   ]
 );
 
+/** Declares run-to-child relations for Drizzle relational queries. */
 export const reviewRunRelations = relations(reviewRuns, ({ many }) => ({
   artifacts: many(reviewArtifacts),
   events: many(reviewEvents),
   statusTransitions: many(reviewStatusTransitions),
 }));
 
+/** Declares lifecycle-event-to-run relations for Drizzle relational queries. */
 export const reviewEventRelations = relations(reviewEvents, ({ one }) => ({
   run: one(reviewRuns, {
     fields: [reviewEvents.reviewId],
@@ -158,6 +183,7 @@ export const reviewEventRelations = relations(reviewEvents, ({ one }) => ({
   }),
 }));
 
+/** Declares artifact-to-run relations for Drizzle relational queries. */
 export const reviewArtifactRelations = relations(
   reviewArtifacts,
   ({ one }) => ({
@@ -168,6 +194,7 @@ export const reviewArtifactRelations = relations(
   })
 );
 
+/** Declares status-transition-to-run relations for Drizzle relational queries. */
 export const reviewStatusTransitionRelations = relations(
   reviewStatusTransitions,
   ({ one }) => ({

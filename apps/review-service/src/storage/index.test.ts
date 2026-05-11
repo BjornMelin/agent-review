@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import type { ReviewRunResult } from '@review-agent/review-core';
 import type {
@@ -356,6 +357,79 @@ describe('review storage', () => {
     });
   });
 
+  it('keeps durable appendEvent from overwriting newer run fields', async () => {
+    await withTestStore(async ({ store }) => {
+      const request = createRequest();
+      await store.set(createRecord({ request }), { reason: 'created' });
+      const stale = await store.get('review-1');
+      if (!stale) {
+        throw new Error('expected hydrated record');
+      }
+
+      await store.set(
+        createRecord({
+          request,
+          status: 'completed',
+          result: createReviewResult(request),
+          updatedAt: BASE_TIME_MS + 1_000,
+          retentionExpiresAt: BASE_TIME_MS + 86_400_000,
+        }),
+        { reason: 'completed' }
+      );
+      await store.appendEvent(stale, createEvent('review-1', 1, 'one'), {
+        maxEvents: 10,
+        reason: 'stale append',
+      });
+
+      const actual = await store.get('review-1');
+      expect(actual).toMatchObject({
+        status: 'completed',
+        retentionExpiresAt: BASE_TIME_MS + 86_400_000,
+      });
+      expect(actual?.result?.artifacts.markdown).toBe(
+        '# Review\n\nNo findings.'
+      );
+      expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
+        'event-1',
+      ]);
+    });
+  });
+
+  it('keeps in-memory appendEvent from overwriting newer run fields', async () => {
+    const request = createRequest();
+    const store = createInMemoryReviewStore();
+    await store.set(createRecord({ request }), { reason: 'created' });
+    const stale = await store.get('review-1');
+    if (!stale) {
+      throw new Error('expected hydrated record');
+    }
+
+    await store.set(
+      createRecord({
+        request,
+        status: 'completed',
+        result: createReviewResult(request),
+        updatedAt: BASE_TIME_MS + 1_000,
+        retentionExpiresAt: BASE_TIME_MS + 86_400_000,
+      }),
+      { reason: 'completed' }
+    );
+    await store.appendEvent(stale, createEvent('review-1', 1, 'one'), {
+      maxEvents: 10,
+      reason: 'stale append',
+    });
+
+    const actual = await store.get('review-1');
+    expect(actual).toMatchObject({
+      status: 'completed',
+      retentionExpiresAt: BASE_TIME_MS + 86_400_000,
+    });
+    expect(actual?.result?.artifacts.markdown).toBe('# Review\n\nNo findings.');
+    expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
+      'event-1',
+    ]);
+  });
+
   it('preserves stored events when stale records update run state', async () => {
     await withTestStore(async ({ store }) => {
       await store.set(createRecord(), { reason: 'created' });
@@ -535,7 +609,9 @@ describe('review storage', () => {
     const { readMigrationFiles } = await import('drizzle-orm/migrator');
 
     const migrations = readMigrationFiles({
-      migrationsFolder: new URL('../../drizzle', import.meta.url).pathname,
+      migrationsFolder: fileURLToPath(
+        new URL('../../drizzle', import.meta.url)
+      ),
     });
 
     expect(migrations).toHaveLength(1);

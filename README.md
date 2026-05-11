@@ -85,6 +85,10 @@ Service endpoints are documented in [docs/architecture/spec/review-service-api.m
 When `DATABASE_URL` or `POSTGRES_URL` is set, run the service database migration
 before startup; startup does not apply migrations automatically.
 
+```bash
+pnpm --filter @review-agent/review-service db:migrate
+```
+
 ## Environment Variables
 
 | Variable | Used By | Purpose |

@@ -110,6 +110,62 @@ describe('core determinism and lifecycle metadata', () => {
     }
   });
 
+  it('awaits asynchronous lifecycle event handlers', async () => {
+    const repo = await makeRepo();
+    try {
+      const provider = makeDeterministicProvider(repo.cwd);
+      const providers = {
+        codexDelegate: provider,
+        openaiCompatible: provider,
+      };
+      const events: string[] = [];
+      const completedEvents: string[] = [];
+      let releaseFirstEvent: (() => void) | undefined;
+      const firstEventStarted = new Promise<void>((resolve) => {
+        releaseFirstEvent = resolve;
+      });
+      let releaseFirstHandler: (() => void) | undefined;
+      const firstHandlerRelease = new Promise<void>((resolve) => {
+        releaseFirstHandler = resolve;
+      });
+      let reviewCompleted = false;
+
+      const review = runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          outputFormats: ['json'],
+        },
+        {
+          providers,
+          onEvent: async (event) => {
+            events.push(event.type);
+            if (events.length === 1) {
+              releaseFirstEvent?.();
+              await firstHandlerRelease;
+            }
+            completedEvents.push(event.type);
+          },
+        }
+      ).then((result) => {
+        reviewCompleted = true;
+        return result;
+      });
+
+      await firstEventStarted;
+      await Promise.resolve();
+      expect(reviewCompleted).toBe(false);
+      releaseFirstHandler?.();
+      await review;
+
+      expect(completedEvents).toEqual(events);
+      expect(events.length).toBeGreaterThan(0);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('keeps mirror-write failures non-blocking', async () => {
     const repo = await makeRepo();
     try {

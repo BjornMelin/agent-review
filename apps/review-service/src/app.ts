@@ -28,7 +28,13 @@ import {
   type ReviewStoreAdapter,
 } from './storage/index.js';
 
+/**
+ * Re-exports review store records and adapters for service consumers and tests.
+ */
 export type { ReviewRecord, ReviewStoreAdapter } from './storage/index.js';
+/**
+ * Re-exports service store factories used by the production server and tests.
+ */
 export {
   createInMemoryReviewStore,
   createReviewStoreFromEnv,
@@ -235,6 +241,20 @@ export function createReviewServiceApp(
     record.retentionExpiresAt = record.updatedAt + config.maxRecordAgeMs;
   }
 
+  function detachedTerminalMeta(
+    record: ReviewRecord,
+    suffix: string
+  ): LifecycleEvent['meta'] {
+    return {
+      eventId: `detached:${record.reviewId}:${record.detachedRunId ?? 'unknown'}:${suffix}`,
+      timestampMs: record.updatedAt,
+      correlation: {
+        reviewId: record.reviewId,
+        workflowRunId: record.detachedRunId,
+      },
+    };
+  }
+
   async function cleanupReviewRecords(): Promise<void> {
     const deletedReviewIds = await store.cleanup({
       nowMs: nowMs(),
@@ -418,21 +438,30 @@ export function createReviewServiceApp(
         await emit(record, {
           type: 'failed',
           message: record.error ?? 'detached run failed',
+          meta: detachedTerminalMeta(record, 'failed'),
         });
       }
       if (record.status === 'completed' && record.result) {
         await emit(record, {
           type: 'exitedReviewMode',
           review: record.result.result.overallExplanation,
+          meta: detachedTerminalMeta(record, 'completed:exited'),
         });
         for (const format of Object.keys(record.result.artifacts) as Array<
           keyof ReviewRunResult['artifacts']
         >) {
-          await emit(record, { type: 'artifactReady', format });
+          await emit(record, {
+            type: 'artifactReady',
+            format,
+            meta: detachedTerminalMeta(record, `completed:artifact:${format}`),
+          });
         }
       }
       if (record.status === 'cancelled') {
-        await emit(record, { type: 'cancelled' });
+        await emit(record, {
+          type: 'cancelled',
+          meta: detachedTerminalMeta(record, 'cancelled'),
+        });
       }
     } else if (changed) {
       record.updatedAt = nowMs();

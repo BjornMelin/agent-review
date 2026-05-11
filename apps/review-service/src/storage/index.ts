@@ -42,6 +42,9 @@ type SerializedReviewRunResult = Omit<ReviewRunResult, 'diff'> & {
   };
 };
 
+/**
+ * Defines the durable record shape persisted for each review run.
+ */
 export type ReviewRecord = {
   reviewId: string;
   status: ReviewRunStatus;
@@ -58,14 +61,23 @@ export type ReviewRecord = {
   events: LifecycleEvent[];
 };
 
+/**
+ * Carries optional audit context for store write operations.
+ */
 export type ReviewStoreWriteOptions = {
   reason?: string;
 };
 
+/**
+ * Defines event-append options, including the retained replay window size.
+ */
 export type ReviewStoreAppendEventOptions = ReviewStoreWriteOptions & {
   maxEvents: number;
 };
 
+/**
+ * Defines the logical clock input used by retention cleanup.
+ */
 export type ReviewStoreCleanupOptions = {
   nowMs: number;
 };
@@ -87,6 +99,9 @@ export type ReviewStoreAdapter = {
   size(): Promise<number>;
 };
 
+/**
+ * Extends a review store with explicit resource cleanup for pooled backends.
+ */
 export type ClosableReviewStore = ReviewStoreAdapter & {
   close(): Promise<void>;
 };
@@ -283,51 +298,11 @@ function isTerminalStatus(status: ReviewRunStatus): boolean {
   );
 }
 
-function applyPersistedRecord(
+function applyPersistedEvents(
   target: ReviewRecord,
   persisted: ReviewRecord
 ): void {
-  target.reviewId = persisted.reviewId;
-  target.status = persisted.status;
-  target.request = persisted.request;
-  target.createdAt = persisted.createdAt;
-  target.updatedAt = persisted.updatedAt;
-  target.events = persisted.events;
-  if (persisted.result) {
-    target.result = persisted.result;
-  } else {
-    delete target.result;
-  }
-  if (persisted.error) {
-    target.error = persisted.error;
-  } else {
-    delete target.error;
-  }
-  if (persisted.detachedRunId) {
-    target.detachedRunId = persisted.detachedRunId;
-  } else {
-    delete target.detachedRunId;
-  }
-  if (persisted.workflowRunId) {
-    target.workflowRunId = persisted.workflowRunId;
-  } else {
-    delete target.workflowRunId;
-  }
-  if (persisted.sandboxId) {
-    target.sandboxId = persisted.sandboxId;
-  } else {
-    delete target.sandboxId;
-  }
-  if (persisted.retentionExpiresAt !== undefined) {
-    target.retentionExpiresAt = persisted.retentionExpiresAt;
-  } else {
-    delete target.retentionExpiresAt;
-  }
-  if (persisted.deletedAt !== undefined) {
-    target.deletedAt = persisted.deletedAt;
-  } else {
-    delete target.deletedAt;
-  }
+  target.events = persisted.events.map(cloneLifecycleEvent);
 }
 
 /**
@@ -359,16 +334,7 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
     },
     async appendEvent(record, event, options) {
       const existing = records.get(record.reviewId);
-      const next = cloneRecord(record);
-      if (existing) {
-        const eventIds = new Set(
-          existing.events.map((item) => item.meta.eventId)
-        );
-        next.events = [
-          ...existing.events.map(cloneLifecycleEvent),
-          ...next.events.filter((item) => !eventIds.has(item.meta.eventId)),
-        ];
-      }
+      const next = existing ? cloneRecord(existing) : cloneRecord(record);
       if (
         !next.events.some((item) => item.meta.eventId === event.meta.eventId)
       ) {
@@ -376,7 +342,7 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
       }
       next.events = next.events.slice(-options.maxEvents);
       records.set(next.reviewId, cloneRecord(next));
-      applyPersistedRecord(record, next);
+      applyPersistedEvents(record, next);
     },
     async delete(reviewId) {
       records.delete(reviewId);
@@ -542,19 +508,31 @@ export function createDrizzleReviewStore(
   async function persist(record: ReviewRecord, reason: string): Promise<void> {
     await db.transaction(
       async (tx) => {
-        const [existing] = await tx
-          .select({ status: reviewRuns.status })
-          .from(reviewRuns)
-          .where(eq(reviewRuns.reviewId, record.reviewId));
-
-        await tx
+        const [inserted] = await tx
           .insert(reviewRuns)
           .values(runInsertFor(record))
-          .onConflictDoUpdate({
-            target: reviewRuns.reviewId,
-            set: rowUpdateFor(record),
-          });
-        if (record.events.length > 0) {
+          .onConflictDoNothing()
+          .returning();
+        const existing = inserted
+          ? undefined
+          : await (async () => {
+              await tx.execute(sql`
+                SELECT ${reviewRuns.reviewId}
+                FROM ${reviewRuns}
+                WHERE ${reviewRuns.reviewId} = ${record.reviewId}
+                FOR UPDATE
+              `);
+              const [row] = await tx
+                .select({ status: reviewRuns.status })
+                .from(reviewRuns)
+                .where(eq(reviewRuns.reviewId, record.reviewId));
+              await tx
+                .update(reviewRuns)
+                .set(rowUpdateFor(record))
+                .where(eq(reviewRuns.reviewId, record.reviewId));
+              return row;
+            })();
+        if (inserted && record.events.length > 0) {
           await tx.execute(sql`
             SELECT ${reviewRuns.reviewId}
             FROM ${reviewRuns}
@@ -563,7 +541,7 @@ export function createDrizzleReviewStore(
           `);
         }
 
-        if (!existing || existing.status !== record.status) {
+        if (inserted || existing?.status !== record.status) {
           await tx
             .insert(reviewStatusTransitions)
             .values(
@@ -578,28 +556,41 @@ export function createDrizzleReviewStore(
         }
 
         for (const event of record.events) {
-          const [existingEvent] = await tx
-            .select({ eventId: reviewEvents.eventId })
-            .from(reviewEvents)
-            .where(eq(reviewEvents.eventId, event.meta.eventId));
-          if (existingEvent) {
-            continue;
-          }
-          const [sequenceRow] = await tx
-            .update(reviewRuns)
-            .set({ eventSequence: sql`${reviewRuns.eventSequence} + 1` })
-            .where(eq(reviewRuns.reviewId, record.reviewId))
-            .returning();
-          await tx
-            .insert(reviewEvents)
-            .values({
-              reviewId: record.reviewId,
-              eventId: event.meta.eventId,
-              sequence: sequenceRow?.eventSequence ?? 0,
-              event: cloneLifecycleEvent(event),
-              createdAt: new Date(event.meta.timestampMs),
-            })
-            .onConflictDoNothing({ target: reviewEvents.eventId });
+          await tx.execute(sql`
+            WITH locked_run AS (
+              SELECT ${reviewRuns.reviewId}
+              FROM ${reviewRuns}
+              WHERE ${reviewRuns.reviewId} = ${record.reviewId}
+              FOR UPDATE
+            ),
+            next_sequence AS (
+              UPDATE ${reviewRuns}
+              SET event_sequence = ${reviewRuns.eventSequence} + 1
+              FROM locked_run
+              WHERE ${reviewRuns.reviewId} = locked_run.review_id
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM ${reviewEvents}
+                  WHERE ${reviewEvents.eventId} = ${event.meta.eventId}
+                )
+              RETURNING ${reviewRuns.eventSequence}
+            )
+            INSERT INTO ${reviewEvents} (
+              review_id,
+              event_id,
+              sequence,
+              event,
+              created_at
+            )
+            SELECT
+              ${record.reviewId},
+              ${event.meta.eventId},
+              next_sequence.event_sequence,
+              ${JSON.stringify(cloneLifecycleEvent(event))}::jsonb,
+              ${new Date(event.meta.timestampMs)}
+            FROM next_sequence
+            ON CONFLICT (event_id) DO NOTHING
+          `);
         }
 
         if (record.result) {
@@ -626,32 +617,19 @@ export function createDrizzleReviewStore(
     async appendEvent(record, event, options) {
       await db.transaction(
         async (tx) => {
-          const [existing] = await tx
-            .select({ status: reviewRuns.status })
-            .from(reviewRuns)
-            .where(eq(reviewRuns.reviewId, record.reviewId));
-
-          await tx
+          const [inserted] = await tx
             .insert(reviewRuns)
             .values(runInsertFor(record))
-            .onConflictDoUpdate({
-              target: reviewRuns.reviewId,
-              set: rowUpdateFor(record),
-            });
-          await tx.execute(sql`
-            SELECT ${reviewRuns.reviewId}
-            FROM ${reviewRuns}
-            WHERE ${reviewRuns.reviewId} = ${record.reviewId}
-            FOR UPDATE
-          `);
+            .onConflictDoNothing()
+            .returning();
 
-          if (!existing || existing.status !== record.status) {
+          if (inserted) {
             await tx
               .insert(reviewStatusTransitions)
               .values(
                 transitionRow(
                   record.reviewId,
-                  existing?.status ?? null,
+                  null,
                   record.status,
                   options.reason ?? 'event append',
                   record.updatedAt
@@ -659,37 +637,41 @@ export function createDrizzleReviewStore(
               );
           }
 
-          if (record.result) {
-            await tx
-              .delete(reviewArtifacts)
-              .where(eq(reviewArtifacts.reviewId, record.reviewId));
-            const artifacts = artifactRowsFor(record);
-            if (artifacts.length > 0) {
-              await tx.insert(reviewArtifacts).values(artifacts);
-            }
-          }
-
-          const [existingEvent] = await tx
-            .select({ eventId: reviewEvents.eventId })
-            .from(reviewEvents)
-            .where(eq(reviewEvents.eventId, event.meta.eventId));
-          if (!existingEvent) {
-            const [sequenceRow] = await tx
-              .update(reviewRuns)
-              .set({ eventSequence: sql`${reviewRuns.eventSequence} + 1` })
-              .where(eq(reviewRuns.reviewId, record.reviewId))
-              .returning();
-            await tx
-              .insert(reviewEvents)
-              .values({
-                reviewId: record.reviewId,
-                eventId: event.meta.eventId,
-                sequence: sequenceRow?.eventSequence ?? 0,
-                event: cloneLifecycleEvent(event),
-                createdAt: new Date(event.meta.timestampMs),
-              })
-              .onConflictDoNothing({ target: reviewEvents.eventId });
-          }
+          await tx.execute(sql`
+            WITH locked_run AS (
+              SELECT ${reviewRuns.reviewId}
+              FROM ${reviewRuns}
+              WHERE ${reviewRuns.reviewId} = ${record.reviewId}
+              FOR UPDATE
+            ),
+            next_sequence AS (
+              UPDATE ${reviewRuns}
+              SET event_sequence = ${reviewRuns.eventSequence} + 1
+              FROM locked_run
+              WHERE ${reviewRuns.reviewId} = locked_run.review_id
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM ${reviewEvents}
+                  WHERE ${reviewEvents.eventId} = ${event.meta.eventId}
+                )
+              RETURNING ${reviewRuns.eventSequence}
+            )
+            INSERT INTO ${reviewEvents} (
+              review_id,
+              event_id,
+              sequence,
+              event,
+              created_at
+            )
+            SELECT
+              ${record.reviewId},
+              ${event.meta.eventId},
+              next_sequence.event_sequence,
+              ${JSON.stringify(cloneLifecycleEvent(event))}::jsonb,
+              ${new Date(event.meta.timestampMs)}
+            FROM next_sequence
+            ON CONFLICT (event_id) DO NOTHING
+          `);
 
           const retainedEvents = await tx
             .select({ sequence: reviewEvents.sequence })
@@ -715,7 +697,7 @@ export function createDrizzleReviewStore(
       );
       const persisted = await hydrate(record.reviewId);
       if (persisted) {
-        applyPersistedRecord(record, persisted);
+        applyPersistedEvents(record, persisted);
       }
     },
     async delete(reviewId) {
@@ -770,6 +752,9 @@ export function createPostgresReviewStore(
     typeof config === 'string'
       ? new pg.Pool({ connectionString: config })
       : new pg.Pool(config);
+  pool.on('error', (error) => {
+    console.error('[review-service] PostgreSQL pool idle client error', error);
+  });
   const db = drizzleNodePostgres(pool, { schema });
   return {
     ...createDrizzleReviewStore(db),
@@ -785,6 +770,7 @@ export function createPostgresReviewStore(
  * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
  * @param options - Runtime fallback policy.
  * @returns A Postgres store when configured, otherwise an in-memory store.
+ * @throws When neither `DATABASE_URL` nor `POSTGRES_URL` is set and in-memory fallback is disallowed.
  */
 export function createReviewStoreFromEnv(
   env: NodeJS.ProcessEnv = process.env,

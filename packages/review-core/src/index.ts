@@ -52,6 +52,9 @@ export type ReviewRunResult = {
   rubric: string;
 };
 
+/**
+ * Configures provider selection, lifecycle event handling, and correlation metadata for one review run.
+ */
 export type RunReviewOptions = {
   providers: Record<ReviewRequest['provider'], ReviewProvider>;
   onEvent?: (event: LifecycleEvent) => void | Promise<void>;

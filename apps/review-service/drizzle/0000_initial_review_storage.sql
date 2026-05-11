@@ -1,7 +1,21 @@
+CREATE TYPE review_run_status AS ENUM (
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'cancelled'
+);
+
+CREATE TYPE review_output_format AS ENUM (
+  'sarif',
+  'json',
+  'markdown'
+);
+
 CREATE TABLE IF NOT EXISTS review_runs (
   review_id text PRIMARY KEY,
   run_id text NOT NULL,
-  status text NOT NULL,
+  status review_run_status NOT NULL,
   request jsonb NOT NULL,
   request_summary jsonb NOT NULL,
   result jsonb,
@@ -44,7 +58,7 @@ CREATE INDEX IF NOT EXISTS review_events_review_id_created_at_idx
 CREATE TABLE IF NOT EXISTS review_artifacts (
   artifact_id text PRIMARY KEY,
   review_id text NOT NULL REFERENCES review_runs(review_id) ON DELETE CASCADE,
-  format text NOT NULL,
+  format review_output_format NOT NULL,
   content_type text NOT NULL,
   byte_length integer NOT NULL,
   sha256 text NOT NULL,
@@ -61,8 +75,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS review_artifacts_storage_key_idx
 CREATE TABLE IF NOT EXISTS review_status_transitions (
   transition_id text PRIMARY KEY,
   review_id text NOT NULL REFERENCES review_runs(review_id) ON DELETE CASCADE,
-  from_status text,
-  to_status text NOT NULL,
+  from_status review_run_status,
+  to_status review_run_status NOT NULL,
   reason text NOT NULL,
   created_at timestamptz NOT NULL
 );
