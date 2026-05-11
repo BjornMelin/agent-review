@@ -3,6 +3,7 @@ import {
   execFile,
   spawn,
 } from 'node:child_process';
+import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,6 @@ const packagedBinary = join(packageRoot, 'dist', 'bin', binaryName);
 const targetDir = process.env.CARGO_TARGET_DIR
   ? resolve(repoRoot, process.env.CARGO_TARGET_DIR)
   : join(repoRoot, 'target');
-const configuredBinary = process.env.REVIEW_AGENT_RUNNER_BIN;
 const buildTimeoutMs = parsePositiveIntegerEnv(
   'REVIEW_AGENT_RUNNER_BUILD_TIMEOUT_MS',
   120_000
@@ -93,7 +93,10 @@ function helperEnv(): NodeJS.ProcessEnv {
 
 async function canExecute(path: string): Promise<boolean> {
   try {
-    await access(path);
+    await access(
+      path,
+      process.platform === 'win32' ? constants.F_OK : constants.X_OK
+    );
     return true;
   } catch {
     return false;
@@ -115,6 +118,7 @@ async function buildReviewRunnerBinary(): Promise<string> {
 }
 
 async function resolveReviewRunnerBinary(): Promise<string> {
+  const configuredBinary = process.env.REVIEW_AGENT_RUNNER_BIN;
   const candidates = [
     ...(configuredBinary ? [resolve(configuredBinary)] : []),
     packagedBinary,
@@ -167,6 +171,8 @@ async function runWithStdin(
     });
     let stdout = '';
     let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let timedOut = false;
     let outputLimitError: Error | undefined;
     let forceKillTimer: NodeJS.Timeout | undefined;
@@ -192,10 +198,11 @@ async function runWithStdin(
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
-      if (
-        Buffer.byteLength(stdout, 'utf8') + Buffer.byteLength(chunk, 'utf8') >
-        maxStdoutBytes
-      ) {
+      if (outputLimitError) {
+        return;
+      }
+      const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+      if (stdoutBytes + chunkBytes > maxStdoutBytes) {
         outputLimitError = new Error(
           `${command} ${args.join(' ')} exceeded stdout limit ${maxStdoutBytes} bytes`
         );
@@ -203,12 +210,14 @@ async function runWithStdin(
         return;
       }
       stdout += chunk;
+      stdoutBytes += chunkBytes;
     });
     child.stderr.on('data', (chunk) => {
-      if (
-        Buffer.byteLength(stderr, 'utf8') + Buffer.byteLength(chunk, 'utf8') >
-        maxStderrBytes
-      ) {
+      if (outputLimitError) {
+        return;
+      }
+      const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+      if (stderrBytes + chunkBytes > maxStderrBytes) {
         outputLimitError = new Error(
           `${command} ${args.join(' ')} exceeded stderr limit ${maxStderrBytes} bytes`
         );
@@ -216,6 +225,7 @@ async function runWithStdin(
         return;
       }
       stderr += chunk;
+      stderrBytes += chunkBytes;
     });
     child.on('error', (error) => {
       clearTimeout(timer);

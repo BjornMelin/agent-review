@@ -40,6 +40,6 @@ async fn run_from_stdin() -> Result<(), Box<dyn std::error::Error>> {
     io::stdin().read_to_string(&mut input)?;
     let value: Value = serde_json::from_str(&input)?;
     let output = run_command_value(value).await?;
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }

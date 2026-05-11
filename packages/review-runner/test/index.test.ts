@@ -9,9 +9,19 @@ const binaryName =
 
 describe('review runner adapter', () => {
   it('resolves the packaged Rust helper from the dist artifact', async () => {
-    await expect(ensureReviewRunnerBinary()).resolves.toBe(
-      join(packageRoot, 'dist', 'bin', binaryName)
-    );
+    const originalRunnerBin = process.env.REVIEW_AGENT_RUNNER_BIN;
+    delete process.env.REVIEW_AGENT_RUNNER_BIN;
+    try {
+      await expect(ensureReviewRunnerBinary()).resolves.toBe(
+        join(packageRoot, 'dist', 'bin', binaryName)
+      );
+    } finally {
+      if (originalRunnerBin === undefined) {
+        delete process.env.REVIEW_AGENT_RUNNER_BIN;
+      } else {
+        process.env.REVIEW_AGENT_RUNNER_BIN = originalRunnerBin;
+      }
+    }
   });
 
   it('runs commands through the Rust process-group helper', async () => {
