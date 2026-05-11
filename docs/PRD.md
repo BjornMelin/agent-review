@@ -22,7 +22,7 @@ Engineering teams need repeatable, machine-readable code review output that can 
 
 - CLI command surface (`run`, `models`, `doctor`, `completion`)
 - HTTP review service with start/status/events/cancel/artifacts endpoints
-- Detached worker integration with Workflow API and in-process fallback
+- Detached worker integration with Workflow API and durable service state
 - Durable Postgres/Drizzle service storage for review runs, lifecycle events,
   artifact metadata, status transitions, and retention markers
 - Review targets: uncommitted changes, base branch comparison, commit SHA, custom instructions
@@ -36,10 +36,9 @@ Engineering teams need repeatable, machine-readable code review output that can 
 
 ## Out of Scope (Current Implementation)
 
-- Worker-local detached fallback persistence beyond the service store
 - Authentication and authorization layer on HTTP endpoints
 - Multi-tenant isolation, quotas, and billing
-- Automatic retry/backoff orchestration for failed provider invocations
+- Provider-specific retry classification beyond Workflow step retry defaults
 - UI frontend for review authoring or visualization
 - Rust service rewrites, native primary CLI rewrites, Ratatui TUIs, and Tauri
   desktop applications

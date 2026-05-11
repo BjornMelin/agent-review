@@ -61,7 +61,11 @@ vi.mock('@review-agent/review-provider-registry', () => ({
 
 vi.mock('@workflow/core/runtime', () => workflowRuntimeMock);
 
-import { ReviewWorker } from './index.js';
+import {
+  REVIEW_WORKFLOW_STEP_MAX_RETRIES,
+  ReviewWorker,
+  reviewExecutionStep,
+} from './index.js';
 
 function createRequest(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
   return {
@@ -119,11 +123,17 @@ describe('ReviewWorker', () => {
     workflowRuntimeMock.getRun.mockReset();
   });
 
-  it('starts workflow-backed detached runs and syncs completed results', async () => {
+  it('starts workflow-backed detached runs without reading status immediately', async () => {
     const request = createRequest();
     const result = createReviewResult(request);
+    const statusRead = vi.fn(() => {
+      throw new Error('status should be read by later reconciliation');
+    });
     workflowRuntimeMock.start.mockResolvedValueOnce({
       runId: 'workflow-run-1',
+      get status() {
+        return statusRead();
+      },
     });
     workflowRuntimeMock.getRun.mockResolvedValueOnce({
       status: Promise.resolve('completed'),
@@ -136,8 +146,9 @@ describe('ReviewWorker', () => {
     expect(started).toMatchObject({
       runId: 'workflow-run-1',
       workflowRunId: 'workflow-run-1',
-      status: 'running',
+      status: 'queued',
     });
+    expect(statusRead).not.toHaveBeenCalled();
     expect(workflowRuntimeMock.start).toHaveBeenCalledTimes(1);
 
     const synced = await worker.get('workflow-run-1');
@@ -148,9 +159,66 @@ describe('ReviewWorker', () => {
     });
   });
 
+  it('syncs workflow-backed results after a worker restart', async () => {
+    const request = createRequest();
+    const result = createReviewResult(request);
+    workflowRuntimeMock.getRun.mockResolvedValueOnce({
+      runId: 'workflow-run-restarted',
+      status: Promise.resolve('completed'),
+      returnValue: Promise.resolve(result),
+    });
+
+    const restartedWorker = new ReviewWorker();
+
+    const synced = await restartedWorker.get('workflow-run-restarted');
+    expect(synced).toMatchObject({
+      runId: 'workflow-run-restarted',
+      workflowRunId: 'workflow-run-restarted',
+      status: 'completed',
+      result,
+    });
+    expect(workflowRuntimeMock.getRun).toHaveBeenCalledWith(
+      'workflow-run-restarted'
+    );
+  });
+
+  it('maps pending workflow status to queued service status', async () => {
+    workflowRuntimeMock.getRun.mockResolvedValueOnce({
+      runId: 'workflow-run-pending',
+      status: Promise.resolve('pending'),
+    });
+
+    const worker = new ReviewWorker();
+
+    await expect(worker.get('workflow-run-pending')).resolves.toMatchObject({
+      runId: 'workflow-run-pending',
+      workflowRunId: 'workflow-run-pending',
+      status: 'queued',
+    });
+  });
+
+  it('treats missing workflow runs as unknown during reconciliation', async () => {
+    workflowRuntimeMock.getRun.mockResolvedValueOnce({
+      runId: 'workflow-run-missing',
+      status: Promise.reject(
+        Object.assign(
+          new Error('Workflow run "workflow-run-missing" not found'),
+          {
+            name: 'WorkflowRunNotFoundError',
+          }
+        )
+      ),
+    });
+
+    const worker = new ReviewWorker();
+
+    await expect(worker.get('workflow-run-missing')).resolves.toBeNull();
+  });
+
   it('captures workflow failures without throwing from status reads', async () => {
     workflowRuntimeMock.start.mockResolvedValueOnce({
       runId: 'workflow-run-failed',
+      status: Promise.resolve('running'),
     });
     workflowRuntimeMock.getRun.mockResolvedValueOnce({
       status: Promise.resolve('failed'),
@@ -169,23 +237,21 @@ describe('ReviewWorker', () => {
   });
 
   it('cancels workflow-backed runs through the workflow runtime', async () => {
-    const request = createRequest();
-    const result = createReviewResult(request);
     const cancel = vi.fn(async () => undefined);
-    workflowRuntimeMock.start.mockResolvedValueOnce({
-      runId: 'workflow-run-cancel',
-    });
     workflowRuntimeMock.getRun
       .mockResolvedValueOnce({
+        runId: 'workflow-run-cancel',
+        status: Promise.resolve('running'),
         cancel,
       })
-      .mockResolvedValueOnce({
-        status: Promise.resolve('completed'),
-        returnValue: Promise.resolve(result),
+      .mockResolvedValue({
+        runId: 'workflow-run-cancel',
+        status: Promise.resolve('cancelled'),
+        returnValue: Promise.resolve(undefined),
+        cancel,
       });
 
     const worker = new ReviewWorker();
-    await worker.startDetached(request);
 
     await expect(worker.cancel('workflow-run-cancel')).resolves.toBe(true);
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -194,58 +260,71 @@ describe('ReviewWorker', () => {
     await expect(worker.get('workflow-run-cancel')).resolves.toMatchObject({
       status: 'cancelled',
     });
-    expect(workflowRuntimeMock.getRun).toHaveBeenCalledTimes(1);
+    expect(workflowRuntimeMock.getRun).toHaveBeenCalledTimes(2);
 
     await expect(worker.cancel('workflow-run-cancel')).resolves.toBe(false);
     expect(cancel).toHaveBeenCalledTimes(1);
-    expect(workflowRuntimeMock.getRun).toHaveBeenCalledTimes(1);
+    expect(workflowRuntimeMock.getRun).toHaveBeenCalledTimes(3);
   });
 
-  it('falls back to local cancellation when Workflow cancel fails', async () => {
+  it('propagates workflow cancellation failures instead of marking local success', async () => {
     const cancel = vi.fn(async () => {
       throw new Error('workflow cancel failed');
     });
-    workflowRuntimeMock.start.mockResolvedValueOnce({
-      runId: 'workflow-run-cancel-failed',
-    });
     workflowRuntimeMock.getRun.mockResolvedValueOnce({
+      runId: 'workflow-run-cancel-failed',
+      status: Promise.resolve('running'),
       cancel,
     });
 
     const worker = new ReviewWorker();
-    await worker.startDetached(createRequest());
 
-    await expect(worker.cancel('workflow-run-cancel-failed')).resolves.toBe(
-      true
+    await expect(worker.cancel('workflow-run-cancel-failed')).rejects.toThrow(
+      'workflow cancel failed'
     );
     expect(cancel).toHaveBeenCalledTimes(1);
-    await expect(
-      worker.get('workflow-run-cancel-failed')
-    ).resolves.toMatchObject({
-      status: 'cancelled',
-    });
   });
 
-  it('falls back to local detached execution when Workflow start fails', async () => {
-    const request = createRequest();
-    const result = createReviewResult(request);
+  it('returns false when cancelling an unknown workflow run', async () => {
+    const cancel = vi.fn(async () => undefined);
+    workflowRuntimeMock.getRun.mockResolvedValueOnce({
+      runId: 'workflow-run-missing',
+      status: Promise.reject(
+        Object.assign(
+          new Error('Workflow run "workflow-run-missing" not found'),
+          {
+            name: 'WorkflowRunNotFoundError',
+          }
+        )
+      ),
+      cancel,
+    });
+
+    const worker = new ReviewWorker();
+
+    await expect(worker.cancel('workflow-run-missing')).resolves.toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('fails detached start when Workflow cannot accept the run', async () => {
     workflowRuntimeMock.start.mockRejectedValueOnce(
       new Error('workflow unavailable')
     );
-    runReviewMock.mockResolvedValueOnce(result);
 
     const worker = new ReviewWorker();
-    const started = await worker.startDetached(request);
 
-    expect(started.workflowRunId).toBeUndefined();
-    await vi.waitFor(async () => {
-      await expect(worker.get(started.runId)).resolves.toMatchObject({
-        runId: started.runId,
-        status: 'completed',
-        result,
-      });
-    });
-    expect(runReviewMock).toHaveBeenCalledTimes(1);
+    await expect(worker.startDetached(createRequest())).rejects.toThrow(
+      'workflow unavailable'
+    );
+    expect(runReviewMock).not.toHaveBeenCalled();
+  });
+
+  it('declares the review execution step retry budget', () => {
+    const retryableStep = reviewExecutionStep as typeof reviewExecutionStep & {
+      maxRetries: number;
+    };
+    expect(REVIEW_WORKFLOW_STEP_MAX_RETRIES).toBe(3);
+    expect(retryableStep.maxRetries).toBe(REVIEW_WORKFLOW_STEP_MAX_RETRIES);
   });
 
   it('validates detached request payloads before starting work', async () => {

@@ -63,10 +63,10 @@ pass parity, benchmark, and generated-contract gates.
   deletion markers.
 - Local no-database development falls back to the same async adapter contract
   backed by an in-memory map.
-- Worker detached fallback records remain worker-local until detached execution
-  persistence moves worker state into the same durable boundary.
+- Detached Workflow run identifiers and observed states are persisted through
+  the service store; the worker no longer keeps production canonical run state.
 - Vercel Workflow coordinates execution, retries, and resumption; it does not
-  replace queryable service state.
+  replace queryable service run, event, or artifact state.
 
 ## Failure Behavior
 

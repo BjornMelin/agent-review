@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { type ReviewRunResult, runReview } from '@review-agent/review-core';
 import { createReviewProviders } from '@review-agent/review-provider-registry';
 import {
@@ -27,95 +26,64 @@ export type DetachedRunRecord = {
 
 const providers = createReviewProviders();
 
-const localRunStore = new Map<string, DetachedRunRecord>();
-const MAX_LOCAL_RUNS = 500;
-const MAX_LOCAL_RUN_AGE_MS = 2 * 60 * 60 * 1000;
-const LOCAL_RUN_CLEANUP_INTERVAL_MS = 60_000;
+type WorkflowRuntimeStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
-function cleanupLocalRuns(): void {
-  const now = Date.now();
-  for (const [runId, run] of localRunStore) {
-    const terminalAgeRef = run.completedAt ?? run.startedAt;
-    if (
-      isTerminalReviewRunStatus(run.status) &&
-      now - terminalAgeRef > MAX_LOCAL_RUN_AGE_MS
-    ) {
-      localRunStore.delete(runId);
-    }
-  }
+type WorkflowRunHandle = {
+  runId: string;
+  status: WorkflowRuntimeStatus | Promise<WorkflowRuntimeStatus>;
+  returnValue: Promise<unknown>;
+  cancel(): void | Promise<void>;
+};
 
-  if (localRunStore.size <= MAX_LOCAL_RUNS) {
-    return;
-  }
-
-  const orderedRuns = [...localRunStore.entries()].sort(
-    (a, b) =>
-      (a[1].completedAt ?? a[1].startedAt) -
-      (b[1].completedAt ?? b[1].startedAt)
-  );
-  for (const [runId, run] of orderedRuns) {
-    if (localRunStore.size <= MAX_LOCAL_RUNS) {
-      break;
-    }
-    if (isTerminalReviewRunStatus(run.status)) {
-      localRunStore.delete(runId);
-    }
-  }
-}
-
-const localRunCleanupInterval = setInterval(
-  cleanupLocalRuns,
-  LOCAL_RUN_CLEANUP_INTERVAL_MS
-);
-localRunCleanupInterval.unref?.();
+/**
+ * Defines the retry budget for the durable review execution step.
+ */
+export const REVIEW_WORKFLOW_STEP_MAX_RETRIES = 3;
 
 function withProviders(request: ReviewRequest): Promise<ReviewRunResult> {
   return runReview(request, { providers });
 }
 
-async function runLocallyDetached(
-  request: ReviewRequest
+function mapWorkflowStatus(status: WorkflowRuntimeStatus): ReviewRunStatus {
+  return status === 'pending' ? 'queued' : status;
+}
+
+function isWorkflowRunNotFoundError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'WorkflowRunNotFoundError';
+}
+
+async function hydrateWorkflowRecord(
+  runId: string,
+  workflowRun: WorkflowRunHandle
 ): Promise<DetachedRunRecord> {
-  const runId = randomUUID();
+  const status = mapWorkflowStatus(await Promise.resolve(workflowRun.status));
+  const now = Date.now();
   const record: DetachedRunRecord = {
     runId,
-    status: 'queued',
-    startedAt: Date.now(),
+    workflowRunId: runId,
+    status,
+    startedAt: now,
   };
-  localRunStore.set(runId, record);
-  cleanupLocalRuns();
 
-  void (async () => {
-    if (record.status === 'queued') {
-      record.status = 'running';
-    }
+  if (status === 'completed') {
+    record.result = (await workflowRun.returnValue) as ReviewRunResult;
+    record.completedAt = now;
+  } else if (status === 'failed') {
     try {
-      const result = await withProviders(request);
-      if (record.status === 'cancelled') {
-        return;
-      }
-      record.result = result;
-      record.status = 'completed';
-      record.completedAt = Date.now();
+      await workflowRun.returnValue;
+      record.error = 'workflow failed';
     } catch (error) {
-      if (record.status === 'cancelled') {
-        return;
-      }
-      record.status = 'failed';
       record.error = error instanceof Error ? error.message : String(error);
-      record.completedAt = Date.now();
-    } finally {
-      cleanupLocalRuns();
     }
-  })().catch((error: unknown) => {
-    if (record.status === 'cancelled') {
-      return;
-    }
-    record.status = 'failed';
-    record.error = error instanceof Error ? error.message : String(error);
-    record.completedAt = Date.now();
-    cleanupLocalRuns();
-  });
+    record.completedAt = now;
+  } else if (status === 'cancelled') {
+    record.completedAt = now;
+  }
 
   return record;
 }
@@ -130,44 +98,48 @@ export async function reviewWorkflow(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
   'use workflow';
-  return executeReviewStep(request);
+  return reviewExecutionStep(request);
 }
 
-async function executeReviewStep(
+/**
+ * Runs provider-backed review execution as an explicit retryable Workflow step.
+ *
+ * @param request - Validated review request supplied by the workflow function.
+ * @returns Completed review result emitted by the review core.
+ */
+export async function reviewExecutionStep(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
   'use step';
   return withProviders(request);
 }
 
+Object.assign(reviewExecutionStep, {
+  maxRetries: REVIEW_WORKFLOW_STEP_MAX_RETRIES,
+});
+
 /**
- * Coordinates detached review execution with Workflow runtime and local fallback.
+ * Coordinates detached review execution with Workflow runtime.
  */
 export class ReviewWorker {
   /**
    * Starts a detached review run after validating the request payload.
    *
    * @param requestInput - Unknown request payload to parse with ReviewRequestSchema.
-   * @returns Initial run record for workflow-backed or local fallback execution.
+   * @returns Initial run record for workflow-backed execution.
    * @throws ZodError when the payload does not satisfy ReviewRequestSchema.
+   * @throws Error when the Workflow runtime cannot accept the run.
    */
   async startDetached(requestInput: unknown): Promise<DetachedRunRecord> {
     const request = ReviewRequestSchema.parse(requestInput);
-    try {
-      const { start } = await import('@workflow/core/runtime');
-      const run = await start(reviewWorkflow, [request]);
-      const record: DetachedRunRecord = {
-        runId: run.runId,
-        workflowRunId: run.runId,
-        status: 'running',
-        startedAt: Date.now(),
-      };
-      localRunStore.set(record.runId, record);
-      cleanupLocalRuns();
-      return record;
-    } catch {
-      return runLocallyDetached(request);
-    }
+    const { start } = await import('@workflow/core/runtime');
+    const run = (await start(reviewWorkflow, [request])) as WorkflowRunHandle;
+    return {
+      runId: run.runId,
+      workflowRunId: run.runId,
+      status: 'queued',
+      startedAt: Date.now(),
+    };
   }
 
   /**
@@ -175,48 +147,25 @@ export class ReviewWorker {
    *
    * @param runId - Detached run identifier returned by startDetached.
    * @returns Current run record, or null when the run is unknown.
+   * @throws Error when Workflow status lookup fails.
    */
   async get(runId: string): Promise<DetachedRunRecord | null> {
-    const local = localRunStore.get(runId);
-    if (!local) {
+    const { getRun } = await import('@workflow/core/runtime');
+    const workflowRun = (await getRun(runId)) as
+      | WorkflowRunHandle
+      | null
+      | undefined;
+    if (!workflowRun) {
       return null;
     }
-
-    if (isTerminalReviewRunStatus(local.status)) {
-      cleanupLocalRuns();
-      return local;
-    }
-
-    if (local.workflowRunId) {
-      try {
-        const { getRun } = await import('@workflow/core/runtime');
-        const workflowRun = await getRun(local.workflowRunId);
-        const status = await workflowRun.status;
-        if (status === 'completed') {
-          local.status = 'completed';
-          local.completedAt = Date.now();
-          local.result = (await workflowRun.returnValue) as ReviewRunResult;
-        } else if (status === 'failed') {
-          local.status = 'failed';
-          try {
-            await workflowRun.returnValue;
-            local.error = 'workflow failed';
-          } catch (error) {
-            local.error =
-              error instanceof Error ? error.message : String(error);
-          }
-          local.completedAt = Date.now();
-        } else if (status === 'cancelled') {
-          local.status = 'cancelled';
-          local.completedAt = Date.now();
-        }
-      } catch {
-        // Keep local status.
+    try {
+      return await hydrateWorkflowRecord(runId, workflowRun);
+    } catch (error) {
+      if (isWorkflowRunNotFoundError(error)) {
+        return null;
       }
+      throw error;
     }
-
-    cleanupLocalRuns();
-    return local;
   }
 
   /**
@@ -224,34 +173,31 @@ export class ReviewWorker {
    *
    * @param runId - Detached run identifier returned by startDetached.
    * @returns True when cancellation was recorded, otherwise false.
+   * @throws Error when Workflow status lookup or cancellation fails.
    */
   async cancel(runId: string): Promise<boolean> {
-    const record = localRunStore.get(runId);
-    if (!record) {
+    const { getRun } = await import('@workflow/core/runtime');
+    const workflowRun = (await getRun(runId)) as
+      | WorkflowRunHandle
+      | null
+      | undefined;
+    if (!workflowRun) {
       return false;
     }
-
-    if (
-      record.status === 'completed' ||
-      record.status === 'failed' ||
-      record.status === 'cancelled'
-    ) {
-      return false;
-    }
-
-    if (record.workflowRunId) {
-      try {
-        const { getRun } = await import('@workflow/core/runtime');
-        const workflowRun = await getRun(record.workflowRunId);
-        await workflowRun.cancel();
-      } catch {
-        // Fall through to local state update.
+    let current: DetachedRunRecord | null;
+    try {
+      current = await hydrateWorkflowRecord(runId, workflowRun);
+    } catch (error) {
+      if (isWorkflowRunNotFoundError(error)) {
+        return false;
       }
+      throw error;
+    }
+    if (!current || isTerminalReviewRunStatus(current.status)) {
+      return false;
     }
 
-    record.status = 'cancelled';
-    record.completedAt = Date.now();
-    cleanupLocalRuns();
+    await workflowRun.cancel();
     return true;
   }
 }

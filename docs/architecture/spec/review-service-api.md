@@ -118,6 +118,7 @@ Attempts cancellation of detached run.
 - `200`: cancellation applied, status becomes `cancelled`
 - `404`: review not found
 - `409`: cancellation not possible (e.g., no detached run or terminal state reached)
+- `502`: service storage or Workflow runtime cancellation failed
 
 ## `GET /v1/review/:reviewId/artifacts/:format`
 
@@ -145,8 +146,9 @@ Returns:
 - Service state defaults to in-memory storage only for local no-database
   development. Production startup fails without a database URL unless
   `REVIEW_SERVICE_STORAGE=memory` is set.
-- Worker fallback state remains worker-local until detached execution storage is
-  unified in a follow-up issue.
+- Detached Workflow run identifiers and observed states are persisted in the
+  service store. Workflow orchestrates execution and retries, while
+  `ReviewStoreAdapter` remains the queryable run/event/artifact state boundary.
 - Authentication defaults to allow-all through an injected auth policy hook.
 - `remoteSandbox` execution mode is currently rejected with `400`.
 - Service error bodies follow `ReviewErrorResponseSchema`.

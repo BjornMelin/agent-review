@@ -25,8 +25,8 @@ Repository evidence:
 - Service auth currently defaults to allow-all unless an injected auth policy
   denies the request.
 - `remoteSandbox` is currently rejected by `review-service`.
-- Worker detached execution uses Vercel Workflow runtime APIs when available and
-  falls back to local in-process execution in `apps/review-worker/src/index.ts`.
+- Worker detached execution uses Vercel Workflow runtime APIs, while durable
+  service storage remains the queryable run/event/artifact state boundary.
 - Sandbox policy and audit controls live in
   `packages/review-sandbox-vercel/src/index.ts`.
 - Request/result/lifecycle/provider schemas are owned by
@@ -107,7 +107,8 @@ External authority:
 - Vercel Sandbox: runs untrusted commands and agent workloads inside an isolated
   microVM when remote sandbox mode is implemented.
 - Model provider: receives prompt/code context and returns review output.
-- Postgres/Drizzle store: future durable metadata and artifact index.
+- Postgres/Drizzle store: durable review metadata, lifecycle event, artifact,
+  status transition, retention, and Workflow run ID index.
 - Optional Convex metadata mirror: current non-blocking mirror for selected
   review metadata and derived summaries; production use requires explicit
   redaction, retention, tenant scoping, and disable/enable policy.
