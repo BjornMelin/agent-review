@@ -171,6 +171,47 @@
     "sandboxId": {
       "type": "string",
       "minLength": 1
+    },
+    "lease": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scopeKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acquiredAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "heartbeatAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "owner",
+        "scopeKey",
+        "acquiredAt",
+        "heartbeatAt",
+        "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "cancelRequestedAt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     }
   },
   "required": [

@@ -289,6 +289,17 @@ export const ReviewArtifactMetadataSchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
 });
 
+/**
+ * Tracks service-owned runtime capacity and heartbeat ownership for active runs.
+ */
+export const ReviewRunLeaseSchema = z.strictObject({
+  owner: z.string().min(1),
+  scopeKey: z.string().min(1),
+  acquiredAt: z.number().int().nonnegative(),
+  heartbeatAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative(),
+});
+
 const SandboxAuditRedactionsSchema = z.strictObject({
   apiKeyLike: z.number().int().nonnegative(),
   bearer: z.number().int().nonnegative(),
@@ -434,6 +445,8 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   error: z.string().min(1).optional(),
   workflowRunId: z.string().min(1).optional(),
   sandboxId: z.string().min(1).optional(),
+  lease: ReviewRunLeaseSchema.optional(),
+  cancelRequestedAt: z.number().int().nonnegative().optional(),
 });
 
 /**
@@ -486,6 +499,7 @@ export type ReviewEventCursor = z.infer<typeof ReviewEventCursorSchema>;
 export type ReviewArtifactMetadata = z.infer<
   typeof ReviewArtifactMetadataSchema
 >;
+export type ReviewRunLease = z.infer<typeof ReviewRunLeaseSchema>;
 /**
  * Command execution request accepted by the local runner helper.
  */
@@ -520,6 +534,7 @@ export type ReviewProviderRunInput = {
   resolvedPrompt: string;
   rubric: string;
   normalizedDiffChunks: Array<{ file: string; patch: string }>;
+  abortSignal?: AbortSignal;
 };
 
 /**

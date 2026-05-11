@@ -45,6 +45,11 @@ Default policy (`createDefaultPolicy`) denies network, uses fixed command allowl
   - redaction counters
   - per-command timing/output/redaction records
 - `maxArtifactBytes` is enforced on extracted artifact content.
+- A caller-provided `AbortSignal` is linked into each sandbox command signal.
+  Sandbox creation, file staging, network-policy updates, command output reads,
+  and artifact extraction receive the caller signal when the SDK supports it.
+  Aborted calls still stop the sandbox in `finally` with a separate bounded
+  cleanup signal before surfacing the abort error to the caller.
 
 ## Service Integration
 
@@ -81,12 +86,14 @@ Detached runs are started via `ReviewWorker.startDetached(requestInput)`.
 
 Execution strategy:
 
-1. Persist the queued service record through `ReviewStoreAdapter`.
-2. Start `@workflow/core/runtime` with `start(reviewWorkflow, [request])`.
-3. Persist `detachedRunId`, `workflowRunId`, and queued acceptance without an
+1. Atomically reserve the queued service record and service-owned runtime lease
+   through `ReviewStoreAdapter`.
+2. Use the lease for queue/concurrency backpressure and stale-run detection.
+3. Start `@workflow/core/runtime` with `start(reviewWorkflow, [request])`.
+4. Persist `detachedRunId`, `workflowRunId`, and queued acceptance without an
    immediate Workflow status read; status is reconciled through later
    `getRun(runId)` lookups.
-4. If Workflow cannot accept the run, persist a failed terminal record and return
+5. If Workflow cannot accept the run, persist a failed terminal record and return
    an error instead of falling back to in-process success.
 
 Run records expose:
@@ -98,6 +105,8 @@ Run records expose:
 - optional `result`
 - optional `workflowRunId`
 - optional `sandboxId`
+- optional runtime `lease`
+- optional `cancelRequestedAt`
 
 `ReviewWorker.get` resolves current status directly from Workflow by run ID and
 captures completed/failure outcomes. Service routes then persist the latest
@@ -105,8 +114,16 @@ snapshot, lifecycle events, artifact metadata, and retention state through the
 durable store.
 
 `ReviewWorker.cancel` checks Workflow status by run ID, skips terminal runs, and
-delegates cancellation to Workflow. The service persists cancellation state and
-replayable lifecycle events through `ReviewStoreAdapter`.
+delegates cancellation to Workflow. When the target step is active in the same
+worker process, the worker also aborts the local `AbortController` passed into
+`runReview`, providers, and sandbox execution. Cross-process cancellation still
+uses Workflow status as the durable authority. The service persists
+`cancelRequestedAt`, keeps the lease while cancellation is pending, and persists
+`cancelled` plus replayable lifecycle events only after Workflow reports
+`cancelled`. If Workflow accepts cancellation but has not reported a terminal
+cancelled state, the API returns `202` with `cancelled: false`. If Workflow
+reports terminal state first or cancellation is not possible, the API returns
+`409` and leaves the observed terminal state as the durable service status.
 
 ## Metadata Mirroring (`review-convex-bridge`)
 

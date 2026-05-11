@@ -16,6 +16,7 @@ import {
   type ReviewRunStatus,
   type SandboxAudit,
 } from '@review-agent/review-types';
+import { getWorkflowMetadata } from '@workflow/core';
 
 /**
  * Describes the observable state for a detached review run.
@@ -36,6 +37,7 @@ export type DetachedRunRecord = {
 };
 
 const providers = createReviewProviders();
+const activeWorkflowAbortControllers = new Map<string, AbortController>();
 
 const SANDBOX_ROOT = '/vercel/sandbox';
 
@@ -124,6 +126,7 @@ const runRemoteSandboxReview: SandboxReviewRunner = async (input) => {
     artifacts: [{ path: 'review-output.json' }],
     policy: createRemoteSandboxPolicy(),
     runtime: 'node24',
+    ...(input.abortSignal ? { signal: input.abortSignal } : {}),
   });
   const command = sandboxResult.outputs[0];
   if (!command || command.exitCode !== 0) {
@@ -152,9 +155,21 @@ const runRemoteSandboxReview: SandboxReviewRunner = async (input) => {
   };
 };
 
-function withProviders(request: ReviewRequest): Promise<ReviewRunResult> {
+function currentWorkflowRunId(): string | undefined {
+  try {
+    return getWorkflowMetadata().workflowRunId;
+  } catch {
+    return undefined;
+  }
+}
+
+function withProviders(
+  request: ReviewRequest,
+  abortSignal?: AbortSignal
+): Promise<ReviewRunResult> {
   return runReview(request, {
     providers,
+    ...(abortSignal ? { signal: abortSignal } : {}),
     ...(request.executionMode === 'remoteSandbox'
       ? { sandboxRunner: runRemoteSandboxReview }
       : {}),
@@ -226,7 +241,21 @@ export async function reviewExecutionStep(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
   'use step';
-  return withProviders(request);
+  const workflowRunId = currentWorkflowRunId();
+  const controller = new AbortController();
+  if (workflowRunId) {
+    activeWorkflowAbortControllers.set(workflowRunId, controller);
+  }
+  try {
+    return await withProviders(request, controller.signal);
+  } finally {
+    if (
+      workflowRunId &&
+      activeWorkflowAbortControllers.get(workflowRunId) === controller
+    ) {
+      activeWorkflowAbortControllers.delete(workflowRunId);
+    }
+  }
 }
 
 Object.assign(reviewExecutionStep, {
@@ -299,6 +328,9 @@ export class ReviewWorker {
     if (!workflowRun) {
       return false;
     }
+    activeWorkflowAbortControllers
+      .get(runId)
+      ?.abort(new Error('detached review cancelled'));
     let current: DetachedRunRecord | null;
     try {
       current = await hydrateWorkflowRecord(runId, workflowRun);

@@ -214,4 +214,26 @@ describe('sandbox policy and budget enforcement', () => {
       expect.objectContaining({ runtime: 'node22' })
     );
   });
+
+  it('forwards caller cancellation into active sandbox commands', async () => {
+    const policy = createDefaultPolicy();
+    const controller = new AbortController();
+    let commandSignal: AbortSignal | undefined;
+    runCommandMock.mockImplementationOnce(async (command) => {
+      commandSignal = command.signal;
+      controller.abort(new Error('cancelled by caller'));
+      throw command.signal.reason;
+    });
+
+    await expect(
+      runInSandbox({
+        commands: [{ cmd: 'git', args: ['--version'], cwd: '/vercel/sandbox' }],
+        policy,
+        signal: controller.signal,
+      })
+    ).rejects.toThrow('cancelled by caller');
+
+    expect(commandSignal?.aborted).toBe(true);
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
 });

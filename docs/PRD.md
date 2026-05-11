@@ -23,6 +23,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - CLI command surface (`run`, `models`, `doctor`, `completion`)
 - HTTP review service with start/status/events/cancel/artifacts endpoints
 - Detached worker integration with Workflow API and durable service state
+- Runtime leases, queue/concurrency backpressure, and cancellation propagation
+  through provider, sandbox, and Rust command-runner boundaries
 - Durable Postgres/Drizzle service storage for review runs, lifecycle events,
   artifact metadata, status transitions, and retention markers
 - Review targets: uncommitted changes, base branch comparison, commit SHA, custom instructions
@@ -38,7 +40,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 ## Out of Scope (Current Implementation)
 
 - Authentication and authorization layer on HTTP endpoints
-- Multi-tenant isolation, quotas, and billing
+- Authenticated multi-tenant isolation, billing, and customer-specific quota
+  products beyond the current service-level scope controls
 - Provider-specific retry classification beyond Workflow step retry defaults
 - Provider-token execution inside Vercel Sandbox before hosted auth/source
   binding is implemented
@@ -60,6 +63,9 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Artifact generation is deterministic and available per requested output format.
 - Severity threshold mapping produces predictable process exit behavior.
 - Detached runs can be started, polled, and cancelled through service APIs.
+- Cancellation responses only report terminal success after the runtime reports
+  `cancelled`; capacity exhaustion returns retryable `429` errors instead of
+  accepting unbounded work.
 
 ## Non-Functional Expectations
 

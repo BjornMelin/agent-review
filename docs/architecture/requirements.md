@@ -64,7 +64,21 @@ durable service state. If Workflow cannot accept a detached run, the service
 shall persist the failed start state and return an error instead of reporting
 local fallback success.
 
-### FR-9 Optional Metadata Mirroring
+### FR-9 Runtime Control
+
+System shall enforce bounded runtime admission through durable service records:
+
+- active run leases with heartbeat and expiry timestamps
+- global queued and live-leased active limits
+- per-scope active-run limits based on canonicalized cwd and target identity
+- retryable `429` backpressure responses for capacity exhaustion
+- terminal failure for expired leases when reconciled
+
+Cancellation shall propagate through available native runtime hooks and shall
+only be reported as terminally successful after the runtime reports cancelled
+state.
+
+### FR-10 Optional Metadata Mirroring
 
 When configured with `CONVEX_URL`, system shall attempt non-blocking metadata mirror writes for completed reviews.
 

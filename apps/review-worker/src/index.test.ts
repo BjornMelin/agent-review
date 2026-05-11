@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runReviewMock = vi.hoisted(() => vi.fn());
 const runInSandboxMock = vi.hoisted(() => vi.fn());
+const getWorkflowMetadataMock = vi.hoisted(() => vi.fn());
 const workflowRuntimeMock = vi.hoisted(() => ({
   start: vi.fn(),
   getRun: vi.fn(),
@@ -71,6 +72,14 @@ vi.mock('@review-agent/review-sandbox-vercel', async (importOriginal) => {
   };
 });
 
+vi.mock('@workflow/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@workflow/core')>();
+  return {
+    ...actual,
+    getWorkflowMetadata: getWorkflowMetadataMock,
+  };
+});
+
 vi.mock('@workflow/core/runtime', () => workflowRuntimeMock);
 
 import {
@@ -132,6 +141,10 @@ describe('ReviewWorker', () => {
   beforeEach(() => {
     runReviewMock.mockReset();
     runInSandboxMock.mockReset();
+    getWorkflowMetadataMock.mockReset();
+    getWorkflowMetadataMock.mockImplementation(() => {
+      throw new Error('workflow metadata unavailable');
+    });
     workflowRuntimeMock.start.mockReset();
     workflowRuntimeMock.getRun.mockReset();
   });
@@ -295,6 +308,49 @@ describe('ReviewWorker', () => {
     await expect(worker.cancel('workflow-run-cancel-failed')).rejects.toThrow(
       'workflow cancel failed'
     );
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts active in-process workflow steps during cancellation', async () => {
+    const cancel = vi.fn(async () => undefined);
+    let resolveRunReviewStarted: () => void = () => undefined;
+    let resolveWorkflowStatus: (status: 'running') => void = () => undefined;
+    const runReviewStarted = new Promise<void>((resolve) => {
+      resolveRunReviewStarted = resolve;
+    });
+    const workflowStatus = new Promise<'running'>((resolve) => {
+      resolveWorkflowStatus = resolve;
+    });
+    getWorkflowMetadataMock.mockReturnValue({
+      workflowName: 'reviewWorkflow',
+      workflowRunId: 'workflow-run-active',
+      workflowStartedAt: new Date(),
+      url: 'https://example.test/workflow',
+    });
+    runReviewMock.mockImplementationOnce(
+      async (_request, options) =>
+        new Promise((_resolve, reject) => {
+          resolveRunReviewStarted();
+          options.signal?.addEventListener('abort', () => {
+            reject(options.signal?.reason);
+          });
+        })
+    );
+    workflowRuntimeMock.getRun.mockResolvedValueOnce({
+      runId: 'workflow-run-active',
+      status: workflowStatus,
+      cancel,
+    });
+
+    const step = reviewExecutionStep(createRequest());
+    await runReviewStarted;
+
+    const worker = new ReviewWorker();
+    const cancelling = worker.cancel('workflow-run-active');
+    await expect(step).rejects.toThrow('detached review cancelled');
+    expect(cancel).not.toHaveBeenCalled();
+    resolveWorkflowStatus('running');
+    await expect(cancelling).resolves.toBe(true);
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 

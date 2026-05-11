@@ -272,6 +272,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
       model,
       system: input.rubric,
       prompt: buildReviewInput(input),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       output: Output.object({
         schema: RawModelOutputSchema,
         name: 'code_review_output',

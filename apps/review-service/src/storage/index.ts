@@ -5,6 +5,7 @@ import {
   type LifecycleEvent,
   type OutputFormat,
   type ReviewRequest,
+  type ReviewRunLease,
   type ReviewRunStatus,
 } from '@review-agent/review-types';
 import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
@@ -56,6 +57,8 @@ export type ReviewRecord = {
   detachedRunId?: string;
   workflowRunId?: string;
   sandboxId?: string;
+  lease?: ReviewRunLease;
+  cancelRequestedAt?: number;
   retentionExpiresAt?: number;
   deletedAt?: number;
   events: LifecycleEvent[];
@@ -83,10 +86,28 @@ export type ReviewStoreCleanupOptions = {
 };
 
 /**
+ * Defines capacity gates evaluated while reserving a new runtime lease.
+ */
+export type ReviewStoreRuntimeCapacityOptions = ReviewStoreWriteOptions & {
+  nowMs: number;
+  maxQueuedRuns: number;
+  maxRunningRuns: number;
+  maxActiveRunsPerScope: number;
+};
+
+export type ReviewStoreRuntimeReservation =
+  | { reserved: true }
+  | { reserved: false; reason: 'queue' | 'running' | 'scope'; message: string };
+
+/**
  * Defines durable review storage for runs, lifecycle events, and artifact metadata.
  */
 export type ReviewStoreAdapter = {
   get(reviewId: string): Promise<ReviewRecord | undefined>;
+  reserve(
+    record: ReviewRecord,
+    options: ReviewStoreRuntimeCapacityOptions
+  ): Promise<ReviewStoreRuntimeReservation>;
   set(record: ReviewRecord, options?: ReviewStoreWriteOptions): Promise<void>;
   appendEvent(
     record: ReviewRecord,
@@ -174,6 +195,12 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
   }
   if (record.sandboxId) {
     next.sandboxId = record.sandboxId;
+  }
+  if (record.lease) {
+    next.lease = { ...record.lease };
+  }
+  if (record.cancelRequestedAt !== undefined) {
+    next.cancelRequestedAt = record.cancelRequestedAt;
   }
   if (record.retentionExpiresAt !== undefined) {
     next.retentionExpiresAt = record.retentionExpiresAt;
@@ -286,6 +313,12 @@ function runInsertFor(record: ReviewRecord): typeof reviewRuns.$inferInsert {
     detachedRunId: record.detachedRunId ?? null,
     workflowRunId: record.workflowRunId ?? record.detachedRunId ?? null,
     sandboxId: record.sandboxId ?? null,
+    leaseOwner: record.lease?.owner ?? null,
+    leaseScopeKey: record.lease?.scopeKey ?? null,
+    leaseAcquiredAt: dateFromMs(record.lease?.acquiredAt),
+    leaseHeartbeatAt: dateFromMs(record.lease?.heartbeatAt),
+    leaseExpiresAt: dateFromMs(record.lease?.expiresAt),
+    cancelRequestedAt: dateFromMs(record.cancelRequestedAt),
     createdAt: new Date(record.createdAt),
     updatedAt: new Date(record.updatedAt),
     completedAt: isTerminalStatus(record.status)
@@ -316,14 +349,48 @@ function applyPersistedEvents(
  */
 export function createInMemoryReviewStore(): ReviewStoreAdapter {
   const records = new Map<string, ReviewRecord>();
+  let reserveLock = Promise.resolve();
+
+  async function withReserveLock<T>(
+    callback: () => T | Promise<T>
+  ): Promise<T> {
+    const previous = reserveLock;
+    let releaseLock: () => void = () => undefined;
+    reserveLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      releaseLock();
+    }
+  }
 
   return {
     async get(reviewId) {
       const record = records.get(reviewId);
       return record ? cloneRecord(record) : undefined;
     },
+    reserve(record, options) {
+      return withReserveLock(() => {
+        const reservation = runtimeReservationFor(
+          [...records.values()],
+          record.lease?.scopeKey ?? '',
+          options
+        );
+        if (!reservation.reserved) {
+          return reservation;
+        }
+        records.set(record.reviewId, cloneRecord(record));
+        return reservation;
+      });
+    },
     async set(record) {
       const existing = records.get(record.reviewId);
+      if (existing && isTerminalStatus(existing.status)) {
+        return;
+      }
       const next = cloneRecord(record);
       if (existing) {
         const eventIds = new Set(
@@ -338,6 +405,10 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
     },
     async appendEvent(record, event, options) {
       const existing = records.get(record.reviewId);
+      if (existing && isTerminalStatus(existing.status)) {
+        applyPersistedEvents(record, existing);
+        return;
+      }
       const next = existing ? cloneRecord(existing) : cloneRecord(record);
       if (
         !next.events.some((item) => item.meta.eventId === event.meta.eventId)
@@ -411,6 +482,28 @@ function buildRecord(
   if (run.sandboxId) {
     record.sandboxId = run.sandboxId;
   }
+  const leaseAcquiredAt = msFromDate(run.leaseAcquiredAt);
+  const leaseHeartbeatAt = msFromDate(run.leaseHeartbeatAt);
+  const leaseExpiresAt = msFromDate(run.leaseExpiresAt);
+  if (
+    run.leaseOwner &&
+    run.leaseScopeKey &&
+    leaseAcquiredAt !== undefined &&
+    leaseHeartbeatAt !== undefined &&
+    leaseExpiresAt !== undefined
+  ) {
+    record.lease = {
+      owner: run.leaseOwner,
+      scopeKey: run.leaseScopeKey,
+      acquiredAt: leaseAcquiredAt,
+      heartbeatAt: leaseHeartbeatAt,
+      expiresAt: leaseExpiresAt,
+    };
+  }
+  const cancelRequestedAt = msFromDate(run.cancelRequestedAt);
+  if (cancelRequestedAt !== undefined) {
+    record.cancelRequestedAt = cancelRequestedAt;
+  }
   const retentionExpiresAt = msFromDate(run.retentionExpiresAt);
   if (retentionExpiresAt !== undefined) {
     record.retentionExpiresAt = retentionExpiresAt;
@@ -436,6 +529,12 @@ function rowUpdateFor(
     detachedRunId: insert.detachedRunId,
     workflowRunId: insert.workflowRunId,
     sandboxId: insert.sandboxId,
+    leaseOwner: insert.leaseOwner,
+    leaseScopeKey: insert.leaseScopeKey,
+    leaseAcquiredAt: insert.leaseAcquiredAt,
+    leaseHeartbeatAt: insert.leaseHeartbeatAt,
+    leaseExpiresAt: insert.leaseExpiresAt,
+    cancelRequestedAt: insert.cancelRequestedAt,
     updatedAt: insert.updatedAt,
     completedAt: insert.completedAt,
     retentionExpiresAt: insert.retentionExpiresAt,
@@ -476,6 +575,88 @@ function cleanupReviewIdsForRows(
   }
 
   return [...deletedReviewIds];
+}
+
+function isActiveForRuntimeCapacity(
+  record: Pick<ReviewRecord, 'status' | 'lease' | 'detachedRunId'>,
+  nowMs: number
+): boolean {
+  return (
+    !isTerminalStatus(record.status) &&
+    record.lease !== undefined &&
+    (record.lease.expiresAt > nowMs || record.detachedRunId !== undefined)
+  );
+}
+
+function runtimeReservationFor(
+  records: Array<Pick<ReviewRecord, 'status' | 'lease' | 'detachedRunId'>>,
+  scopeKey: string,
+  options: ReviewStoreRuntimeCapacityOptions
+): ReviewStoreRuntimeReservation {
+  let queued = 0;
+  let active = 0;
+  let scopedActive = 0;
+  for (const record of records) {
+    if (!isActiveForRuntimeCapacity(record, options.nowMs)) {
+      continue;
+    }
+    active += 1;
+    if (record.status === 'queued') {
+      queued += 1;
+    }
+    if (record.lease?.scopeKey === scopeKey) {
+      scopedActive += 1;
+    }
+  }
+  if (queued >= options.maxQueuedRuns) {
+    return {
+      reserved: false,
+      reason: 'queue',
+      message: 'review queue is at capacity',
+    };
+  }
+  if (active >= options.maxRunningRuns) {
+    return {
+      reserved: false,
+      reason: 'running',
+      message: 'review runtime concurrency is at capacity',
+    };
+  }
+  if (scopedActive >= options.maxActiveRunsPerScope) {
+    return {
+      reserved: false,
+      reason: 'scope',
+      message: 'review runtime scope is at capacity',
+    };
+  }
+  return { reserved: true };
+}
+
+function capacityRecordForRunRow(
+  run: ReviewRunRow
+): Pick<ReviewRecord, 'status' | 'lease' | 'detachedRunId'> {
+  const leaseAcquiredAt = msFromDate(run.leaseAcquiredAt);
+  const leaseHeartbeatAt = msFromDate(run.leaseHeartbeatAt);
+  const leaseExpiresAt = msFromDate(run.leaseExpiresAt);
+  return {
+    status: run.status,
+    ...(run.detachedRunId ? { detachedRunId: run.detachedRunId } : {}),
+    ...(run.leaseOwner &&
+    run.leaseScopeKey &&
+    leaseAcquiredAt !== undefined &&
+    leaseHeartbeatAt !== undefined &&
+    leaseExpiresAt !== undefined
+      ? {
+          lease: {
+            owner: run.leaseOwner,
+            scopeKey: run.leaseScopeKey,
+            acquiredAt: leaseAcquiredAt,
+            heartbeatAt: leaseHeartbeatAt,
+            expiresAt: leaseExpiresAt,
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -530,12 +711,18 @@ export function createDrizzleReviewStore(
                 .select({ status: reviewRuns.status })
                 .from(reviewRuns)
                 .where(eq(reviewRuns.reviewId, record.reviewId));
+              if (row && isTerminalStatus(row.status)) {
+                return row;
+              }
               await tx
                 .update(reviewRuns)
                 .set(rowUpdateFor(record))
                 .where(eq(reviewRuns.reviewId, record.reviewId));
               return row;
             })();
+        if (existing && isTerminalStatus(existing.status)) {
+          return;
+        }
         if (inserted && record.events.length > 0) {
           await tx.execute(sql`
             SELECT ${reviewRuns.reviewId}
@@ -615,6 +802,42 @@ export function createDrizzleReviewStore(
     get(reviewId) {
       return hydrate(reviewId);
     },
+    async reserve(record, options) {
+      return db.transaction(
+        async (tx) => {
+          await tx.execute(
+            sql.raw('LOCK TABLE review_runs IN SHARE ROW EXCLUSIVE MODE')
+          );
+          const rows = await tx
+            .select()
+            .from(reviewRuns)
+            .where(inArray(reviewRuns.status, ['queued', 'running']));
+          const reservation = runtimeReservationFor(
+            rows.map(capacityRecordForRunRow),
+            record.lease?.scopeKey ?? '',
+            options
+          );
+          if (!reservation.reserved) {
+            return reservation;
+          }
+
+          await tx.insert(reviewRuns).values(runInsertFor(record));
+          await tx
+            .insert(reviewStatusTransitions)
+            .values(
+              transitionRow(
+                record.reviewId,
+                null,
+                record.status,
+                options.reason ?? 'runtime reserved',
+                record.updatedAt
+              )
+            );
+          return reservation;
+        },
+        { isolationLevel: 'read committed' }
+      );
+    },
     async set(record, options = {}) {
       await persist(record, options.reason ?? 'record set');
     },
@@ -639,6 +862,20 @@ export function createDrizzleReviewStore(
                   record.updatedAt
                 )
               );
+          } else {
+            await tx.execute(sql`
+              SELECT ${reviewRuns.reviewId}
+              FROM ${reviewRuns}
+              WHERE ${reviewRuns.reviewId} = ${record.reviewId}
+              FOR UPDATE
+            `);
+            const [row] = await tx
+              .select({ status: reviewRuns.status })
+              .from(reviewRuns)
+              .where(eq(reviewRuns.reviewId, record.reviewId));
+            if (row && isTerminalStatus(row.status)) {
+              return;
+            }
           }
 
           await tx.execute(sql`

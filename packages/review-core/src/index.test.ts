@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   computeExitCode,
   InvalidFindingLocationError,
+  ReviewRunCancelledError,
   runReview,
   UnsupportedRemoteSandboxTargetError,
 } from './index.js';
@@ -236,6 +237,40 @@ describe('runReview', () => {
     }
   });
 
+  it('fails before provider work when the run is already cancelled', async () => {
+    const repo = await makeRepo();
+    try {
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled before provider'));
+      const providerRun = vi.fn();
+      const provider = {
+        ...makeProvider({}, 'codexDelegate'),
+        run: providerRun,
+      };
+
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: provider,
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+            signal: controller.signal,
+          }
+        )
+      ).rejects.toBeInstanceOf(ReviewRunCancelledError);
+      expect(providerRun).not.toHaveBeenCalled();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('rejects findings outside changed lines', async () => {
     const repo = await makeRepo();
     try {
@@ -369,6 +404,7 @@ describe('runReview', () => {
         expect(input.normalizedDiffChunks.map((chunk) => chunk.file)).toEqual([
           'src/app.ts',
         ]);
+        expect(input.abortSignal).toBeUndefined();
         return { raw, text: JSON.stringify(raw) };
       });
       const provider = {
@@ -401,6 +437,84 @@ describe('runReview', () => {
         join(repo.cwd, 'src/app.ts'),
       ]);
       expect(review.result.findings).toHaveLength(1);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('passes active cancellation signals into providers', async () => {
+    const repo = await makeRepo();
+    try {
+      const raw = {
+        findings: [],
+        overall_correctness: 'patch is correct',
+        overall_explanation: 'ok',
+        overall_confidence_score: 1,
+      };
+      const controller = new AbortController();
+      const providerRun = vi.fn(async (input: ReviewProviderRunInput) => {
+        expect(input.abortSignal).toBe(controller.signal);
+        return { raw, text: JSON.stringify(raw) };
+      });
+      const provider = {
+        ...makeProvider(raw, 'codexDelegate'),
+        run: providerRun,
+      };
+
+      await runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          outputFormats: ['json'],
+        },
+        {
+          providers: {
+            codexDelegate: provider,
+            openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+          },
+          signal: controller.signal,
+        }
+      );
+
+      expect(providerRun).toHaveBeenCalledTimes(1);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('normalizes in-flight provider aborts to review cancellation', async () => {
+    const repo = await makeRepo();
+    try {
+      const controller = new AbortController();
+      const provider = {
+        ...makeProvider({}, 'codexDelegate'),
+        run: vi.fn(async () => {
+          controller.abort(new Error('provider aborted'));
+          throw new Error('raw abort transport error');
+        }),
+      };
+
+      await expect(
+        runReview(
+          {
+            cwd: repo.cwd,
+            target: { type: 'uncommittedChanges' },
+            provider: 'codexDelegate',
+            outputFormats: ['json'],
+          },
+          {
+            providers: {
+              codexDelegate: provider,
+              openaiCompatible: makeProvider({}, 'openaiCompatible'),
+            },
+            signal: controller.signal,
+          }
+        )
+      ).rejects.toMatchObject({
+        name: 'ReviewRunCancelledError',
+        message: 'provider aborted',
+      });
     } finally {
       await repo.cleanup();
     }
