@@ -192,9 +192,14 @@ Required controls:
 
 - Hosted mode never accepts arbitrary host `cwd`; it resolves repository roots
   from GitHub authorization and managed checkout/workspace metadata.
+- The service enforces a configured `allowedCwdRoots` allowlist before runtime
+  reservation or worker dispatch; production startup defaults to the service
+  cwd unless `REVIEW_SERVICE_ALLOWED_CWD_ROOTS` provides explicit roots.
 - Path filters are evaluated relative to the repository root after
   normalization; absolute paths, `..` escapes, symlink escapes, and generated
   secrets paths are rejected.
+- Shared request schemas reject unsafe refs/path filters, and the git collector
+  rechecks ref safety and verifies commit object IDs before host Git access.
 - Local CLI retains local-trusted `cwd` semantics, but hosted service requests
   use a different policy and schema-level acceptance gate.
 
@@ -214,6 +219,8 @@ Required controls:
 - Enforce request body size, diff byte/file budgets, prompt byte budgets,
   artifact byte budgets, max concurrent runs per repo/principal, and queue
   backpressure before provider invocation.
+- Apply defaults for omitted `maxFiles` and `maxDiffBytes`; enforce untracked
+  file count and file-size budgets before reading untracked file contents.
 - Provider routing has per-model budget policy, timeouts, retry ceilings, and
   cost telemetry.
 - SSE, status polling, artifact reads, and cancellation endpoints have rate
@@ -344,6 +351,10 @@ Required controls:
 - Logs and metrics exclude raw prompts/diffs/artifacts by default.
 - Redaction applies before durable storage, provider output logging, sandbox
   audit records, GitHub publishing, and web rendering.
+- `review-types` owns the shared redaction helper used by core, reporters,
+  service events/errors/status responses, Codex delegate errors, completed
+  run payloads, command-run telemetry, and Vercel Sandbox stdout/stderr/artifact
+  handling.
 - Review Room and GitHub rendering escape Markdown/HTML and clearly mark
   provider-generated content as untrusted.
 

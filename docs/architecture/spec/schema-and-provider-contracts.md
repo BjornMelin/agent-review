@@ -196,6 +196,25 @@ The review service uses `review-types` for request parsing and response DTOs.
 Artifact route parsing uses `OutputFormatSchema`. Content types are centralized
 in `ARTIFACT_CONTENT_TYPES`.
 
+`ReviewRequestSchema` also owns security-oriented input constraints shared by
+CLI, service, core, and Rust contract validation:
+
+- bounded `cwd`, custom instructions, commit titles, model IDs, branch refs,
+  path filters, `maxFiles`, `maxDiffBytes`, and output format counts.
+- branch refs reject revision expressions and Git/pathspec control syntax.
+- commit targets must be object IDs; the git collector verifies object IDs
+  resolve to commits before running `git show`.
+- include/exclude path filters are repository-relative and reject absolute
+  paths, `..` segments, negation syntax, and Git pathspec magic.
+- `withReviewRequestSecurityDefaults()` fills bounded diff defaults when a
+  caller omits `maxFiles` or `maxDiffBytes`, and clamps explicit values to the
+  resolved service/core ceilings.
+
+`redactSensitiveText()`, `redactLifecycleEvent()`, and
+`redactReviewResult()` are the canonical redaction helpers for provider output,
+command telemetry, service logs, lifecycle events, generated artifacts, and
+durably persisted completed run payloads.
+
 ## Durable Store DTO and Database Contracts
 
 The service durable store uses `review-types` DTOs at route boundaries and a
