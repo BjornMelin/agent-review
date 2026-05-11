@@ -214,7 +214,7 @@ export function parseUnifiedDiff(cwd: string, patch: string): DiffChunk[] {
     chunks.push({
       file: currentFile,
       absoluteFilePath: resolve(cwd, currentFile),
-      patch: currentPatch.join('\n').trimEnd(),
+      patch: currentPatch.join('\n'),
       changedLines: [...changedLines].sort((a, b) => a - b),
     });
   };

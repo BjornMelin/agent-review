@@ -205,7 +205,7 @@ pub fn parse_unified_diff(cwd: &Path, patch: &str) -> Vec<DiffChunk> {
             chunks.push(DiffChunk {
                 file: current_file.to_owned(),
                 absolute_file_path: absolute_file_path(cwd, current_file),
-                patch: current_patch.join("\n").trim_end().to_owned(),
+                patch: current_patch.join("\n"),
                 changed_lines: std::mem::take(changed_lines),
             });
         };

@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -7,6 +7,9 @@ const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const binaryName =
   process.platform === 'win32' ? 'review-git-diff.exe' : 'review-git-diff';
+const targetDir = process.env.CARGO_TARGET_DIR
+  ? resolve(repoRoot, process.env.CARGO_TARGET_DIR)
+  : join(repoRoot, 'target');
 
 let buildPromise: Promise<string> | undefined;
 
@@ -38,7 +41,7 @@ export async function ensureRustDiffBinary(): Promise<string> {
       encoding: 'utf8',
     }
   )
-    .then(() => join(repoRoot, 'target', 'debug', binaryName))
+    .then(() => join(targetDir, 'debug', binaryName))
     .catch((error: unknown) => {
       buildPromise = undefined;
       throw error;
