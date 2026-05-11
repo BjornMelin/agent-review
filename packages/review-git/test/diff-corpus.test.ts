@@ -10,10 +10,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../src/diff-parser.js';
 import { collectDiffForTarget, type DiffContext } from '../src/index.js';
-import { parseWithRustDiffCandidate } from '../test-support/rust-diff-candidate.js';
+import {
+  ensureRustDiffBinary,
+  parseWithRustDiffCandidate,
+} from '../test-support/rust-diff-candidate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -329,6 +332,12 @@ async function readCorpus(): Promise<CorpusFixture[]> {
 const corpus = await readCorpus();
 
 describe('diff corpus conformance', () => {
+  beforeAll(async () => {
+    if (process.env.REVIEW_AGENT_RUST_DIFF_BENCH === '1') {
+      await ensureRustDiffBinary();
+    }
+  }, 60000);
+
   it('decodes raw non-BMP characters in quoted paths', async () => {
     const cwd = '/repo';
     const smile = String.fromCodePoint(0x1f600);

@@ -1,9 +1,16 @@
-import { isAbsolute, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
+/**
+ * Represents a parsed chunk of a git diff for a specific file.
+ */
 export type DiffChunk = {
+  /** Repository-relative path for the changed file. */
   file: string;
+  /** Absolute path for the changed file. */
   absoluteFilePath: string;
+  /** Per-file unified diff patch text. */
   patch: string;
+  /** Sorted one-based changed line numbers in the target file. */
   changedLines: number[];
 };
 
@@ -179,6 +186,13 @@ function extractPathFromRenameHeader(line: string): string | null {
   return parseHeaderPath(line.slice(line.indexOf(' to ') + 4));
 }
 
+/**
+ * Parses unified diff text into per-file chunks with changed line tracking.
+ *
+ * @param cwd Working directory used to resolve absolute file paths.
+ * @param patch Unified diff text to parse.
+ * @returns Parsed diff chunks, one per file in the diff.
+ */
 export function parseUnifiedDiff(cwd: string, patch: string): DiffChunk[] {
   if (!patch.trim()) {
     return [];
@@ -275,6 +289,12 @@ export function parseUnifiedDiff(cwd: string, patch: string): DiffChunk[] {
   return chunks;
 }
 
+/**
+ * Builds an index from absolute file paths to changed line numbers.
+ *
+ * @param chunks Diff chunks whose changed lines should be indexed.
+ * @returns Map from resolved absolute file path to changed line numbers.
+ */
 export function buildChangedLineIndex(
   chunks: DiffChunk[]
 ): Map<string, Set<number>> {
@@ -290,6 +310,13 @@ export function buildChangedLineIndex(
   return index;
 }
 
+/**
+ * Normalizes a file path to an absolute path relative to the working directory.
+ *
+ * @param cwd Working directory used for relative path resolution.
+ * @param filePath Absolute or relative file path to normalize.
+ * @returns Resolved absolute file path.
+ */
 export function normalizeFilePath(cwd: string, filePath: string): string {
-  return resolve(cwd, isAbsolute(filePath) ? filePath : resolve(cwd, filePath));
+  return resolve(cwd, filePath);
 }
