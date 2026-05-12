@@ -707,6 +707,69 @@ export const CorrelationIdsSchema = z.strictObject({
 });
 
 /**
+ * Summarizes sandbox execution resource use without command arguments or output.
+ */
+export const ReviewRunSandboxMetricsSchema = z.strictObject({
+  commandCount: z.number().int().nonnegative(),
+  commandDurationMs: z.number().int().nonnegative(),
+  wallTimeMs: z.number().int().nonnegative(),
+  outputBytes: z.number().int().nonnegative(),
+  artifactBytes: z.number().int().nonnegative(),
+  redactions: z.strictObject({
+    apiKeyLike: z.number().int().nonnegative(),
+    bearer: z.number().int().nonnegative(),
+  }),
+});
+
+/**
+ * Summarizes runtime lease state without exposing scope keys or host-local paths.
+ */
+export const ReviewRunRuntimeMetricsSchema = z.strictObject({
+  leaseOwner: z.string().min(1).optional(),
+  leaseAcquiredAt: z.number().int().nonnegative().optional(),
+  leaseHeartbeatAt: z.number().int().nonnegative().optional(),
+  leaseExpiresAt: z.number().int().nonnegative().optional(),
+  leaseTtlMs: z.number().int().nonnegative().optional(),
+  cancelRequestedAt: z.number().int().nonnegative().optional(),
+});
+
+/**
+ * Captures redaction-safe metrics for one review run across service, provider,
+ * workflow, and sandbox execution.
+ */
+export const ReviewRunMetricsSchema = z.strictObject({
+  status: ReviewRunStatusSchema,
+  startedAt: z.number().int().nonnegative(),
+  completedAt: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  queueMs: z.number().int().nonnegative().optional(),
+  provider: ReviewProviderKindSchema,
+  executionMode: ExecutionModeSchema,
+  targetType: ReviewTargetTypeSchema,
+  requestedModel: boundedString(
+    'model',
+    DEFAULT_REVIEW_SECURITY_LIMITS.maxModelBytes
+  ).optional(),
+  resolvedModel: z.string().min(1).optional(),
+  correlation: CorrelationIdsSchema.omit({ commandId: true }),
+  providerSummary: z
+    .strictObject({
+      totalLatencyMs: z.number().int().nonnegative(),
+      attemptCount: z.number().int().nonnegative(),
+      fallbackUsed: z.boolean(),
+      failureClass: ProviderFailureClassSchema,
+      usage: ProviderUsageSchema,
+    })
+    .optional(),
+  sandbox: ReviewRunSandboxMetricsSchema.optional(),
+  artifacts: z.strictObject({
+    count: z.number().int().nonnegative(),
+    totalBytes: z.number().int().nonnegative(),
+  }),
+  runtime: ReviewRunRuntimeMetricsSchema,
+});
+
+/**
  * Validates lifecycle event metadata used for replay ordering and correlation.
  */
 export const LifecycleEventMetaSchema = z.strictObject({
@@ -1024,6 +1087,7 @@ export const ReviewRunSummarySchema = z.strictObject({
   publicationCount: z.number().int().nonnegative(),
   modelResolved: z.string().min(1).optional(),
   providerTelemetry: ProviderPolicyTelemetrySchema.optional(),
+  metrics: ReviewRunMetricsSchema.optional(),
   detachedRunId: z.string().min(1).optional(),
   workflowRunId: z.string().min(1).optional(),
   sandboxId: z.string().min(1).optional(),
@@ -1275,6 +1339,7 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   detachedRunId: z.string().min(1).optional(),
   workflowRunId: z.string().min(1).optional(),
   sandboxId: z.string().min(1).optional(),
+  metrics: ReviewRunMetricsSchema.optional(),
   lease: ReviewRunLeaseSchema.optional(),
   cancelRequestedAt: z.number().int().nonnegative().optional(),
 });
@@ -1412,6 +1477,22 @@ export type LifecycleEvent = z.infer<typeof LifecycleEventSchema>;
  * Correlation identifiers shared across review telemetry.
  */
 export type CorrelationIds = z.infer<typeof CorrelationIdsSchema>;
+/**
+ * Aggregated sandbox metrics with no command payloads.
+ */
+export type ReviewRunSandboxMetrics = z.infer<
+  typeof ReviewRunSandboxMetricsSchema
+>;
+/**
+ * Runtime lease metrics with no capacity scope key.
+ */
+export type ReviewRunRuntimeMetrics = z.infer<
+  typeof ReviewRunRuntimeMetricsSchema
+>;
+/**
+ * Redaction-safe run metrics exposed in status and list summaries.
+ */
+export type ReviewRunMetrics = z.infer<typeof ReviewRunMetricsSchema>;
 /**
  * Metadata attached to each lifecycle event.
  */
@@ -1815,25 +1896,98 @@ export function redactErrorMessage(
   return redactSensitiveText(message || fallback).text || fallback;
 }
 
+const UNKNOWN_SAFE_MODEL_ID = 'unknown';
+
+function safeObservableModelIdentifier(
+  value: string | undefined
+): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const redacted = redactSensitiveText(value);
+  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
+    return undefined;
+  }
+  const candidate = redacted.text.trim();
+  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
+}
+
+function requiredObservableModelIdentifier(value: string): string {
+  return safeObservableModelIdentifier(value) ?? UNKNOWN_SAFE_MODEL_ID;
+}
+
+function safeOptionalProviderTelemetryIdentifier(
+  value: string | undefined,
+  redact: (value: string) => string
+): string | undefined {
+  return safeObservableModelIdentifier(value ? redact(value) : undefined);
+}
+
+function requiredProviderTelemetryIdentifier(
+  value: string,
+  redact: (value: string) => string
+): string {
+  return requiredObservableModelIdentifier(redact(value));
+}
+
+function redactProviderUsage(usage: ProviderUsage): ProviderUsage {
+  const input = usage as Record<string, unknown>;
+  const candidate: Record<string, unknown> = {
+    status: input.status === 'reported' ? 'reported' : 'unknown',
+  };
+  for (const key of [
+    'inputTokens',
+    'outputTokens',
+    'totalTokens',
+    'reasoningTokens',
+    'cachedInputTokens',
+  ] as const) {
+    if (
+      typeof input[key] === 'number' &&
+      Number.isInteger(input[key]) &&
+      input[key] >= 0
+    ) {
+      candidate[key] = input[key];
+    }
+  }
+  for (const key of ['costUsd', 'marketCostUsd'] as const) {
+    if (typeof input[key] === 'number' && input[key] >= 0) {
+      candidate[key] = input[key];
+    }
+  }
+  const parsed = ProviderUsageSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : { status: 'unknown' };
+}
+
 function redactProviderAttemptTelemetry(
   attempt: ProviderAttemptTelemetry,
   redact: (value: string) => string
 ): ProviderAttemptTelemetry {
+  const provider = safeOptionalProviderTelemetryIdentifier(
+    attempt.provider,
+    redact
+  );
+  const errorCode = safeOptionalProviderTelemetryIdentifier(
+    attempt.errorCode,
+    redact
+  );
+  const generationId = safeOptionalProviderTelemetryIdentifier(
+    attempt.generationId,
+    redact
+  );
   return {
-    route: redact(attempt.route),
-    model: redact(attempt.model),
+    route: requiredProviderTelemetryIdentifier(attempt.route, redact),
+    model: requiredObservableModelIdentifier(redact(attempt.model)),
     status: attempt.status,
     latencyMs: attempt.latencyMs,
-    ...(attempt.provider ? { provider: redact(attempt.provider) } : {}),
+    ...(provider ? { provider } : {}),
     ...(attempt.failureClass ? { failureClass: attempt.failureClass } : {}),
-    ...(attempt.errorCode ? { errorCode: redact(attempt.errorCode) } : {}),
+    ...(errorCode ? { errorCode } : {}),
     ...(attempt.retryable === undefined
       ? {}
       : { retryable: attempt.retryable }),
-    ...(attempt.generationId
-      ? { generationId: redact(attempt.generationId) }
-      : {}),
-    ...(attempt.usage ? { usage: { ...attempt.usage } } : {}),
+    ...(generationId ? { generationId } : {}),
+    ...(attempt.usage ? { usage: redactProviderUsage(attempt.usage) } : {}),
   };
 }
 
@@ -1841,11 +1995,26 @@ function redactProviderPolicyTelemetry(
   telemetry: ProviderPolicyTelemetry,
   redact: (value: string) => string
 ): ProviderPolicyTelemetry {
+  const requestedModel = safeObservableModelIdentifier(
+    redact(telemetry.requestedModel ?? '')
+  );
+  const finalProvider = safeOptionalProviderTelemetryIdentifier(
+    telemetry.finalProvider,
+    redact
+  );
   return {
-    policyVersion: redact(telemetry.policyVersion),
-    resolvedModel: redact(telemetry.resolvedModel),
-    route: redact(telemetry.route),
-    fallbackOrder: telemetry.fallbackOrder.map((model) => redact(model)),
+    policyVersion: requiredProviderTelemetryIdentifier(
+      telemetry.policyVersion,
+      redact
+    ),
+    resolvedModel: requiredObservableModelIdentifier(
+      redact(telemetry.resolvedModel)
+    ),
+    route: requiredProviderTelemetryIdentifier(telemetry.route, redact),
+    fallbackOrder: telemetry.fallbackOrder.flatMap((model) => {
+      const safeModel = safeObservableModelIdentifier(redact(model));
+      return safeModel ? [safeModel] : [];
+    }),
     fallbackUsed: telemetry.fallbackUsed,
     maxInputChars: telemetry.maxInputChars,
     maxOutputTokens: telemetry.maxOutputTokens,
@@ -1859,13 +2028,9 @@ function redactProviderPolicyTelemetry(
     attempts: telemetry.attempts.map((attempt) =>
       redactProviderAttemptTelemetry(attempt, redact)
     ),
-    usage: { ...telemetry.usage },
-    ...(telemetry.requestedModel
-      ? { requestedModel: redact(telemetry.requestedModel) }
-      : {}),
-    ...(telemetry.finalProvider
-      ? { finalProvider: redact(telemetry.finalProvider) }
-      : {}),
+    usage: redactProviderUsage(telemetry.usage),
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(finalProvider ? { finalProvider } : {}),
   };
 }
 
@@ -1926,7 +2091,9 @@ export function redactReviewResult(result: ReviewResult): {
     overallExplanation: redact(result.overallExplanation),
     metadata: {
       ...result.metadata,
-      modelResolved: redact(result.metadata.modelResolved),
+      modelResolved: requiredObservableModelIdentifier(
+        redact(result.metadata.modelResolved)
+      ),
       promptPack: redact(result.metadata.promptPack),
       gitContext: {
         ...result.metadata.gitContext,
@@ -2057,6 +2224,27 @@ function assertStringWithinSecurityLimit(
   }
 }
 
+function assertStringHasNoSensitiveText(
+  value: string | undefined,
+  label: string
+): void {
+  if (value === undefined) {
+    return;
+  }
+  const redacted = redactSensitiveText(value);
+  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
+    throw new Error(`${label} contains secret-like value`);
+  }
+}
+
+const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
+
+function assertSafeModelIdentifier(model: string | undefined): void {
+  if (model !== undefined && !SAFE_MODEL_ID_PATTERN.test(model)) {
+    throw new Error('model must be a safe model identifier');
+  }
+}
+
 function assertPathFiltersWithinSecurityLimit(
   filters: string[] | undefined,
   label: string,
@@ -2099,6 +2287,8 @@ export function assertReviewRequestWithinSecurityLimits(
   }
   assertStringWithinSecurityLimit(request.cwd, 'cwd', limits.maxCwdBytes);
   assertStringWithinSecurityLimit(request.model, 'model', limits.maxModelBytes);
+  assertStringHasNoSensitiveText(request.model, 'model');
+  assertSafeModelIdentifier(request.model);
   assertPathFiltersWithinSecurityLimit(
     request.includePaths,
     'includePaths',
@@ -2187,6 +2377,9 @@ export type JsonSchemaSet = {
   providerUsage: unknown;
   providerAttemptTelemetry: unknown;
   providerPolicyTelemetry: unknown;
+  reviewRunSandboxMetrics: unknown;
+  reviewRunRuntimeMetrics: unknown;
+  reviewRunMetrics: unknown;
   reviewResult: unknown;
   rawModelOutput: unknown;
   lifecycleEvent: unknown;
@@ -2327,6 +2520,9 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
       ProviderAttemptTelemetrySchema
     ),
     providerPolicyTelemetry: toDraft7JsonSchema(ProviderPolicyTelemetrySchema),
+    reviewRunSandboxMetrics: toDraft7JsonSchema(ReviewRunSandboxMetricsSchema),
+    reviewRunRuntimeMetrics: toDraft7JsonSchema(ReviewRunRuntimeMetricsSchema),
+    reviewRunMetrics: toDraft7JsonSchema(ReviewRunMetricsSchema),
     reviewResult: toDraft7JsonSchema(ReviewResultSchema),
     rawModelOutput: toDraft7JsonSchema(RawModelOutputSchema),
     lifecycleEvent: toDraft7JsonSchema(LifecycleEventSchema),

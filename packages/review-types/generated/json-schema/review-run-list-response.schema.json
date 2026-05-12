@@ -412,6 +412,285 @@
             ],
             "additionalProperties": false
           },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "completed",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "startedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "completedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "durationMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "queueMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "provider": {
+                "type": "string",
+                "enum": ["codexDelegate", "openaiCompatible"]
+              },
+              "executionMode": {
+                "type": "string",
+                "enum": ["localTrusted", "remoteSandbox"]
+              },
+              "targetType": {
+                "type": "string",
+                "enum": ["uncommittedChanges", "baseBranch", "commit", "custom"]
+              },
+              "requestedModel": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "resolvedModel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "correlation": {
+                "type": "object",
+                "properties": {
+                  "reviewId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "workflowRunId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sandboxId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["reviewId"],
+                "additionalProperties": false
+              },
+              "providerSummary": {
+                "type": "object",
+                "properties": {
+                  "totalLatencyMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "attemptCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "fallbackUsed": {
+                    "type": "boolean"
+                  },
+                  "failureClass": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "policy",
+                      "budget",
+                      "auth",
+                      "rate_limit",
+                      "timeout",
+                      "provider_unavailable",
+                      "invalid_response",
+                      "cancelled",
+                      "unknown"
+                    ]
+                  },
+                  "usage": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": ["reported", "unknown"]
+                      },
+                      "inputTokens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "outputTokens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "totalTokens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "reasoningTokens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "cachedInputTokens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "costUsd": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "marketCostUsd": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": ["status"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "totalLatencyMs",
+                  "attemptCount",
+                  "fallbackUsed",
+                  "failureClass",
+                  "usage"
+                ],
+                "additionalProperties": false
+              },
+              "sandbox": {
+                "type": "object",
+                "properties": {
+                  "commandCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "commandDurationMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "wallTimeMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "outputBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "artifactBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "redactions": {
+                    "type": "object",
+                    "properties": {
+                      "apiKeyLike": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "bearer": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": ["apiKeyLike", "bearer"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "commandCount",
+                  "commandDurationMs",
+                  "wallTimeMs",
+                  "outputBytes",
+                  "artifactBytes",
+                  "redactions"
+                ],
+                "additionalProperties": false
+              },
+              "artifacts": {
+                "type": "object",
+                "properties": {
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "totalBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": ["count", "totalBytes"],
+                "additionalProperties": false
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "leaseOwner": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "leaseAcquiredAt": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "leaseHeartbeatAt": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "leaseExpiresAt": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "leaseTtlMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "cancelRequestedAt": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "status",
+              "startedAt",
+              "provider",
+              "executionMode",
+              "targetType",
+              "correlation",
+              "artifacts",
+              "runtime"
+            ],
+            "additionalProperties": false
+          },
           "detachedRunId": {
             "type": "string",
             "minLength": 1

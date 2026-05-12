@@ -99,8 +99,8 @@ pass parity, benchmark, and generated-contract gates.
   `DATABASE_URL` or `POSTGRES_URL` is configured, and `NODE_ENV=production`
   fails without one unless volatile memory is explicitly selected.
 - The durable schema stores review runs, request summaries, lifecycle events,
-  artifact metadata/content, status transitions, retention timestamps, and
-  deletion markers.
+  artifact metadata/content, run metrics, status transitions, retention
+  timestamps, and deletion markers.
 - Local no-database development falls back to the same async adapter contract
   backed by an in-memory map.
 - Detached Workflow run identifiers and observed states are persisted through
@@ -125,5 +125,10 @@ pass parity, benchmark, and generated-contract gates.
   - `failed`
   - `cancelled`
 - Service exposes event stream via SSE endpoint.
+- Service persists redaction-safe `ReviewRunMetrics` summaries for status/list
+  APIs, CLI `list`, and Review Room metadata, and emits structured
+  `review.run.*` log records for platform log correlation.
 - Review Room consumes run list/status/artifact APIs through server-side data
   loading and streams lifecycle updates through a token-safe SSE proxy route.
+- Field-level allowlists and operator workflow live in
+  [Observability Runbook](../../operations/observability.md).

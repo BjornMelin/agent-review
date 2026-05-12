@@ -22,6 +22,7 @@ import {
   ReviewRequestSchema,
   ReviewResultSchema,
   ReviewRunAuthorizationSchema,
+  ReviewRunMetricsSchema,
   ReviewRunStatusSchema,
   ReviewStartRequestSchema,
   ReviewStatusResponseSchema,
@@ -246,6 +247,22 @@ describe('review-types schemas', () => {
       )
     ).toThrow(/model exceeds/);
     expect(() =>
+      withReviewRequestSecurityDefaults(
+        ReviewRequestSchema.parse({
+          ...request,
+          model: 'gateway:openai/sk-abcdefghijklmnopqrstuvwxyz123456',
+        })
+      )
+    ).toThrow(/model contains secret-like value/);
+    expect(() =>
+      withReviewRequestSecurityDefaults(
+        ReviewRequestSchema.parse({
+          ...request,
+          model: 'prompt=review cwd=/repo/secret stdout=build log',
+        })
+      )
+    ).toThrow(/model must be a safe model identifier/);
+    expect(() =>
       assertReviewRequestWithinSecurityLimits(
         ReviewRequestSchema.parse({
           ...request,
@@ -314,6 +331,59 @@ describe('review-types schemas', () => {
         'REVIEW_SERVICE_TOKEN=rat_tokenid_abcdefghijklmnopqrstuvwxyz'
       ).text
     ).toContain('[REDACTED_SECRET]');
+
+    const unsafeModelResult = ReviewResultSchema.parse({
+      ...result,
+      metadata: {
+        ...result.metadata,
+        modelResolved: 'model body: private-marker',
+        providerTelemetry: {
+          policyVersion: 'provider-policy.v1',
+          requestedModel: 'prompt=review cwd=/repo/secret stdout=build log',
+          resolvedModel: 'model body: private-marker',
+          route: 'gateway',
+          fallbackOrder: ['model body: private-marker'],
+          fallbackUsed: true,
+          maxInputChars: 120_000,
+          maxOutputTokens: 4096,
+          timeoutMs: 120_000,
+          maxAttempts: 2,
+          retention: 'unknown',
+          zdrRequired: false,
+          disallowPromptTraining: true,
+          failureClass: 'invalid_response',
+          totalLatencyMs: 42,
+          attempts: [
+            {
+              route: 'gateway',
+              model: 'model body: private-marker',
+              status: 'failed',
+              latencyMs: 42,
+              failureClass: 'invalid_response',
+              usage: { status: 'unknown' },
+            },
+          ],
+          usage: { status: 'unknown' },
+        },
+      },
+    });
+    const unsafeModelSanitized = redactReviewResult(unsafeModelResult).result;
+    expect(unsafeModelSanitized.metadata.modelResolved).toBe('unknown');
+    expect(
+      unsafeModelSanitized.metadata.providerTelemetry?.requestedModel
+    ).toBeUndefined();
+    expect(unsafeModelSanitized.metadata.providerTelemetry?.resolvedModel).toBe(
+      'unknown'
+    );
+    expect(
+      unsafeModelSanitized.metadata.providerTelemetry?.fallbackOrder
+    ).toEqual([]);
+    expect(
+      unsafeModelSanitized.metadata.providerTelemetry?.attempts[0]?.model
+    ).toBe('unknown');
+    expect(JSON.stringify(unsafeModelSanitized)).not.toContain(
+      'private-marker'
+    );
   });
 
   it('validates and redacts provider policy telemetry', () => {
@@ -404,14 +474,41 @@ describe('review-types schemas', () => {
     const redactedTelemetry =
       redactReviewResult(redactionProbe).result.metadata.providerTelemetry;
 
-    expect(redactedTelemetry?.attempts[0]?.generationId).toBe(
-      'OPENAI_API_KEY=[REDACTED_SECRET]'
-    );
-    expect(redactedTelemetry?.attempts[0]?.errorCode).toBe('Bearer [REDACTED]');
+    expect(redactedTelemetry?.attempts[0]?.generationId).toBeUndefined();
+    expect(redactedTelemetry?.attempts[0]?.errorCode).toBeUndefined();
     expect(JSON.stringify(redactedTelemetry)).not.toContain(
       'sk-abcdefghijklmnopqrstuvwxyz123456'
     );
     expect(redactedTelemetry?.usage.costUsd).toBe(0.001);
+
+    const usageProbe = ReviewResultSchema.parse({
+      ...result,
+      metadata: {
+        ...result.metadata,
+        providerTelemetry,
+      },
+    });
+    const usageProbeTelemetry = usageProbe.metadata.providerTelemetry;
+    if (!usageProbeTelemetry?.attempts[0]?.usage) {
+      throw new Error('provider telemetry fixture must include usage');
+    }
+    (
+      usageProbeTelemetry.usage as unknown as Record<string, unknown>
+    ).rawProviderOutput = 'cwd=/repo/private prompt=secret stdout=payload';
+    (
+      usageProbeTelemetry.attempts[0].usage as unknown as Record<
+        string,
+        unknown
+      >
+    ).rawProviderOutput = 'cwd=/repo/private prompt=secret stderr=payload';
+    const usageSanitized =
+      redactReviewResult(usageProbe).result.metadata.providerTelemetry;
+    expect(usageSanitized?.usage).toEqual(providerTelemetry.usage);
+    expect(usageSanitized?.attempts[0]?.usage).toEqual(
+      providerTelemetry.attempts[0]?.usage
+    );
+    expect(JSON.stringify(usageSanitized)).not.toContain('/repo/private');
+    expect(JSON.stringify(usageSanitized)).not.toContain('prompt=secret');
     expect(() =>
       ProviderPolicyTelemetrySchema.parse({
         ...providerTelemetry,
@@ -694,6 +791,69 @@ describe('review-types schemas', () => {
       commandId: 'codex-review',
       status: 'completed',
     });
+  });
+
+  it('validates redaction-safe run metrics', () => {
+    const metrics = ReviewRunMetricsSchema.parse({
+      status: 'completed',
+      startedAt: 1_000,
+      completedAt: 2_500,
+      durationMs: 1_500,
+      queueMs: 100,
+      provider: 'openaiCompatible',
+      executionMode: 'remoteSandbox',
+      targetType: 'custom',
+      requestedModel: 'gateway:openai/gpt-5',
+      resolvedModel: 'gateway:openai/gpt-5',
+      correlation: {
+        reviewId: 'review-1',
+        workflowRunId: 'workflow-1',
+        sandboxId: 'sandbox-1',
+      },
+      providerSummary: {
+        totalLatencyMs: 900,
+        attemptCount: 1,
+        fallbackUsed: false,
+        failureClass: 'none',
+        usage: {
+          status: 'reported',
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+          costUsd: 0.001,
+        },
+      },
+      sandbox: {
+        commandCount: 2,
+        commandDurationMs: 800,
+        wallTimeMs: 1_000,
+        outputBytes: 2048,
+        artifactBytes: 1024,
+        redactions: { apiKeyLike: 1, bearer: 0 },
+      },
+      artifacts: { count: 1, totalBytes: 1024 },
+      runtime: {
+        leaseOwner: 'review-service',
+        leaseTtlMs: 60_000,
+      },
+    });
+
+    expect(metrics.providerSummary?.usage.costUsd).toBe(0.001);
+    expect(JSON.stringify(metrics)).not.toContain('OPENAI_API_KEY');
+    const sandbox = metrics.sandbox;
+    expect(sandbox).toBeDefined();
+    if (!sandbox) {
+      throw new Error('run metrics fixture must include sandbox metrics');
+    }
+    expect(() =>
+      ReviewRunMetricsSchema.parse({
+        ...metrics,
+        sandbox: {
+          ...sandbox,
+          commandPayload: 'git diff with private code',
+        },
+      })
+    ).toThrow();
   });
 
   it('rejects inverted line ranges at normalized and raw model boundaries', () => {

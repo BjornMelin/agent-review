@@ -19,6 +19,7 @@ import {
   type ReviewRepositorySelection,
   type ReviewRequest,
   ReviewRequestSchema,
+  type ReviewRunStatus,
   type ReviewStartRequest,
   ReviewStartRequestSchema,
   type ReviewTarget,
@@ -28,6 +29,7 @@ import {
   cancelReview,
   fetchReviewArtifact,
   getReviewStatus,
+  listReviewRuns,
   publishReview,
   resolveReviewServiceConfig,
   ServiceClientError,
@@ -84,6 +86,13 @@ type RepositoryCliOptions = {
 type WatchCliOptions = ServiceCliOptions & {
   afterEventId?: string;
   limit?: string;
+};
+
+type ListCliOptions = ServiceCliOptions & {
+  limit?: string;
+  status?: string;
+  cursor?: string;
+  repo?: string;
 };
 
 type ArtifactCliOptions = ServiceCliOptions;
@@ -267,6 +276,27 @@ function parseDoctorProviderFilter(
   );
 }
 
+function parseReviewRunStatusOption(
+  value: string | undefined
+): ReviewRunStatus | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const status = value.trim();
+  if (
+    status === 'queued' ||
+    status === 'running' ||
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'cancelled'
+  ) {
+    return status;
+  }
+  throw new Error(
+    `invalid --status "${status}"; expected queued|running|completed|failed|cancelled`
+  );
+}
+
 function mapErrorToExitCode(error: unknown): number {
   if (error instanceof ServiceClientError) {
     return error.exitCode;
@@ -291,7 +321,7 @@ function mapErrorToExitCode(error: unknown): number {
 function buildCompletionScript(shell: string): string {
   const command = 'review-agent';
   const commands =
-    'run submit status watch artifact cancel publish models doctor completion';
+    'run submit list status watch artifact cancel publish models doctor completion';
   if (shell === 'bash') {
     return `_${command}_completions() { COMPREPLY=( $(compgen -W "${commands}" -- "\${COMP_WORDS[1]}") ); }\ncomplete -F _${command}_completions ${command}\n`;
   }
@@ -427,6 +457,20 @@ async function statusCommand(
   if (response.status === 'failed' || response.status === 'cancelled') {
     return 4;
   }
+  return 0;
+}
+
+async function listCommand(options: ListCliOptions): Promise<number> {
+  const repository = parseRepositoryFullName(options.repo);
+  const limit = parsePositiveInt(options.limit, 'limit');
+  const status = parseReviewRunStatusOption(options.status);
+  const response = await listReviewRuns(resolveReviewServiceConfig(options), {
+    ...(limit === undefined ? {} : { limit }),
+    ...(status === undefined ? {} : { status }),
+    ...(options.cursor ? { cursor: options.cursor.trim() } : {}),
+    ...(repository ? { owner: repository.owner, name: repository.name } : {}),
+  });
+  await writeOutput(options.output ?? '-', JSON.stringify(response, null, 2));
   return 0;
 }
 
@@ -586,6 +630,17 @@ async function main(): Promise<void> {
     .option('--output <path>', 'output file path or - for stdout', '-')
     .action(async (reviewId: string, options: ServiceCliOptions) => {
       await runAction(() => statusCommand(reviewId, options), options);
+    });
+
+  addServiceOptions(program.command('list'))
+    .description('List hosted review runs')
+    .option('--limit <n>', 'max runs to return')
+    .option('--status <status>', 'queued|running|completed|failed|cancelled')
+    .option('--cursor <cursor>', 'opaque cursor from previous list page')
+    .option('--repo <owner/name>', 'GitHub repository filter')
+    .option('--output <path>', 'output file path or - for stdout', '-')
+    .action(async (options: ListCliOptions) => {
+      await runAction(() => listCommand(options), options);
     });
 
   addServiceOptions(program.command('watch'))

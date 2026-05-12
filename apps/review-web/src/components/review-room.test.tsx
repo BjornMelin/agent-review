@@ -3,6 +3,7 @@
 import type {
   ProviderPolicyTelemetry,
   ReviewRunListResponse,
+  ReviewRunMetrics,
   ReviewStatusResponse,
 } from '@review-agent/review-types';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -71,6 +72,44 @@ const telemetry: ProviderPolicyTelemetry = {
   },
 };
 
+const metrics: ReviewRunMetrics = {
+  status: 'completed',
+  startedAt: 1_700_000_000_000,
+  completedAt: 1_700_000_119_999,
+  durationMs: 119_999,
+  queueMs: 250,
+  provider: 'openaiCompatible',
+  executionMode: 'remoteSandbox',
+  targetType: 'uncommittedChanges',
+  requestedModel: 'gpt-5.2',
+  resolvedModel: 'gpt-5.2',
+  correlation: {
+    reviewId: 'review-1',
+    workflowRunId: 'workflow-run-1',
+    sandboxId: 'sandbox-1',
+  },
+  providerSummary: {
+    totalLatencyMs: 1200,
+    attemptCount: 1,
+    fallbackUsed: false,
+    failureClass: 'none',
+    usage: telemetry.usage,
+  },
+  sandbox: {
+    commandCount: 2,
+    commandDurationMs: 1500,
+    wallTimeMs: 2000,
+    outputBytes: 4096,
+    artifactBytes: 2048,
+    redactions: { apiKeyLike: 1, bearer: 0 },
+  },
+  artifacts: { count: 1, totalBytes: 2048 },
+  runtime: {
+    leaseOwner: 'review-service',
+    leaseTtlMs: 61_000,
+  },
+};
+
 function reviewStatus(
   providerTelemetry: ProviderPolicyTelemetry | undefined
 ): ReviewStatusResponse {
@@ -79,7 +118,7 @@ function reviewStatus(
     reviewId: 'review-1',
     status: 'completed',
     createdAt: 1_700_000_000_000,
-    updatedAt: 1_700_000_060_000,
+    updatedAt: 1_700_000_119_999,
     result: {
       findings: [],
       overallCorrectness: 'patch is correct',
@@ -113,8 +152,9 @@ function reviewStatus(
       publicationCount: 0,
       modelResolved: 'gpt-5.2',
       ...(providerTelemetry ? { providerTelemetry } : {}),
+      metrics,
       createdAt: 1_700_000_000_000,
-      updatedAt: 1_700_000_060_000,
+      updatedAt: 1_700_000_119_999,
     },
     publications: [],
     triage: [],
@@ -140,8 +180,9 @@ function runs(): ReviewRunListResponse {
         publicationCount: 0,
         modelResolved: 'gpt-5.2',
         providerTelemetry: telemetry,
+        metrics,
         createdAt: 1_700_000_000_000,
-        updatedAt: 1_700_000_060_000,
+        updatedAt: 1_700_000_119_999,
       },
     ],
   };
@@ -200,6 +241,12 @@ describe('ReviewRoom', () => {
     expect(screen.getByText('not used')).toBeTruthy();
     expect(screen.getByText('1200ms')).toBeTruthy();
     expect(screen.getByText('120000ms')).toBeTruthy();
+    expect(screen.getByText('2m 0s')).toBeTruthy();
+    expect(screen.getByText('250ms')).toBeTruthy();
+    expect(screen.getByText('1m 1s')).toBeTruthy();
+    expect(screen.getByText('2.0 KB')).toBeTruthy();
+    expect(screen.getByText('2 / 1.5s')).toBeTruthy();
+    expect(screen.getByText('4.0 KB')).toBeTruthy();
     expect(
       screen.getByText('1200 in / 320 out / 1520 total / $0.003400')
     ).toBeTruthy();

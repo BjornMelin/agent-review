@@ -43,8 +43,11 @@ schemas:
   - reviewRunAuthorization -> review-run-authorization.schema.json
   - reviewRunListQuery -> review-run-list-query.schema.json
   - reviewRunListResponse -> review-run-list-response.schema.json
+  - reviewRunMetrics -> review-run-metrics.schema.json
   - reviewRunRepositorySummary -> review-run-repository-summary.schema.json
   - reviewRunRequestSummary -> review-run-request-summary.schema.json
+  - reviewRunRuntimeMetrics -> review-run-runtime-metrics.schema.json
+  - reviewRunSandboxMetrics -> review-run-sandbox-metrics.schema.json
   - reviewRunStatus -> review-run-status.schema.json
   - reviewRunStoreRecord -> review-run-store-record.schema.json
   - reviewRunSummary -> review-run-summary.schema.json

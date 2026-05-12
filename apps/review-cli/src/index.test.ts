@@ -571,6 +571,123 @@ describe('review-agent hosted service commands', () => {
     }
   });
 
+  it('lists hosted review runs with shared metrics DTOs', async () => {
+    const fixture = await startReviewServiceFixture((_request, response) => {
+      writeJsonResponse(response, 200, {
+        runs: [
+          {
+            reviewId: 'review_1',
+            status: 'completed',
+            request: {
+              provider: 'openaiCompatible',
+              executionMode: 'remoteSandbox',
+              targetType: 'custom',
+              outputFormats: ['json'],
+              model: 'gateway:openai/gpt-5',
+            },
+            findingCount: 0,
+            artifactFormats: ['json'],
+            publicationCount: 0,
+            modelResolved: 'gateway:openai/gpt-5',
+            metrics: {
+              status: 'completed',
+              startedAt: 1_000,
+              completedAt: 2_000,
+              durationMs: 1_000,
+              queueMs: 50,
+              provider: 'openaiCompatible',
+              executionMode: 'remoteSandbox',
+              targetType: 'custom',
+              requestedModel: 'gateway:openai/gpt-5',
+              resolvedModel: 'gateway:openai/gpt-5',
+              correlation: {
+                reviewId: 'review_1',
+                workflowRunId: 'workflow_1',
+                sandboxId: 'sandbox_1',
+              },
+              providerSummary: {
+                totalLatencyMs: 900,
+                attemptCount: 1,
+                fallbackUsed: false,
+                failureClass: 'none',
+                usage: { status: 'reported', totalTokens: 120 },
+              },
+              sandbox: {
+                commandCount: 1,
+                commandDurationMs: 600,
+                wallTimeMs: 700,
+                outputBytes: 2048,
+                artifactBytes: 1024,
+                redactions: { apiKeyLike: 0, bearer: 0 },
+              },
+              artifacts: { count: 1, totalBytes: 1024 },
+              runtime: { leaseOwner: 'review-service', leaseTtlMs: 60_000 },
+            },
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      });
+    });
+    try {
+      const result = await runCli([
+        'list',
+        '--limit',
+        '5',
+        '--status',
+        'completed',
+        '--cursor',
+        'cursor_2',
+        '--repo',
+        'octo-org/agent-review',
+        '--service-url',
+        fixture.url,
+        '--service-token',
+        'rat_test_secret',
+      ]);
+
+      expect(result.status).toBe(0);
+      expect(fixture.requests[0]?.url).toBe(
+        '/v1/review?limit=5&status=completed&cursor=cursor_2&owner=octo-org&name=agent-review'
+      );
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        runs: [
+          {
+            reviewId: 'review_1',
+            metrics: {
+              durationMs: 1000,
+              providerSummary: {
+                usage: { status: 'reported', totalTokens: 120 },
+              },
+              sandbox: {
+                commandCount: 1,
+                outputBytes: 2048,
+              },
+            },
+          },
+        ],
+      });
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('prints a concise error for invalid hosted list statuses', async () => {
+    const result = await runCli([
+      'list',
+      '--status',
+      'bogus',
+      '--service-token',
+      'rat_test_secret',
+    ]);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      'invalid --status "bogus"; expected queued|running|completed|failed|cancelled'
+    );
+    expect(result.stderr).not.toContain('invalid_value');
+  });
+
   it('times out one-shot hosted service requests', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
       (

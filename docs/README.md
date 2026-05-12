@@ -17,6 +17,10 @@ This directory contains canonical product and architecture documentation for the
 
 - [Review Room Deployment](./deployment/review-web.md)
 
+## Operations Docs
+
+- [Observability Runbook](./operations/observability.md)
+
 ## Architecture Specifications
 
 - [System Overview](./architecture/spec/system-overview.md)

@@ -1,6 +1,7 @@
 import type { ReviewRunResult } from '@review-agent/review-core';
 import { ReviewRunCancelledError } from '@review-agent/review-core';
 import type {
+  ProviderPolicyTelemetry,
   ReviewAuthScope,
   ReviewProvider,
   ReviewProviderKind,
@@ -10,8 +11,9 @@ import type {
   ReviewRunAuthorization,
   ReviewRunListResponse,
   ReviewRunSummary,
+  ReviewStatusResponse,
 } from '@review-agent/review-types';
-import { redactErrorMessage } from '@review-agent/review-types';
+import { redactSensitiveText } from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -26,18 +28,31 @@ import {
   type ReviewPublicationService,
   type ReviewRecord,
   type ReviewServiceDependencies,
+  type ReviewServiceRunLogRecord,
   type ReviewServiceRunner,
   type ReviewServiceWorker,
   type ReviewStoreAdapter,
 } from './index.js';
 
 const TEST_ALLOWED_CWD_ROOTS = [process.cwd(), '/repo'];
+const MAX_PUBLIC_RUN_ERROR_LENGTH = 240;
+const PRIVATE_RUN_ERROR_MARKER_PATTERN =
+  /\b(?:args|argv|artifact|authorization|bearer|body|command|cwd|diff|env|environment|file|path|prompt|sandbox output|scope[-_ ]?key|secret|stderr|stdout|stack|token|trace)\b\s*[:=]?/i;
+const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
+const STACK_FRAME_RUN_ERROR_PATTERN =
+  /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
+const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 
 function createTestReviewServiceApp(
   dependencies: ReviewServiceDependencies
 ): ReturnType<typeof createReviewServiceApp> {
   return createReviewServiceApp({
     ...dependencies,
+    logger: dependencies.logger ?? {
+      error: () => undefined,
+      info: () => undefined,
+      warn: () => undefined,
+    },
     authMode:
       dependencies.authMode ??
       (dependencies.authPolicy ? 'required' : 'disabled'),
@@ -195,7 +210,7 @@ type SseReaderSession = {
 };
 
 function cloneRecord(record: ReviewRecord): ReviewRecord {
-  return {
+  const next = {
     ...record,
     events: record.events.map((event) => ({
       ...event,
@@ -207,6 +222,65 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
       },
     })),
   };
+  if (record.metrics) {
+    next.metrics = structuredClone(record.metrics);
+  }
+  return next;
+}
+
+function safeRunErrorForTestSummary(record: ReviewRecord): string | undefined {
+  if (!record.error) {
+    return undefined;
+  }
+  if (
+    record.error === 'runtime lease expired' ||
+    record.error === 'detached run not found'
+  ) {
+    return record.error;
+  }
+  if (record.status === 'cancelled') {
+    return 'review run cancelled';
+  }
+  const fallback = /detached/i.test(record.error)
+    ? /start/i.test(record.error)
+      ? 'detached start failed'
+      : 'detached run failed'
+    : 'review run failed';
+  return safeRunDiagnosticMessage(record.error, fallback);
+}
+
+function safeRunDiagnosticMessage(error: string, fallback: string): string {
+  const normalized = error.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return fallback;
+  }
+  const redacted = redactSensitiveText(normalized);
+  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
+    return fallback;
+  }
+  const candidate = redacted.text.trim();
+  if (
+    !candidate ||
+    candidate.length > MAX_PUBLIC_RUN_ERROR_LENGTH ||
+    PRIVATE_RUN_ERROR_MARKER_PATTERN.test(candidate) ||
+    PATHISH_RUN_ERROR_PATTERN.test(candidate) ||
+    STACK_FRAME_RUN_ERROR_PATTERN.test(candidate)
+  ) {
+    return fallback;
+  }
+  return candidate;
+}
+
+function safeObservableModel(model: string | undefined): string | undefined {
+  if (!model) {
+    return undefined;
+  }
+  const redacted = redactSensitiveText(model);
+  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
+    return undefined;
+  }
+  const candidate = redacted.text.trim();
+  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
 }
 
 function createRunSummary(record: ReviewRecord): ReviewRunSummary {
@@ -219,7 +293,9 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
       executionMode: record.request.executionMode,
       targetType: record.request.target.type,
       outputFormats: record.request.outputFormats,
-      ...(record.request.model ? { model: record.request.model } : {}),
+      ...(safeObservableModel(record.request.model)
+        ? { model: safeObservableModel(record.request.model) }
+        : {}),
     },
     ...(repository
       ? {
@@ -241,7 +317,9 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
           },
         }
       : {}),
-    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
+    ...(safeRunErrorForTestSummary(record)
+      ? { error: safeRunErrorForTestSummary(record) }
+      : {}),
     findingCount: record.result?.result.findings.length ?? 0,
     artifactFormats: record.result
       ? Object.keys(record.result.artifacts).filter(
@@ -259,10 +337,11 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
     ...(record.cancelRequestedAt === undefined
       ? {}
       : { cancelRequestedAt: record.cancelRequestedAt }),
+    ...(record.metrics ? { metrics: structuredClone(record.metrics) } : {}),
     ...(record.status === 'completed' ||
     record.status === 'failed' ||
     record.status === 'cancelled'
-      ? { completedAt: record.updatedAt }
+      ? { completedAt: record.completedAt ?? record.updatedAt }
       : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -348,6 +427,31 @@ function createStore(
             }
           : {}),
       };
+    },
+    async listActiveDetached(options = {}) {
+      return [...records.values()]
+        .filter(
+          (record) =>
+            Boolean(record.detachedRunId) &&
+            (record.status === 'queued' || record.status === 'running')
+        )
+        .filter((record) => {
+          if (!options.repositories || options.repositories.length === 0) {
+            return true;
+          }
+          const repository = record.authorization?.repository;
+          if (!repository) {
+            return false;
+          }
+          return options.repositories.some(
+            (filter) =>
+              filter.repositoryId === repository.repositoryId ||
+              (filter.installationId === repository.installationId &&
+                filter.owner.toLowerCase() === repository.owner.toLowerCase() &&
+                filter.name.toLowerCase() === repository.name.toLowerCase())
+          );
+        })
+        .map(materialize);
     },
     async reserve(record, options) {
       let queued = 0;
@@ -464,6 +568,7 @@ function createThrowingStore(error = new Error('db down')): ReviewStoreAdapter {
   return {
     get: fail,
     list: fail,
+    listActiveDetached: fail,
     reserve: fail,
     set: fail,
     appendEvent: fail,
@@ -819,9 +924,17 @@ describe('createReviewServiceApp', () => {
         updatedAt: 4_000,
       })
     );
+    const worker = createWorker();
+    worker.runs.set(
+      'detached-new',
+      createDetachedRun({
+        runId: 'detached-new',
+        workflowRunId: 'workflow-new',
+      })
+    );
     const app = createTestReviewServiceApp({
       providers: createProviders(),
-      worker: createWorker(),
+      worker,
       store,
       config: { recordCleanupIntervalMs: false },
     });
@@ -840,7 +953,7 @@ describe('createReviewServiceApp', () => {
         },
         detachedRunId: 'detached-new',
         workflowRunId: 'workflow-new',
-        error: 'provider failed with OPENAI_API_KEY=[REDACTED_SECRET]',
+        error: 'review run failed',
       },
     ]);
     expect(firstBody.nextCursor).toEqual(expect.any(String));
@@ -866,6 +979,112 @@ describe('createReviewServiceApp', () => {
         },
       ],
     });
+  });
+
+  it('syncs detached run state before returning filtered run lists', async () => {
+    const worker = createWorker();
+    let now = 3_000;
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      nowMs: () => now,
+      uuid: createUuid(['review-list-detached', 'event-start', 'event-failed']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+        delivery: 'detached',
+      }),
+    });
+    expect(start.status).toBe(202);
+
+    const run = worker.runs.get('detached-run-1');
+    expect(run).toBeDefined();
+    if (!run) {
+      throw new Error('detached run was not started');
+    }
+    run.status = 'failed';
+    run.error = 'detached fixture failed cwd=/repo/secret prompt=review this';
+    run.completedAt = 3_250;
+    now = 4_000;
+
+    const list = await app.request('/v1/review?status=failed');
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as ReviewRunListResponse;
+    expect(body.runs).toMatchObject([
+      {
+        reviewId: 'review-list-detached',
+        status: 'failed',
+        error: 'detached run failed',
+        completedAt: 3_250,
+        metrics: {
+          status: 'failed',
+          completedAt: 3_250,
+          durationMs: 250,
+          provider: 'codexDelegate',
+          executionMode: 'localTrusted',
+          targetType: 'custom',
+          correlation: {
+            reviewId: 'review-list-detached',
+            workflowRunId: 'detached-run-1',
+          },
+        },
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain('/repo/secret');
+    expect(JSON.stringify(body)).not.toContain('review this');
+  });
+
+  it('fails run lists closed when active detached sync is unavailable', async () => {
+    const worker = createWorker();
+    const logger = {
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      logger,
+      nowMs: () => 4_000,
+      uuid: createUuid(['review-list-sync-fails', 'event-start']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+        delivery: 'detached',
+      }),
+    });
+    expect(start.status).toBe(202);
+
+    worker.get = vi.fn(async () => {
+      throw new Error(
+        'workflow status unavailable cwd=/repo/secret prompt=review this stderr: artifact body'
+      );
+    });
+
+    const list = await app.request('/v1/review');
+    expect(list.status).toBe(502);
+    expect(await list.json()).toEqual({
+      error: 'failed to list review runs',
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(
+      '/repo/secret'
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(
+      'review this'
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(
+      'artifact body'
+    );
   });
 
   it('filters review run lists to authenticated repository scope', async () => {
@@ -1016,7 +1235,7 @@ describe('createReviewServiceApp', () => {
     const failedRecord = await store.get('review-start-failed');
     expect(failedRecord).toMatchObject({
       status: 'failed',
-      error: expect.stringContaining('[REDACTED_SECRET]'),
+      error: 'detached start failed',
       retentionExpiresAt: 3_601_500,
     });
     expect(JSON.stringify(failedRecord)).not.toContain(
@@ -1308,6 +1527,83 @@ describe('createReviewServiceApp', () => {
     expect(await invalidArtifact.json()).toEqual({
       error: 'invalid artifact format',
     });
+  });
+
+  it('drops raw provider usage fields from public status results', async () => {
+    const providerTelemetry: ProviderPolicyTelemetry = {
+      policyVersion: 'provider-policy.test',
+      requestedModel: 'gateway:openai/gpt-5',
+      resolvedModel: 'gateway:openai/gpt-5',
+      route: 'gateway',
+      finalProvider: 'openai',
+      fallbackOrder: [],
+      fallbackUsed: false,
+      maxInputChars: 120_000,
+      maxOutputTokens: 4096,
+      timeoutMs: 120_000,
+      maxAttempts: 1,
+      retention: 'unknown',
+      zdrRequired: false,
+      disallowPromptTraining: true,
+      failureClass: 'none',
+      totalLatencyMs: 42,
+      attempts: [
+        {
+          route: 'gateway',
+          model: 'gateway:openai/gpt-5',
+          provider: 'openai',
+          status: 'success',
+          latencyMs: 42,
+          failureClass: 'none',
+          usage: { status: 'reported', totalTokens: 120 },
+        },
+      ],
+      usage: { status: 'reported', totalTokens: 120 },
+    };
+    (
+      providerTelemetry.usage as unknown as Record<string, unknown>
+    ).rawProviderOutput = 'cwd=/repo/private prompt=secret stdout=payload';
+    (
+      providerTelemetry.attempts[0]?.usage as unknown as Record<string, unknown>
+    ).rawProviderOutput = 'cwd=/repo/private prompt=secret stderr=payload';
+    const runner = vi.fn<ReviewServiceRunner>(async (request) => {
+      const result = createReviewResult(request);
+      result.result.metadata.providerTelemetry = providerTelemetry;
+      return result;
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      runner,
+      nowMs: () => 2_125,
+      uuid: createUuid(['review-usage-sanitized', 'event-progress']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+    expect(start.status).toBe(200);
+
+    const status = await app.request('/v1/review/review-usage-sanitized');
+    expect(status.status).toBe(200);
+    const body = (await status.json()) as ReviewStatusResponse;
+    expect(body.result?.metadata.providerTelemetry?.usage).toEqual({
+      status: 'reported',
+      totalTokens: 120,
+    });
+    expect(body.result?.metadata.providerTelemetry?.attempts[0]?.usage).toEqual(
+      {
+        status: 'reported',
+        totalTokens: 120,
+      }
+    );
+    expect(JSON.stringify(body)).not.toContain('/repo/private');
+    expect(JSON.stringify(body)).not.toContain('prompt=secret');
   });
 
   it('publishes completed GitHub reviews through the injected publication service', async () => {
@@ -2027,11 +2323,166 @@ describe('createReviewServiceApp', () => {
     const serialized = JSON.stringify(record);
     expect(serialized).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
     expect(serialized).not.toContain('abc.def.ghi');
-    expect(record?.error).toContain('[REDACTED_SECRET]');
+    expect(record?.error).toBe('review run failed');
     expect(record?.events.at(-1)).toMatchObject({
       type: 'failed',
-      message: expect.stringContaining('[REDACTED_SECRET]'),
+      message: 'review run failed',
     });
+  });
+
+  it('drops command-output shaped failure details from public run errors', async () => {
+    const runner = vi.fn<ReviewServiceRunner>(async () => {
+      throw new Error(
+        'provider failed stderr: build log line env SECRET=value at runReview (provider.ts:10:1)'
+      );
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      runner,
+      nowMs: () => 3_150,
+      uuid: createUuid([
+        'review-command-output-failed',
+        'event-progress',
+        'event-failed',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+    expect(start.status).toBe(200);
+
+    const status = await app.request('/v1/review/review-command-output-failed');
+    expect(status.status).toBe(200);
+    const body = (await status.json()) as ReviewStatusResponse;
+    expect(body.error).toBe('review run failed');
+    expect(JSON.stringify(body)).not.toContain('SECRET=value');
+    expect(JSON.stringify(body)).not.toContain('stderr');
+  });
+
+  it('drops artifact/body-shaped failure details from public run errors', async () => {
+    const runner = vi.fn<ReviewServiceRunner>(async () => {
+      throw new Error(
+        'artifact body: generated review contains private snippet'
+      );
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      runner,
+      nowMs: () => 3_175,
+      uuid: createUuid([
+        'review-artifact-body-failed',
+        'event-progress',
+        'event-failed',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+    expect(start.status).toBe(200);
+
+    const status = await app.request('/v1/review/review-artifact-body-failed');
+    expect(status.status).toBe(200);
+    const body = (await status.json()) as ReviewStatusResponse;
+    expect(body.error).toBe('review run failed');
+    expect(JSON.stringify(body)).not.toContain('private snippet');
+
+    const list = await app.request('/v1/review?status=failed');
+    expect(list.status).toBe(200);
+    expect(JSON.stringify(await list.json())).not.toContain('artifact body');
+  });
+
+  it('emits allowlisted run observability without private payloads', async () => {
+    const secret =
+      'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 Bearer abc.def.ghi';
+    const runner = vi.fn<ReviewServiceRunner>(async () => {
+      throw new Error(
+        `provider fixture failed ${secret} cwd=/repo/secret prompt=review this fixture`
+      );
+    });
+    const logger = {
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store: createStore(),
+      runner,
+      logger,
+      nowMs: () => 3_100,
+      uuid: createUuid([
+        'review-observable-failed',
+        'event-progress',
+        'event-failed',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+      }),
+    });
+
+    expect(start.status).toBe(200);
+    const status = await app.request('/v1/review/review-observable-failed');
+    expect(status.status).toBe(200);
+    const body = (await status.json()) as ReviewStatusResponse;
+    expect(body.summary?.metrics).toMatchObject({
+      status: 'failed',
+      provider: 'codexDelegate',
+      executionMode: 'localTrusted',
+      targetType: 'custom',
+      artifacts: { count: 0, totalBytes: 0 },
+      correlation: { reviewId: 'review-observable-failed' },
+      runtime: { leaseOwner: 'review-service', leaseTtlMs: 600_000 },
+    });
+
+    const runLogs = [...logger.info.mock.calls, ...logger.warn.mock.calls]
+      .filter((call) => call[0] === '[review-service] run observability')
+      .map((call) => call[1] as ReviewServiceRunLogRecord);
+    expect(runLogs.map((record) => record.event)).toEqual(
+      expect.arrayContaining([
+        'review.run.reserved',
+        'review.run.running',
+        'review.run.terminal',
+      ])
+    );
+    expect(
+      runLogs.find((record) => record.event === 'review.run.terminal')
+    ).toMatchObject({
+      reviewId: 'review-observable-failed',
+      status: 'failed',
+      provider: 'codexDelegate',
+      executionMode: 'localTrusted',
+      targetType: 'custom',
+      failureClass: 'unknown',
+      artifactBytes: 0,
+      cancelRequested: false,
+    });
+
+    const serializedLogs = JSON.stringify(runLogs);
+    expect(serializedLogs).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+    expect(serializedLogs).not.toContain('abc.def.ghi');
+    expect(serializedLogs).not.toContain('/repo/secret');
+    expect(serializedLogs).not.toContain('review this fixture');
   });
 
   it('replays lifecycle events after the requested cursor', async () => {

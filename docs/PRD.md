@@ -22,7 +22,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 
 ## In Scope (Current Implementation)
 
-- CLI command surface (`run`, `models`, `doctor`, `completion`)
+- CLI command surface for local reviews, hosted submission/list/status/watch,
+  artifact fetch, cancel, publish, model catalog, diagnostics, and completion
 - HTTP review service with start/list/status/events/cancel/artifacts/finding
   triage/publish preview/publish endpoints
 - Scoped service-token and GitHub-backed authorization on hosted HTTP endpoints
@@ -30,7 +31,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Runtime leases, queue/concurrency backpressure, and cancellation propagation
   through provider, sandbox, and Rust command-runner boundaries
 - Durable Postgres/Drizzle service storage for review runs, lifecycle events,
-  artifact metadata, status transitions, and retention markers
+  artifact metadata, status transitions, retention markers, and redaction-safe
+  observability metrics
 - Review targets: uncommitted changes, base branch comparison, commit SHA, custom instructions
 - Provider modes:
   - Codex delegate (`codexDelegate`)
@@ -46,8 +48,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
   runner, artifact extraction, and sandbox audit propagation
 - Next.js Review Room with dense hosted run list, detail, lifecycle timeline,
   finding table, triage filters/state/notes, artifact links, provider/model
-  metadata, publication preview/evidence, and server-side publish/cancel
-  controls
+  metadata, run metrics, publication preview/evidence, and server-side
+  publish/cancel controls
 - Optional Convex metadata mirror writes
 
 ## Out of Scope (Current Implementation)

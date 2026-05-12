@@ -148,12 +148,24 @@
       "file": "review-run-list-response.schema.json"
     },
     {
+      "name": "reviewRunMetrics",
+      "file": "review-run-metrics.schema.json"
+    },
+    {
       "name": "reviewRunRepositorySummary",
       "file": "review-run-repository-summary.schema.json"
     },
     {
       "name": "reviewRunRequestSummary",
       "file": "review-run-request-summary.schema.json"
+    },
+    {
+      "name": "reviewRunRuntimeMetrics",
+      "file": "review-run-runtime-metrics.schema.json"
+    },
+    {
+      "name": "reviewRunSandboxMetrics",
+      "file": "review-run-sandbox-metrics.schema.json"
     },
     {
       "name": "reviewRunStatus",

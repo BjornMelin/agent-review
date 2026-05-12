@@ -3,6 +3,7 @@ import type {
   ProviderUsage,
   ReviewArtifactMetadata,
   ReviewRunListResponse,
+  ReviewRunMetrics,
   ReviewRunStatus,
   ReviewStatusResponse,
 } from '@review-agent/review-types';
@@ -85,6 +86,42 @@ function formatProviderFallback(
     return telemetry.fallbackOrder.length === 0 ? 'not configured' : 'not used';
   }
   return `used ${telemetry.resolvedModel}`;
+}
+
+function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) {
+    return 'pending';
+  }
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  const seconds = ms / 1000;
+  if (seconds < 10) {
+    return `${seconds.toFixed(1)}s`;
+  }
+  const roundedSeconds = Math.round(seconds);
+  if (roundedSeconds < 60) {
+    return `${roundedSeconds}s`;
+  }
+  const minutes = Math.floor(roundedSeconds / 60);
+  const remainingSeconds = roundedSeconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatOptionalDuration(
+  ms: number | undefined,
+  fallback: string
+): string {
+  return ms === undefined ? fallback : formatDuration(ms);
+}
+
+function formatSandboxCommands(metrics: ReviewRunMetrics | undefined): string {
+  if (!metrics?.sandbox) {
+    return 'none';
+  }
+  return `${metrics.sandbox.commandCount} / ${formatDuration(
+    metrics.sandbox.commandDurationMs
+  )}`;
 }
 
 function artifactIcon(
@@ -298,6 +335,7 @@ function DetailBody({
   const providerTelemetry =
     detail.summary?.providerTelemetry ??
     detail.result?.metadata.providerTelemetry;
+  const runMetrics = detail.summary?.metrics;
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
       <main className="min-w-0 overflow-auto">
@@ -392,6 +430,28 @@ function DetailBody({
                   ['Detached Run', detail.summary?.detachedRunId ?? 'none'],
                   ['Workflow Run', detail.summary?.workflowRunId ?? 'none'],
                   ['Sandbox', detail.summary?.sandboxId ?? 'none'],
+                  ['Duration', formatDuration(runMetrics?.durationMs)],
+                  ['Queue Time', formatDuration(runMetrics?.queueMs)],
+                  [
+                    'Artifact Bytes',
+                    runMetrics
+                      ? formatBytes(runMetrics.artifacts.totalBytes)
+                      : 'pending',
+                  ],
+                  ['Sandbox Commands', formatSandboxCommands(runMetrics)],
+                  [
+                    'Sandbox Output',
+                    runMetrics?.sandbox
+                      ? formatBytes(runMetrics.sandbox.outputBytes)
+                      : 'none',
+                  ],
+                  [
+                    'Lease TTL',
+                    formatOptionalDuration(
+                      runMetrics?.runtime.leaseTtlMs,
+                      'not leased'
+                    ),
+                  ],
                   [
                     'Provider Policy',
                     providerTelemetry?.policyVersion ?? 'none',

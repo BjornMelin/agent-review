@@ -185,7 +185,17 @@ The review service uses `review-types` for request parsing and response DTOs.
   triage/audit records.
 - `ReviewRunSummarySchema`: compact run summary for list/detail headers,
   including target/provider/output-format metadata, finding count, optional
-  repository identity, model/workflow/sandbox identifiers, and timestamps.
+  repository identity, model/workflow/sandbox identifiers, optional redaction-safe
+  run metrics, and timestamps.
+- `ReviewRunMetricsSchema`: durable observability summary for a single review
+  run. It records status timing, provider/execution/target dimensions, model
+  IDs, correlation IDs, provider latency/usage/fallback aggregates, sandbox
+  command/output/redaction totals, artifact counts/bytes, and runtime lease
+  timing. It excludes cwd, prompts, diffs, artifact bodies, command args,
+  stdout/stderr, environment values, and runtime scope keys. Requested/resolved
+  model fields are exposed only when the supplied value is a safe model
+  identifier; unsafe optional values are omitted and unsafe required provider
+  telemetry model fields collapse to `unknown`.
 - `ReviewRunListQuerySchema`: bounded list query with optional status,
   repository, and opaque cursor filters.
 - `ReviewRunListResponseSchema`: run-list page with newest-first summaries and
@@ -224,6 +234,8 @@ CLI, service, core, and Rust contract validation:
 
 - bounded `cwd`, custom instructions, commit titles, model IDs, branch refs,
   path filters, `maxFiles`, `maxDiffBytes`, and output format counts.
+- model IDs must use the safe identifier grammar accepted by provider policy
+  routing and must not contain secret-like values or free-form diagnostic text.
 - branch refs reject revision expressions and Git/pathspec control syntax.
 - commit targets must be object IDs; the git collector verifies object IDs
   resolve to commits before running `git show`.
@@ -249,8 +261,8 @@ queryable persistence:
 
 - `ReviewRunStoreRecordSchema`: run metadata keyed by `reviewId` and `runId`
   with status, request, optional authorization snapshot, timestamps, optional
-  `detachedRunId`, workflow/sandbox IDs, optional terminal error, and optional
-  result.
+  `detachedRunId`, workflow/sandbox IDs, optional terminal error, optional
+  result, and optional redaction-safe metrics.
 - `ReviewRepositorySelectionSchema`: GitHub repository selected by a hosted
   start request.
 - `ReviewRunRepositorySummarySchema`: normalized GitHub repository identity used

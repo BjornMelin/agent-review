@@ -6,6 +6,8 @@ import {
   type OutputFormat,
   type ProviderPolicyTelemetry,
   ProviderPolicyTelemetrySchema,
+  type ProviderUsage,
+  ProviderUsageSchema,
   type ReviewArtifactMetadata,
   type ReviewAuthPrincipal,
   type ReviewAuthScope,
@@ -19,9 +21,11 @@ import {
   type ReviewRunAuthorization,
   type ReviewRunLease,
   type ReviewRunListResponse,
+  type ReviewRunMetrics,
+  ReviewRunMetricsSchema,
   type ReviewRunStatus,
   type ReviewRunSummary,
-  redactErrorMessage,
+  redactSensitiveText,
 } from '@review-agent/review-types';
 import type { SQL } from 'drizzle-orm';
 import { and, asc, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
@@ -61,6 +65,7 @@ type ReviewRunListRow = Pick<
   | 'requestSummary'
   | 'authorization'
   | 'error'
+  | 'metrics'
   | 'detachedRunId'
   | 'workflowRunId'
   | 'sandboxId'
@@ -91,6 +96,12 @@ type RuntimeCapacityRecord = Pick<
   ReviewRecord,
   'status' | 'lease' | 'detachedRunId' | 'updatedAt' | 'request'
 >;
+const MAX_PUBLIC_RUN_ERROR_LENGTH = 240;
+const PRIVATE_RUN_ERROR_MARKER_PATTERN =
+  /\b(?:args|argv|artifact|authorization|bearer|body|command|cwd|diff|env|environment|file|path|prompt|sandbox output|scope[-_ ]?key|secret|stderr|stdout|stack|token|trace)\b\s*[:=]?/i;
+const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
+const STACK_FRAME_RUN_ERROR_PATTERN =
+  /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
 
 type SerializedReviewRunResult = Omit<ReviewRunResult, 'diff'> & {
   diff: Omit<ReviewRunResult['diff'], 'changedLineIndex'> & {
@@ -108,8 +119,10 @@ export type ReviewRecord = {
   authorization?: ReviewRunAuthorization;
   createdAt: number;
   updatedAt: number;
+  completedAt?: number;
   result?: ReviewRunResult;
   error?: string;
+  metrics?: ReviewRunMetrics;
   detachedRunId?: string;
   workflowRunId?: string;
   sandboxId?: string;
@@ -294,6 +307,9 @@ export type ReviewStoreRuntimeReservation =
 export type ReviewStoreAdapter = {
   get(reviewId: string): Promise<ReviewRecord | undefined>;
   list(options: ReviewStoreListOptions): Promise<ReviewRunListResponse>;
+  listActiveDetached(
+    options?: Pick<ReviewStoreListOptions, 'repositories'>
+  ): Promise<ReviewRecord[]>;
   reserve(
     record: ReviewRecordWithLease,
     options: ReviewStoreRuntimeCapacityOptions
@@ -427,11 +443,17 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
     updatedAt: record.updatedAt,
     events: record.events.map(cloneLifecycleEvent),
   };
+  if (record.completedAt !== undefined) {
+    next.completedAt = record.completedAt;
+  }
   if (record.result) {
     next.result = cloneReviewRunResult(record.result);
   }
   if (record.error) {
     next.error = record.error;
+  }
+  if (record.metrics) {
+    next.metrics = structuredClone(record.metrics);
   }
   if (record.detachedRunId) {
     next.detachedRunId = record.detachedRunId;
@@ -571,6 +593,202 @@ export function artifactMetadataForRecord(
   );
 }
 
+function artifactMetricsForRecord(
+  record: ReviewRecord
+): ReviewRunMetrics['artifacts'] {
+  if (!record.result) {
+    return { count: 0, totalBytes: 0 };
+  }
+  const artifacts = Object.values(record.result.artifacts).filter(
+    (content): content is string => typeof content === 'string'
+  );
+  return {
+    count: artifacts.length,
+    totalBytes: artifacts.reduce(
+      (total, content) => total + Buffer.byteLength(content),
+      0
+    ),
+  };
+}
+
+function sandboxMetricsForRecord(
+  record: ReviewRecord
+): ReviewRunMetrics['sandbox'] {
+  const audit = record.result?.sandboxAudit;
+  if (!audit) {
+    return undefined;
+  }
+  return {
+    commandCount: audit.consumed.commandCount,
+    commandDurationMs: audit.commands.reduce(
+      (total, command) => total + command.durationMs,
+      0
+    ),
+    wallTimeMs: audit.consumed.wallTimeMs,
+    outputBytes: audit.consumed.outputBytes,
+    artifactBytes: audit.consumed.artifactBytes,
+    redactions: {
+      apiKeyLike: audit.redactions.apiKeyLike,
+      bearer: audit.redactions.bearer,
+    },
+  };
+}
+
+function providerUsageMetrics(value: unknown): ProviderUsage {
+  const usage =
+    value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : {};
+  const candidate: Record<string, unknown> = {
+    status: usage.status === 'reported' ? 'reported' : 'unknown',
+  };
+  for (const key of [
+    'inputTokens',
+    'outputTokens',
+    'totalTokens',
+    'reasoningTokens',
+    'cachedInputTokens',
+  ] as const) {
+    if (
+      typeof usage[key] === 'number' &&
+      Number.isInteger(usage[key]) &&
+      usage[key] >= 0
+    ) {
+      candidate[key] = usage[key];
+    }
+  }
+  for (const key of ['costUsd', 'marketCostUsd'] as const) {
+    if (typeof usage[key] === 'number' && usage[key] >= 0) {
+      candidate[key] = usage[key];
+    }
+  }
+  const parsed = ProviderUsageSchema.safeParse(candidate);
+  const safeUsage: ProviderUsage = parsed.success
+    ? parsed.data
+    : { status: 'unknown' };
+  return {
+    status: safeUsage.status,
+    ...(safeUsage.inputTokens === undefined
+      ? {}
+      : { inputTokens: safeUsage.inputTokens }),
+    ...(safeUsage.outputTokens === undefined
+      ? {}
+      : { outputTokens: safeUsage.outputTokens }),
+    ...(safeUsage.totalTokens === undefined
+      ? {}
+      : { totalTokens: safeUsage.totalTokens }),
+    ...(safeUsage.reasoningTokens === undefined
+      ? {}
+      : { reasoningTokens: safeUsage.reasoningTokens }),
+    ...(safeUsage.cachedInputTokens === undefined
+      ? {}
+      : { cachedInputTokens: safeUsage.cachedInputTokens }),
+    ...(safeUsage.costUsd === undefined ? {} : { costUsd: safeUsage.costUsd }),
+    ...(safeUsage.marketCostUsd === undefined
+      ? {}
+      : { marketCostUsd: safeUsage.marketCostUsd }),
+  };
+}
+
+function providerMetricsForRecord(
+  record: ReviewRecord
+): ReviewRunMetrics['providerSummary'] {
+  const telemetry = safeProviderTelemetry(
+    record.result?.result.metadata.providerTelemetry
+  );
+  if (!telemetry) {
+    return undefined;
+  }
+  return {
+    totalLatencyMs: telemetry.totalLatencyMs,
+    attemptCount: telemetry.attempts.length,
+    fallbackUsed: telemetry.fallbackUsed,
+    failureClass: telemetry.failureClass,
+    usage: providerUsageMetrics(telemetry.usage),
+  };
+}
+
+/**
+ * Builds a durable, redaction-safe observability summary for one run.
+ *
+ * @param record - Review record whose operational metadata should be summarized.
+ * @returns Aggregated metrics with no raw cwd, prompt, diff, command output, or artifact body.
+ */
+export function buildReviewRunMetrics(record: ReviewRecord): ReviewRunMetrics {
+  const completedAt = isTerminalStatus(record.status)
+    ? (record.completedAt ?? record.updatedAt)
+    : undefined;
+  const previousMetrics = record.metrics;
+  const workflowRunId = record.workflowRunId ?? record.detachedRunId;
+  const sandboxId =
+    record.sandboxId ?? record.result?.sandboxAudit?.sandboxId ?? undefined;
+  const providerSummary = providerMetricsForRecord(record);
+  const sandbox = sandboxMetricsForRecord(record);
+  const queueMs =
+    record.lease?.acquiredAt === undefined
+      ? (previousMetrics?.queueMs ?? 0)
+      : Math.max(0, record.lease.acquiredAt - record.createdAt);
+  const previousRuntime = previousMetrics?.runtime;
+  const leaseOwner = record.lease?.owner ?? previousRuntime?.leaseOwner;
+  const leaseAcquiredAt =
+    record.lease?.acquiredAt ?? previousRuntime?.leaseAcquiredAt;
+  const leaseHeartbeatAt =
+    record.lease?.heartbeatAt ?? previousRuntime?.leaseHeartbeatAt;
+  const leaseExpiresAt =
+    record.lease?.expiresAt ?? previousRuntime?.leaseExpiresAt;
+  const runtime: ReviewRunMetrics['runtime'] = {
+    ...(leaseOwner === undefined ? {} : { leaseOwner }),
+    ...(leaseAcquiredAt === undefined ? {} : { leaseAcquiredAt }),
+    ...(leaseHeartbeatAt === undefined ? {} : { leaseHeartbeatAt }),
+    ...(leaseExpiresAt === undefined ? {} : { leaseExpiresAt }),
+    ...(record.lease
+      ? {
+          leaseTtlMs: Math.max(
+            0,
+            record.lease.expiresAt - record.lease.heartbeatAt
+          ),
+        }
+      : previousRuntime?.leaseTtlMs === undefined
+        ? {}
+        : { leaseTtlMs: previousRuntime.leaseTtlMs }),
+    ...(record.cancelRequestedAt === undefined
+      ? {}
+      : { cancelRequestedAt: record.cancelRequestedAt }),
+  };
+  const metrics: ReviewRunMetrics = {
+    status: record.status,
+    startedAt: record.createdAt,
+    ...(completedAt === undefined ? {} : { completedAt }),
+    ...(completedAt === undefined
+      ? {}
+      : { durationMs: Math.max(0, completedAt - record.createdAt) }),
+    queueMs,
+    provider: record.request.provider,
+    executionMode: record.request.executionMode,
+    targetType: record.request.target.type,
+    ...(safeObservableModel(record.request.model)
+      ? { requestedModel: safeObservableModel(record.request.model) }
+      : {}),
+    ...(safeObservableModel(record.result?.result.metadata.modelResolved)
+      ? {
+          resolvedModel: safeObservableModel(
+            record.result?.result.metadata.modelResolved
+          ),
+        }
+      : {}),
+    correlation: {
+      reviewId: record.reviewId,
+      ...(workflowRunId ? { workflowRunId } : {}),
+      ...(sandboxId ? { sandboxId } : {}),
+    },
+    ...(providerSummary ? { providerSummary } : {}),
+    ...(sandbox ? { sandbox } : {}),
+    artifacts: artifactMetricsForRecord(record),
+    runtime,
+  };
+  return ReviewRunMetricsSchema.parse(metrics);
+}
+
 /**
  * Builds the compact operational summary used by run lists and status details.
  *
@@ -598,25 +816,34 @@ export function buildReviewRunSummary(
       outputFormats: record.request.outputFormats,
       ...(record.request.model === undefined
         ? {}
-        : { model: record.request.model }),
+        : safeObservableModel(record.request.model)
+          ? { model: safeObservableModel(record.request.model) }
+          : {}),
     },
     ...(record.authorization
       ? { repository: repositorySummaryFor(record.authorization) }
       : {}),
-    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
+    ...(record.error
+      ? { error: safeRunErrorForStatus(record.status, record.error) }
+      : {}),
     findingCount: record.result?.result.findings.length ?? 0,
     artifactFormats,
     publicationCount: options.publicationCount ?? 0,
-    ...(record.result?.result.metadata.modelResolved
-      ? { modelResolved: record.result.result.metadata.modelResolved }
+    ...(safeObservableModel(record.result?.result.metadata.modelResolved)
+      ? {
+          modelResolved: safeObservableModel(
+            record.result?.result.metadata.modelResolved
+          ),
+        }
       : {}),
     ...(record.result?.result.metadata.providerTelemetry
       ? {
-          providerTelemetry: structuredClone(
+          providerTelemetry: safeProviderTelemetry(
             record.result.result.metadata.providerTelemetry
           ),
         }
       : {}),
+    metrics: structuredClone(buildReviewRunMetrics(record)),
     ...(record.detachedRunId ? { detachedRunId: record.detachedRunId } : {}),
     ...(record.workflowRunId ? { workflowRunId: record.workflowRunId } : {}),
     ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
@@ -624,7 +851,7 @@ export function buildReviewRunSummary(
       ? {}
       : { cancelRequestedAt: record.cancelRequestedAt }),
     ...(isTerminalStatus(record.status)
-      ? { completedAt: record.updatedAt }
+      ? { completedAt: record.completedAt ?? record.updatedAt }
       : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -635,12 +862,20 @@ function buildReviewRunSummaryForListRow(
   run: ReviewRunListRow,
   options: {
     artifactFormats?: OutputFormat[];
+    artifactByteLength?: number;
     publicationCount?: number;
   } = {}
 ): ReviewRunSummary {
   const completedAt = msFromDate(run.completedAt);
   const findingCount = Number(run.findingCount ?? 0);
   const providerTelemetry = parseProviderTelemetry(run.providerTelemetry);
+  const metrics =
+    parseReviewRunMetrics(run.metrics) ??
+    buildReviewRunMetricsForListRow(run, {
+      artifactCount: options.artifactFormats?.length ?? 0,
+      artifactByteLength: options.artifactByteLength ?? 0,
+      ...(providerTelemetry ? { providerTelemetry } : {}),
+    });
   return {
     reviewId: run.reviewId,
     status: run.status,
@@ -649,17 +884,24 @@ function buildReviewRunSummaryForListRow(
       executionMode: run.requestSummary.executionMode,
       targetType: run.requestSummary.targetType,
       outputFormats: run.requestSummary.outputFormats,
-      ...(run.requestModel ? { model: run.requestModel } : {}),
+      ...(safeObservableModel(run.requestModel) === undefined
+        ? {}
+        : { model: safeObservableModel(run.requestModel) }),
     },
     ...(run.authorization
       ? { repository: repositorySummaryFor(run.authorization) }
       : {}),
-    ...(run.error ? { error: redactErrorMessage(run.error) } : {}),
+    ...(run.error
+      ? { error: safeRunErrorForStatus(run.status, run.error) }
+      : {}),
     findingCount: Number.isFinite(findingCount) ? findingCount : 0,
     artifactFormats: options.artifactFormats ?? [],
     publicationCount: options.publicationCount ?? 0,
-    ...(run.modelResolved ? { modelResolved: run.modelResolved } : {}),
+    ...(safeObservableModel(run.modelResolved)
+      ? { modelResolved: safeObservableModel(run.modelResolved) }
+      : {}),
     ...(providerTelemetry ? { providerTelemetry } : {}),
+    metrics,
     ...(run.detachedRunId ? { detachedRunId: run.detachedRunId } : {}),
     ...(run.workflowRunId ? { workflowRunId: run.workflowRunId } : {}),
     ...(run.sandboxId ? { sandboxId: run.sandboxId } : {}),
@@ -670,6 +912,56 @@ function buildReviewRunSummaryForListRow(
     createdAt: run.createdAt.getTime(),
     updatedAt: run.updatedAt.getTime(),
   };
+}
+
+function buildReviewRunMetricsForListRow(
+  run: ReviewRunListRow,
+  options: {
+    artifactCount: number;
+    artifactByteLength: number;
+    providerTelemetry?: ProviderPolicyTelemetry;
+  }
+): ReviewRunMetrics {
+  const completedAt = msFromDate(run.completedAt);
+  const cancelRequestedAt = msFromDate(run.cancelRequestedAt);
+  const providerSummary = options.providerTelemetry
+    ? {
+        totalLatencyMs: options.providerTelemetry.totalLatencyMs,
+        attemptCount: options.providerTelemetry.attempts.length,
+        fallbackUsed: options.providerTelemetry.fallbackUsed,
+        failureClass: options.providerTelemetry.failureClass,
+        usage: providerUsageMetrics(options.providerTelemetry.usage),
+      }
+    : undefined;
+  return ReviewRunMetricsSchema.parse({
+    status: run.status,
+    startedAt: run.createdAt.getTime(),
+    ...(completedAt === undefined ? {} : { completedAt }),
+    ...(completedAt === undefined
+      ? {}
+      : { durationMs: Math.max(0, completedAt - run.createdAt.getTime()) }),
+    queueMs: 0,
+    provider: run.requestSummary.provider,
+    executionMode: run.requestSummary.executionMode,
+    targetType: run.requestSummary.targetType,
+    ...(safeObservableModel(run.requestModel)
+      ? { requestedModel: safeObservableModel(run.requestModel) }
+      : {}),
+    ...(safeObservableModel(run.modelResolved)
+      ? { resolvedModel: safeObservableModel(run.modelResolved) }
+      : {}),
+    correlation: {
+      reviewId: run.reviewId,
+      ...(run.workflowRunId ? { workflowRunId: run.workflowRunId } : {}),
+      ...(run.sandboxId ? { sandboxId: run.sandboxId } : {}),
+    },
+    ...(providerSummary ? { providerSummary } : {}),
+    artifacts: {
+      count: options.artifactCount,
+      totalBytes: options.artifactByteLength,
+    },
+    runtime: cancelRequestedAt === undefined ? {} : { cancelRequestedAt },
+  });
 }
 
 function encodeReviewRunListCursor(summary: ReviewRunSummary): string {
@@ -765,6 +1057,65 @@ function repositoryMatchesFilter(
   });
 }
 
+function safeRunErrorForStatus(status: ReviewRunStatus, error: string): string {
+  if (error === 'runtime lease expired' || error === 'detached run not found') {
+    return error;
+  }
+  if (status === 'cancelled') {
+    return 'review run cancelled';
+  }
+  const fallback = /detached/i.test(error)
+    ? /start/i.test(error)
+      ? 'detached start failed'
+      : 'detached run failed'
+    : 'review run failed';
+  return safeRunDiagnosticMessage(error, fallback);
+}
+
+function safeRunDiagnosticMessage(error: string, fallback: string): string {
+  const normalized = error.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return fallback;
+  }
+  const redacted = redactSensitiveText(normalized);
+  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
+    return fallback;
+  }
+  const candidate = redacted.text.trim();
+  if (
+    !candidate ||
+    candidate.length > MAX_PUBLIC_RUN_ERROR_LENGTH ||
+    PRIVATE_RUN_ERROR_MARKER_PATTERN.test(candidate) ||
+    PATHISH_RUN_ERROR_PATTERN.test(candidate) ||
+    STACK_FRAME_RUN_ERROR_PATTERN.test(candidate)
+  ) {
+    return fallback;
+  }
+  return candidate;
+}
+
+function safeObservableModel(
+  model: string | null | undefined
+): string | undefined {
+  if (!model) {
+    return undefined;
+  }
+  const redacted = redactSensitiveText(model);
+  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
+    return undefined;
+  }
+  const candidate = redacted.text.trim();
+  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
+}
+
+const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
+
+function requiredObservableIdentifier(
+  value: string | null | undefined
+): string {
+  return safeObservableModel(value) ?? 'unknown';
+}
+
 function dateFromMs(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
@@ -776,8 +1127,132 @@ function msFromDate(value: Date | null): number | undefined {
 function parseProviderTelemetry(
   value: unknown
 ): ProviderPolicyTelemetry | undefined {
-  const parsed = ProviderPolicyTelemetrySchema.safeParse(value);
-  return parsed.success ? structuredClone(parsed.data) : undefined;
+  const parsed = ProviderPolicyTelemetrySchema.safeParse(
+    providerTelemetryInputForParse(value)
+  );
+  return parsed.success ? safeProviderTelemetry(parsed.data) : undefined;
+}
+
+function parseReviewRunMetrics(value: unknown): ReviewRunMetrics | undefined {
+  const parsed = ReviewRunMetricsSchema.safeParse(value);
+  return parsed.success ? safeReviewRunMetrics(parsed.data) : undefined;
+}
+
+function providerTelemetryInputForParse(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const telemetry = value as Record<string, unknown>;
+  return {
+    policyVersion: telemetry.policyVersion,
+    requestedModel: telemetry.requestedModel,
+    resolvedModel: telemetry.resolvedModel,
+    route: telemetry.route,
+    finalProvider: telemetry.finalProvider,
+    fallbackOrder: telemetry.fallbackOrder,
+    fallbackUsed: telemetry.fallbackUsed,
+    maxInputChars: telemetry.maxInputChars,
+    maxOutputTokens: telemetry.maxOutputTokens,
+    timeoutMs: telemetry.timeoutMs,
+    maxAttempts: telemetry.maxAttempts,
+    retention: telemetry.retention,
+    zdrRequired: telemetry.zdrRequired,
+    disallowPromptTraining: telemetry.disallowPromptTraining,
+    failureClass: telemetry.failureClass,
+    totalLatencyMs: telemetry.totalLatencyMs,
+    attempts: Array.isArray(telemetry.attempts)
+      ? telemetry.attempts.map(providerAttemptTelemetryInputForParse)
+      : telemetry.attempts,
+    usage: providerUsageMetrics(telemetry.usage),
+  };
+}
+
+function providerAttemptTelemetryInputForParse(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const attempt = value as Record<string, unknown>;
+  return {
+    route: attempt.route,
+    model: attempt.model,
+    provider: attempt.provider,
+    status: attempt.status,
+    latencyMs: attempt.latencyMs,
+    failureClass: attempt.failureClass,
+    errorCode: attempt.errorCode,
+    retryable: attempt.retryable,
+    generationId: attempt.generationId,
+    ...(attempt.usage === undefined
+      ? {}
+      : { usage: providerUsageMetrics(attempt.usage) }),
+  };
+}
+
+function safeReviewRunMetrics(metrics: ReviewRunMetrics): ReviewRunMetrics {
+  const {
+    requestedModel: _requestedModel,
+    resolvedModel: _resolvedModel,
+    ...rest
+  } = metrics;
+  const requestedModel = safeObservableModel(metrics.requestedModel);
+  const resolvedModel = safeObservableModel(metrics.resolvedModel);
+  return ReviewRunMetricsSchema.parse({
+    ...rest,
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(resolvedModel ? { resolvedModel } : {}),
+  });
+}
+
+function safeProviderTelemetry(
+  telemetry: ProviderPolicyTelemetry | undefined
+): ProviderPolicyTelemetry | undefined {
+  if (!telemetry) {
+    return undefined;
+  }
+  const requestedModel = safeObservableModel(telemetry.requestedModel);
+  const finalProvider = safeObservableModel(telemetry.finalProvider);
+  return ProviderPolicyTelemetrySchema.parse({
+    policyVersion: requiredObservableIdentifier(telemetry.policyVersion),
+    resolvedModel: requiredObservableIdentifier(telemetry.resolvedModel),
+    route: requiredObservableIdentifier(telemetry.route),
+    fallbackOrder: telemetry.fallbackOrder.flatMap((model) => {
+      const safeModel = safeObservableModel(model);
+      return safeModel ? [safeModel] : [];
+    }),
+    fallbackUsed: telemetry.fallbackUsed,
+    maxInputChars: telemetry.maxInputChars,
+    maxOutputTokens: telemetry.maxOutputTokens,
+    timeoutMs: telemetry.timeoutMs,
+    maxAttempts: telemetry.maxAttempts,
+    retention: telemetry.retention,
+    zdrRequired: telemetry.zdrRequired,
+    disallowPromptTraining: telemetry.disallowPromptTraining,
+    failureClass: telemetry.failureClass,
+    totalLatencyMs: telemetry.totalLatencyMs,
+    attempts: telemetry.attempts.map((attempt) => ({
+      route: requiredObservableIdentifier(attempt.route),
+      model: requiredObservableIdentifier(attempt.model),
+      status: attempt.status,
+      latencyMs: attempt.latencyMs,
+      ...(safeObservableModel(attempt.provider)
+        ? { provider: safeObservableModel(attempt.provider) }
+        : {}),
+      ...(attempt.failureClass ? { failureClass: attempt.failureClass } : {}),
+      ...(safeObservableModel(attempt.errorCode)
+        ? { errorCode: safeObservableModel(attempt.errorCode) }
+        : {}),
+      ...(attempt.retryable === undefined
+        ? {}
+        : { retryable: attempt.retryable }),
+      ...(safeObservableModel(attempt.generationId)
+        ? { generationId: safeObservableModel(attempt.generationId) }
+        : {}),
+      ...(attempt.usage ? { usage: providerUsageMetrics(attempt.usage) } : {}),
+    })),
+    usage: providerUsageMetrics(telemetry.usage),
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(finalProvider ? { finalProvider } : {}),
+  });
 }
 
 function artifactRowsFor(
@@ -828,6 +1303,7 @@ function runInsertFor(record: ReviewRecord): typeof reviewRuns.$inferInsert {
     authorization: authorization ?? null,
     requestSummary: buildRequestSummary(record.request),
     result: record.result ? serializeReviewRunResult(record.result) : null,
+    metrics: structuredClone(buildReviewRunMetrics(record)),
     error: record.error ?? null,
     detachedRunId: record.detachedRunId ?? null,
     workflowRunId: record.workflowRunId ?? record.detachedRunId ?? null,
@@ -854,7 +1330,7 @@ function runInsertFor(record: ReviewRecord): typeof reviewRuns.$inferInsert {
     createdAt: new Date(record.createdAt),
     updatedAt: new Date(record.updatedAt),
     completedAt: isTerminalStatus(record.status)
-      ? new Date(record.updatedAt)
+      ? new Date(record.completedAt ?? record.updatedAt)
       : null,
     retentionExpiresAt: dateFromMs(record.retentionExpiresAt),
     deletedAt: dateFromMs(record.deletedAt),
@@ -919,6 +1395,18 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
         .filter((summary) => isSummaryAfterCursor(summary, options.cursor))
         .sort(compareRunSummariesForList);
       return runListResponseFromSummaries(summaries, options.limit);
+    },
+    async listActiveDetached(options = {}) {
+      return [...records.values()]
+        .filter(
+          (record) =>
+            Boolean(record.detachedRunId) &&
+            (record.status === 'queued' || record.status === 'running')
+        )
+        .filter((record) =>
+          repositoryMatchesFilter(record.authorization, options.repositories)
+        )
+        .map(cloneRecord);
     },
     async reserve(record, options) {
       assertReviewRecordWithLease(record);
@@ -1214,11 +1702,19 @@ function buildRecord(
     updatedAt: run.updatedAt.getTime(),
     events: events.map((row) => row.event),
   };
+  const completedAt = msFromDate(run.completedAt);
+  if (completedAt !== undefined) {
+    record.completedAt = completedAt;
+  }
   if (result) {
     record.result = result;
   }
   if (run.error) {
     record.error = run.error;
+  }
+  const metrics = parseReviewRunMetrics(run.metrics);
+  if (metrics) {
+    record.metrics = metrics;
   }
   if (run.detachedRunId) {
     record.detachedRunId = run.detachedRunId;
@@ -1273,6 +1769,7 @@ function rowUpdateFor(
     authorization: insert.authorization,
     requestSummary: insert.requestSummary,
     result: insert.result,
+    metrics: insert.metrics,
     error: insert.error,
     detachedRunId: insert.detachedRunId,
     workflowRunId: insert.workflowRunId,
@@ -1500,6 +1997,20 @@ function reviewListWherePredicate(
       : and(...predicates);
 }
 
+function activeDetachedRunsWherePredicate(
+  repositories: ReviewStoreListRepositoryFilter[] | undefined
+): SQL | undefined {
+  const activeDetachedPredicate = and(
+    inArray(reviewRuns.status, ['queued', 'running']),
+    sql`${reviewRuns.detachedRunId} IS NOT NULL`
+  );
+  const repositoryPredicate = reviewListRepositoryPredicate(repositories);
+  if (!repositoryPredicate) {
+    return activeDetachedPredicate;
+  }
+  return and(activeDetachedPredicate, repositoryPredicate);
+}
+
 /**
  * Creates a Drizzle-backed durable store for PostgreSQL-compatible databases.
  *
@@ -1652,6 +2163,7 @@ export function createDrizzleReviewStore(
           requestSummary: reviewRuns.requestSummary,
           authorization: reviewRuns.authorization,
           error: reviewRuns.error,
+          metrics: reviewRuns.metrics,
           detachedRunId: reviewRuns.detachedRunId,
           workflowRunId: reviewRuns.workflowRunId,
           sandboxId: reviewRuns.sandboxId,
@@ -1684,6 +2196,7 @@ export function createDrizzleReviewStore(
       const selectedRows = rows.slice(0, options.limit);
       const reviewIds = selectedRows.map((row) => row.reviewId);
       const artifactFormatsByReviewId = new Map<string, OutputFormat[]>();
+      const artifactBytesByReviewId = new Map<string, number>();
       const publicationCountsByReviewId = new Map<string, number>();
 
       if (reviewIds.length > 0) {
@@ -1692,6 +2205,7 @@ export function createDrizzleReviewStore(
             .select({
               reviewId: reviewArtifacts.reviewId,
               format: reviewArtifacts.format,
+              byteLength: reviewArtifacts.byteLength,
             })
             .from(reviewArtifacts)
             .where(inArray(reviewArtifacts.reviewId, reviewIds)),
@@ -1705,6 +2219,11 @@ export function createDrizzleReviewStore(
             artifactFormatsByReviewId.get(artifact.reviewId) ?? [];
           formats.push(artifact.format);
           artifactFormatsByReviewId.set(artifact.reviewId, formats);
+          artifactBytesByReviewId.set(
+            artifact.reviewId,
+            (artifactBytesByReviewId.get(artifact.reviewId) ?? 0) +
+              artifact.byteLength
+          );
         }
         for (const publication of publications) {
           publicationCountsByReviewId.set(
@@ -1718,12 +2237,26 @@ export function createDrizzleReviewStore(
         selectedRows.map((row) =>
           buildReviewRunSummaryForListRow(row, {
             artifactFormats: artifactFormatsByReviewId.get(row.reviewId) ?? [],
+            artifactByteLength: artifactBytesByReviewId.get(row.reviewId) ?? 0,
             publicationCount:
               publicationCountsByReviewId.get(row.reviewId) ?? 0,
           })
         ),
         options.limit,
         rows.length > options.limit
+      );
+    },
+    async listActiveDetached(options = {}) {
+      const rows = await db
+        .select({ reviewId: reviewRuns.reviewId })
+        .from(reviewRuns)
+        .where(activeDetachedRunsWherePredicate(options.repositories))
+        .orderBy(desc(reviewRuns.updatedAt), desc(reviewRuns.reviewId));
+      const records = await Promise.all(
+        rows.map(async ({ reviewId }) => hydrate(reviewId))
+      );
+      return records.filter((record): record is ReviewRecord =>
+        Boolean(record)
       );
     },
     async reserve(record, options) {
