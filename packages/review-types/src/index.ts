@@ -1513,6 +1513,7 @@ function assertPathFiltersWithinSecurityLimit(
  *
  * @param request - Parsed review request to validate against resolved limits.
  * @param limits - Fully resolved security limits.
+ * @throws Error - When the request exceeds configured size, path, or authorization limits.
  */
 export function assertReviewRequestWithinSecurityLimits(
   request: ReviewRequest,
