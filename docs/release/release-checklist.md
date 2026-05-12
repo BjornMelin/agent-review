@@ -10,9 +10,28 @@ issue closeout.
 ## Preconditions
 
 1. `pnpm install --frozen-lockfile`
-2. `pnpm check`
-3. `pnpm build`
-4. `bash scripts/repro-check.sh`
+2. `pnpm ci:contracts`
+3. `pnpm ci:security`
+4. `pnpm check`
+5. `pnpm build`
+6. `bash scripts/repro-check.sh`
+
+## CI Evidence
+
+Every PR must keep the branch-protection `check` job green. The upstream lanes
+that feed it are documented in the
+[CI hardening runbook](./ci-hardening.md):
+
+1. `Static checks`
+2. `Generated contracts`
+3. `Rust gates`
+4. `Typecheck, tests, and builds`
+5. `Dependency security audit`
+6. `Vercel preview smoke` when a Vercel preview deployment signal is emitted
+
+Before merging contract or Rust changes, verify the generated-schema drift gate
+and the relevant Cargo gate fail on an intentional temporary break, then revert
+that break and rerun the clean gate.
 
 ## Functional Verification
 
@@ -53,6 +72,16 @@ issue closeout.
    4. Open a run detail view and verify status metadata, findings, artifacts,
       and lifecycle events render without console errors on desktop and mobile
       viewports.
+6. Run Vercel preview smoke checks for hosted Review Room:
+   1. Confirm the preview deployment has `REVIEW_WEB_SERVICE_URL`,
+      `REVIEW_WEB_SERVICE_TOKEN`, and `REVIEW_WEB_ACCESS_TOKEN` configured.
+   2. Confirm the automated GitHub workflow does not pass repository secrets to
+      PR preview deployments.
+   3. Confirm the workflow uses `environment_url` or repository-dispatch
+      `client_payload.url` and checks out trusted scripts from `main`.
+   4. Run `node scripts/preview-smoke.mjs` against the preview URL.
+   5. Run `bash scripts/agent-browser-preview-smoke.sh` and preserve the
+      screenshot artifact when UI behavior changed.
 
 ## Security and Policy Verification
 

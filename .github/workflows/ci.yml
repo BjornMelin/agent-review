@@ -5,24 +5,154 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
 jobs:
-  check:
+  static:
+    name: Static checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - run: rustup default stable
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 11.0.9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Run Biome CI --error-on-warnings
+      - name: Run Biome CI
         run: pnpm exec biome ci --error-on-warnings .
-      - run: pnpm format
-      - run: pnpm check
-      - run: pnpm git:benchmark
-      - run: pnpm build
+      - name: Run package lint scripts
+        run: pnpm lint
+
+  contracts:
+    name: Generated contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.0.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check generated schema and Rust DTO drift
+        run: pnpm ci:contracts
+
+  rust:
+    name: Rust gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: rustup default stable
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Cargo tests
+        run: cargo test --workspace --all-targets --all-features --locked
+
+  test-build:
+    name: Typecheck, tests, and builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.0.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck workspace
+        run: pnpm typecheck
+      - name: Test workspace
+        run: pnpm test
+      - name: Run Rust diff/index benchmark
+        run: pnpm git:benchmark
+      - name: Build Review Room
+        run: pnpm --filter @review-agent/review-web build
+      - name: Build workspace
+        run: pnpm build
+
+  security-audit:
+    name: Dependency security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.0.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit npm and Cargo dependency advisories
+        run: pnpm ci:security
+
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    needs: [static, contracts, rust, test-build, security-audit]
+    if: ${{ always() }}
+    steps:
+      - name: Require every CI lane to pass
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          TEST_BUILD_RESULT: ${{ needs.test-build.result }}
+          SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
+        run: |
+          set -euo pipefail
+          for result in \
+            "$STATIC_RESULT" \
+            "$CONTRACTS_RESULT" \
+            "$RUST_RESULT" \
+            "$TEST_BUILD_RESULT" \
+            "$SECURITY_AUDIT_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "A required CI lane finished with result: $result" >&2
+              exit 1
+            fi
+          done
+          echo "All CI lanes passed"

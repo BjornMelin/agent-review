@@ -142,6 +142,11 @@ Pass/fail gates:
 - `pnpm --filter @review-agent/review-git test` must pass the corpus and the
   default Rust parser/index performance suite.
 - `pnpm git:benchmark` runs the strict corpus/benchmark gate used by CI.
+- `pnpm ci:contracts` regenerates committed JSON Schema artifacts, fails on
+  drift under `packages/review-types/generated/json-schema/`, and runs
+  `cargo test -p review-agent-contracts --locked`.
+- `pnpm ci:security` runs the production pnpm advisory audit and RustSec
+  `cargo audit --deny warnings` gate.
 - `REVIEW_AGENT_STRICT_PERF=1` turns parser budgets into hard assertions:
   collecting/parsing the real large uncommitted suite must stay under 15s, and
   the synthetic 240-file Rust parser/index path must stay under

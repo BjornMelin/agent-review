@@ -1,0 +1,78 @@
+name: Vercel Preview
+
+on:
+  deployment_status:
+  repository_dispatch:
+    types: [vercel.deployment.success]
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: vercel-preview-${{ github.event.deployment.id || github.event.client_payload.deployment_id || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  preview-smoke:
+    name: Vercel preview smoke
+    if: >-
+      ${{
+        (
+          github.event_name == 'deployment_status' &&
+          github.event.deployment_status.state == 'success' &&
+          github.event.deployment.environment == 'Preview' &&
+          github.event.deployment_status.environment_url != '' &&
+          contains(github.event.deployment_status.environment_url, 'vercel.app')
+        ) ||
+        (
+          github.event_name == 'repository_dispatch' &&
+          github.event.client_payload.environment == 'preview' &&
+          github.event.client_payload.url != '' &&
+          contains(github.event.client_payload.url, 'vercel.app')
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.0.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run HTTP preview smoke
+        env:
+          DEPLOYMENT_URL: >-
+            ${{
+              github.event_name == 'deployment_status' &&
+              github.event.deployment_status.environment_url ||
+              github.event.client_payload.url
+            }}
+        run: node scripts/preview-smoke.mjs
+      - name: Run agent-browser preview smoke
+        env:
+          DEPLOYMENT_URL: >-
+            ${{
+              github.event_name == 'deployment_status' &&
+              github.event.deployment_status.environment_url ||
+              github.event.client_payload.url
+            }}
+        run: |
+          mkdir -p dogfood-output
+          PREVIEW_SMOKE_SCREENSHOT="dogfood-output/vercel-preview-smoke.png" \
+            pnpm ci:agent-browser-preview
+      - name: Upload preview smoke screenshot
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-preview-smoke
+          path: dogfood-output/vercel-preview-smoke.png
+          if-no-files-found: ignore
+          retention-days: 14

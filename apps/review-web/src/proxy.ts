@@ -8,6 +8,10 @@ export const config = {
 };
 
 export function proxy(request: NextRequest): NextResponse | undefined {
+  if (request.nextUrl.pathname === '/api/health') {
+    return undefined;
+  }
+
   const access = authorizeReviewRoomRequest(request.headers);
   if (access.ok) {
     return undefined;

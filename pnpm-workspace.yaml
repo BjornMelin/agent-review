@@ -3,6 +3,7 @@ packages:
   - packages/*
 allowBuilds:
   '@biomejs/biome': true
+  agent-browser: true
   cbor-extract: true
   esbuild: true
   sharp: true

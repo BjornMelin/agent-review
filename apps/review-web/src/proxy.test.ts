@@ -63,6 +63,16 @@ describe('proxy', () => {
     });
   });
 
+  it('leaves public health checks reachable in protected previews', () => {
+    requireReviewRoomAccess();
+
+    const response = proxy(
+      new NextRequest('https://review.example.com/api/health')
+    );
+
+    expect(response).toBeUndefined();
+  });
+
   it('lets valid Basic credentials continue to the routed page', () => {
     requireReviewRoomAccess();
 

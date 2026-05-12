@@ -22,6 +22,9 @@ importers:
       '@types/node':
         specifier: ^24.12.3
         version: 24.12.3
+      agent-browser:
+        specifier: 0.27.0
+        version: 0.27.0
       turbo:
         specifier: ^2.9.12
         version: 2.9.12
@@ -2079,6 +2082,10 @@ packages:
     resolution: {integrity: sha512-OVfswz2SCt1NKSihAIPlPx/ygGdkA8si69xTAZtAZQACphuhmcg5mm28aNPo0/7oxcUVD/tO/AF1uSUF4BGpRw==}
     peerDependencies:
       zod: 4.3.6
+
+  agent-browser@0.27.0:
+    resolution: {integrity: sha512-mmHzVsYFVA6nshNNGJzg83aVMgKpf4h98ytY3pvtJB1Cot0ZyA2bfnkbSngGD56Azkj+GlhVH6qx9DfKOVE0yg==}
+    hasBin: true
 
   ai@6.0.177:
     resolution: {integrity: sha512-1xQtbeWwNcLyyM86ixZhkKvT+WRXc1lvarIKqPVtsyn8F9NDikwUMBqYu+aQKDgMht50SMXh4qboYuU8MeHZZA==}
@@ -4503,6 +4510,8 @@ snapshots:
     dependencies:
       ulid: 3.0.2
       zod: 4.3.6
+
+  agent-browser@0.27.0: {}
 
   ai@6.0.177(zod@4.4.3):
     dependencies:
