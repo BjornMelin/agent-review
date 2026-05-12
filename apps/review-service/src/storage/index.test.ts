@@ -514,6 +514,14 @@ describe('review storage', () => {
           },
         ],
       });
+      await expect(
+        triageStore.get('review-1', 'finding-1')
+      ).resolves.toMatchObject({
+        fingerprint: 'finding-1',
+        status: 'published',
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS + 1_000,
+      });
     });
   });
 
@@ -589,6 +597,9 @@ describe('review storage', () => {
       items: [{ status: 'accepted' }],
       audit: [{ toStatus: 'accepted' }],
     });
+    await expect(triageStore.get('review-1', 'finding-1')).resolves.toEqual(
+      expect.objectContaining({ status: 'accepted' })
+    );
   });
 
   it('stores scoped service tokens and append-only auth audit events', async () => {

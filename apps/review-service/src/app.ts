@@ -1831,10 +1831,7 @@ export function createReviewServiceApp(
         if (!hasFindingFingerprint(record, fingerprint)) {
           return jsonError(context, 'finding not found', 404);
         }
-        const existing = await findingTriageStore.list(reviewId);
-        const previous = existing.items.find(
-          (item) => item.fingerprint === fingerprint
-        );
+        const previous = await findingTriageStore.get(reviewId, fingerprint);
         const status = parsed.status ?? previous?.status ?? 'open';
         const note =
           parsed.note === null ? undefined : (parsed.note ?? previous?.note);

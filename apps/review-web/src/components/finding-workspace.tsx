@@ -66,18 +66,28 @@ function fileLabel(path: string): string {
   return segments.slice(-2).join('/');
 }
 
+function publicationStatusMap(
+  publications: ReviewPublicationRecord[]
+): Map<string, PublicationFilter> {
+  const statuses = new Map<string, PublicationFilter>();
+  for (const record of publications) {
+    const metadata = record.metadata as { fingerprint?: unknown } | undefined;
+    if (
+      record.channel === 'pullRequestComment' &&
+      typeof metadata?.fingerprint === 'string' &&
+      !statuses.has(metadata.fingerprint)
+    ) {
+      statuses.set(metadata.fingerprint, record.status);
+    }
+  }
+  return statuses;
+}
+
 function publicationStatusFor(
-  publications: ReviewPublicationRecord[],
+  publications: Map<string, PublicationFilter>,
   finding: ReviewFinding
 ): PublicationFilter {
-  const publication = publications.find((record) => {
-    const metadata = record.metadata as { fingerprint?: unknown } | undefined;
-    return (
-      record.channel === 'pullRequestComment' &&
-      metadata?.fingerprint === finding.fingerprint
-    );
-  });
-  return publication?.status ?? 'unpublished';
+  return publications.get(finding.fingerprint) ?? 'unpublished';
 }
 
 function triageRecordMap(
@@ -158,6 +168,10 @@ export function FindingWorkspace({
       .filter(Boolean)
       .sort();
   }, [records]);
+  const publicationStatuses = useMemo(
+    () => publicationStatusMap(publications),
+    [publications]
+  );
 
   const visibleFindings = useMemo(() => {
     const normalizedPath = filters.path.trim().toLowerCase();
@@ -165,7 +179,7 @@ export function FindingWorkspace({
       const record = records.get(finding.fingerprint);
       const status = record?.status ?? 'open';
       const actor = record?.actor ?? 'unassigned';
-      const publication = publicationStatusFor(publications, finding);
+      const publication = publicationStatusFor(publicationStatuses, finding);
       if (
         filters.priority !== 'all' &&
         String(finding.priority ?? '?') !== filters.priority
@@ -197,7 +211,7 @@ export function FindingWorkspace({
       }
       return true;
     });
-  }, [filters, findings, provider, publications, records]);
+  }, [filters, findings, provider, publicationStatuses, records]);
 
   const setFindingPending = useCallback(
     (fingerprint: string, nextPending: boolean) => {
@@ -463,7 +477,7 @@ export function FindingWorkspace({
               const record = records.get(finding.fingerprint);
               const status = record?.status ?? 'open';
               const publicationStatus = publicationStatusFor(
-                publications,
+                publicationStatuses,
                 finding
               );
               const note =

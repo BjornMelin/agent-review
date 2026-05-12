@@ -332,6 +332,10 @@ export type ReviewFindingTriageUpsert = {
  */
 export type ReviewFindingTriageStoreAdapter = {
   list(reviewId: string): Promise<ReviewFindingTriageListResponse>;
+  get(
+    reviewId: string,
+    fingerprint: string
+  ): Promise<ReviewFindingTriageRecord | undefined>;
   upsert(input: ReviewFindingTriageUpsert): Promise<{
     record: ReviewFindingTriageRecord;
     audit: ReviewFindingTriageAuditRecord;
@@ -1022,6 +1026,10 @@ export function createInMemoryReviewFindingTriageStore(): ReviewFindingTriageSto
   const audit: ReviewFindingTriageAuditRecord[] = [];
 
   return {
+    async get(reviewId, fingerprint) {
+      const record = records.get(`${reviewId}:${fingerprint}`);
+      return record ? cloneFindingTriageRecord(record) : undefined;
+    },
     async list(reviewId) {
       return {
         reviewId,
@@ -2102,6 +2110,19 @@ export function createDrizzleReviewFindingTriageStore(
   db: ReviewStorageDatabase
 ): ReviewFindingTriageStoreAdapter {
   return {
+    async get(reviewId, fingerprint) {
+      const [record] = await db
+        .select()
+        .from(reviewFindingTriage)
+        .where(
+          and(
+            eq(reviewFindingTriage.reviewId, reviewId),
+            eq(reviewFindingTriage.fingerprint, fingerprint)
+          )
+        )
+        .limit(1);
+      return record ? findingTriageRecordFromRow(record) : undefined;
+    },
     async list(reviewId) {
       const [items, audit] = await Promise.all([
         db
