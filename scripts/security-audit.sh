@@ -9,9 +9,14 @@ readonly CARGO_AUDIT_VERSION="0.22.1"
 echo "[security] Auditing production npm dependency graph"
 pnpm audit --audit-level high --prod
 
-if ! command -v cargo-audit >/dev/null 2>&1; then
-  echo "[security] Installing cargo-audit ${CARGO_AUDIT_VERSION}"
-  cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+INSTALLED_CARGO_AUDIT_VERSION=""
+if command -v cargo-audit >/dev/null 2>&1; then
+  INSTALLED_CARGO_AUDIT_VERSION="$(cargo audit --version | awk '{ print $2 }')"
+fi
+
+if [[ "$INSTALLED_CARGO_AUDIT_VERSION" != "$CARGO_AUDIT_VERSION" ]]; then
+  echo "[security] Installing cargo-audit ${CARGO_AUDIT_VERSION} (found: ${INSTALLED_CARGO_AUDIT_VERSION:-none})"
+  cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked --force
 fi
 
 echo "[security] Auditing Cargo.lock against RustSec advisories"

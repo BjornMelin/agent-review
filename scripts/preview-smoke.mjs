@@ -56,13 +56,25 @@ function previewHeaders() {
   return headers;
 }
 
+function previewTimeoutMs() {
+  const rawTimeout = process.env.PREVIEW_SMOKE_TIMEOUT_MS ?? '15000';
+  const timeoutMs = Number.parseInt(rawTimeout, 10);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000) {
+    fail(`invalid PREVIEW_SMOKE_TIMEOUT_MS: ${rawTimeout}`);
+  }
+  return timeoutMs;
+}
+
 async function fetchPreview(url, path, headers) {
   const target = new URL(path, url);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), previewTimeoutMs());
   let response;
   try {
     response = await fetch(target, {
       headers,
       redirect: 'follow',
+      signal: controller.signal,
     });
   } catch (error) {
     fail(
@@ -70,6 +82,8 @@ async function fetchPreview(url, path, headers) {
         error instanceof Error ? error.message : String(error)
       }`
     );
+  } finally {
+    clearTimeout(timer);
   }
   const text = await response.text();
   return { response, text, target };

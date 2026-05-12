@@ -69,7 +69,7 @@ jobs:
           PREVIEW_SMOKE_SCREENSHOT="dogfood-output/vercel-preview-smoke.png" \
             pnpm ci:agent-browser-preview
       - name: Upload preview smoke screenshot
-        if: ${{ !cancelled() }}
+        if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vercel-preview-smoke

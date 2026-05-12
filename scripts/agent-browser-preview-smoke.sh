@@ -43,7 +43,14 @@ capture_screenshot() {
   fi
 }
 
-trap 'status=$?; if [[ "$status" -ne 0 ]]; then capture_screenshot; fi' EXIT
+on_exit() {
+  local exit_status="$1"
+  if [[ "$exit_status" -ne 0 ]]; then
+    capture_screenshot
+  fi
+}
+
+trap 'on_exit "$?"' EXIT
 
 run_agent_browser close --all >/dev/null 2>&1 || true
 run_agent_browser set headers "$HEADERS_JSON"
