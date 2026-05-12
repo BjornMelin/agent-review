@@ -191,12 +191,7 @@ function createDefaultRequestFactory(options: {
     baseUrl,
     headers: {
       accept: 'application/vnd.github+json',
-      ...((options.apiVersion ?? DEFAULT_GITHUB_API_VERSION)
-        ? {
-            'x-github-api-version':
-              options.apiVersion ?? DEFAULT_GITHUB_API_VERSION,
-          }
-        : {}),
+      'x-github-api-version': options.apiVersion ?? DEFAULT_GITHUB_API_VERSION,
     },
   });
   return (token) =>
