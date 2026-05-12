@@ -19,6 +19,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
   access, and controlled publish/cancel actions.
 - Preserve a TypeScript control plane while allowing narrowly gated Rust helpers
   that delete fragile implementation paths.
+- Define gated native expansion paths only when they remain clients of the
+  hosted service and generated contracts.
 
 ## In Scope (Current Implementation)
 
@@ -65,8 +67,10 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Git-backed remote sandbox target execution before sandbox source binding is
   implemented
 - Review authoring flows beyond the existing CLI/API start and submit paths
-- Rust service rewrites, native primary CLI rewrites, Ratatui TUIs, and Tauri
-  desktop applications
+- Implemented Rust service rewrites, native primary CLI rewrites, Ratatui TUIs,
+  and Tauri desktop applications. The Ratatui console is accepted only as a
+  design-gated expansion track in
+  [ADR-0007](./architecture/adr/0007-ratatui-review-console.md).
 - Customer billing, tenant administration, and external self-serve onboarding
 
 ## Primary Users

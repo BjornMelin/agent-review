@@ -11,6 +11,9 @@ control plane for service, worker, providers, Vercel Workflow/Sandbox
 orchestration, shared Zod contracts, CLI, and Review Room. Rust is
 admissible only for helper crates that delete fragile implementation details and
 pass parity, benchmark, and generated-contract gates.
+ADR-0007 accepts a future Ratatui Review Console only as a hosted-service client
+over generated contracts; it is not a runtime, provider, GitHub publisher, or
+replacement for the TypeScript CLI.
 
 ### Applications
 
@@ -61,6 +64,11 @@ pass parity, benchmark, and generated-contract gates.
   helper environment and gives it a graceful termination window before hard-kill
   fallback. Temp directory cleanup is best-effort and reports cleanup failures
   as structured command events rather than dropping command output.
+
+Future native client work is documented in
+[Native Review Console](./native-review-console.md). It must consume the
+service list/status/events/artifacts/triage/publish/cancel APIs and cannot
+collect diffs or execute providers locally.
 
 ## Core Data Flow
 
