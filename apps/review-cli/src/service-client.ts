@@ -29,22 +29,46 @@ type Schema<T> = {
   parse(input: unknown): T;
 };
 
+/**
+ * Defines caller-provided hosted service configuration overrides.
+ *
+ * @remarks
+ * Missing values are resolved from the hosted CLI environment defaults.
+ */
 export type ServiceConfigInput = {
   serviceUrl?: string;
   serviceToken?: string;
 };
 
+/**
+ * Stores the normalized hosted service endpoint and bearer token.
+ *
+ * @remarks
+ * The base URL has already passed URL safety validation.
+ */
 export type ReviewServiceConfig = {
   baseUrl: string;
   token: string;
 };
 
+/**
+ * Configures hosted review lifecycle event streaming.
+ *
+ * @remarks
+ * The callback receives parsed and schema-validated lifecycle events.
+ */
 export type WatchEventsOptions = {
   afterEventId?: string;
   limit?: number;
   onEvent: (event: LifecycleEvent) => void | Promise<void>;
 };
 
+/**
+ * Carries hosted service failures with the CLI exit code to report.
+ *
+ * @remarks
+ * Optional HTTP status is attached when a service response caused the failure.
+ */
 export class ServiceClientError extends Error {
   readonly exitCode: number;
   readonly status?: number;
@@ -127,6 +151,14 @@ function normalizeServiceUrl(rawUrl: string): string {
   }
 }
 
+/**
+ * Resolves hosted service configuration from CLI input and environment defaults.
+ *
+ * @param input - CLI-provided service URL and token overrides.
+ * @param env - Environment source used for hosted service fallbacks.
+ * @returns Validated hosted service base URL and bearer token.
+ * @throws ServiceClientError when URL validation fails or no token is available.
+ */
 export function resolveReviewServiceConfig(
   input: ServiceConfigInput,
   env: NodeJS.ProcessEnv = process.env
@@ -305,6 +337,14 @@ function jsonPostInit(body?: unknown): RequestInit {
   };
 }
 
+/**
+ * Starts a hosted detached review through the service API.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param request - Shared start-review request DTO to submit.
+ * @returns Parsed hosted review start response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
 export function startReview(
   config: ReviewServiceConfig,
   request: ReviewStartRequest
@@ -316,6 +356,14 @@ export function startReview(
   });
 }
 
+/**
+ * Fetches the current hosted review status.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier to read.
+ * @returns Parsed hosted review status response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
 export function getReviewStatus(
   config: ReviewServiceConfig,
   reviewId: string
@@ -327,6 +375,14 @@ export function getReviewStatus(
   );
 }
 
+/**
+ * Requests cancellation for a hosted detached review.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier to cancel.
+ * @returns Parsed hosted review cancellation response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
 export function cancelReview(config: ReviewServiceConfig, reviewId: string) {
   return serviceJson(
     config,
@@ -336,6 +392,14 @@ export function cancelReview(config: ReviewServiceConfig, reviewId: string) {
   );
 }
 
+/**
+ * Publishes hosted review results through configured service integrations.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier to publish.
+ * @returns Parsed hosted review publication response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
 export function publishReview(
   config: ReviewServiceConfig,
   reviewId: string
@@ -348,6 +412,15 @@ export function publishReview(
   );
 }
 
+/**
+ * Downloads a hosted review artifact without changing its bytes.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier containing the artifact.
+ * @param format - Artifact format validated by the shared output-format schema.
+ * @returns Raw artifact bytes as returned by the hosted service.
+ * @throws ServiceClientError when the request fails or the format is invalid.
+ */
 export async function fetchReviewArtifact(
   config: ReviewServiceConfig,
   reviewId: string,
@@ -410,6 +483,15 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+/**
+ * Streams hosted lifecycle events until a terminal review outcome is observed.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier whose events should be streamed.
+ * @param options - Cursor, replay limit, and event callback options.
+ * @returns CLI exit code implied by the streamed terminal event.
+ * @throws ServiceClientError when the stream is malformed or ends too early.
+ */
 export async function watchReviewEvents(
   config: ReviewServiceConfig,
   reviewId: string,

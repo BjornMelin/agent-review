@@ -424,10 +424,11 @@ async function artifactCommand(
   format: string,
   options: ArtifactCliOptions
 ): Promise<number> {
+  const parsedFormat = OutputFormatSchema.parse(format.trim().toLowerCase());
   const artifact = await fetchReviewArtifact(
     resolveReviewServiceConfig(options),
     reviewId,
-    format
+    parsedFormat
   );
   await writeRawOutput(options.output ?? '-', artifact);
   return 0;
@@ -512,11 +513,18 @@ async function runAction(
     process.exitCode = await action();
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
-    const token = options?.serviceToken;
-    const message =
-      token && token.length > 0
-        ? rawMessage.replaceAll(token, '[redacted]')
-        : rawMessage;
+    const tokens = [
+      options?.serviceToken,
+      process.env.REVIEW_AGENT_SERVICE_TOKEN,
+      process.env.REVIEW_SERVICE_TOKEN,
+    ].flatMap((token) => {
+      const trimmed = token?.trim();
+      return trimmed ? [trimmed] : [];
+    });
+    const message = tokens.reduce(
+      (current, token) => current.replaceAll(token, '[redacted]'),
+      rawMessage
+    );
     console.error(message);
     process.exitCode = mapErrorToExitCode(error);
   }

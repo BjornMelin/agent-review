@@ -442,6 +442,24 @@ describe('review-agent hosted service commands', () => {
     }
   });
 
+  it('redacts env-sourced service tokens in top-level CLI errors', async () => {
+    const result = await runCli(
+      [
+        'status',
+        'review_1',
+        '--service-url',
+        'not-a-url plain_env_token_should_not_echo',
+      ],
+      {
+        REVIEW_AGENT_SERVICE_TOKEN: 'plain_env_token_should_not_echo',
+      }
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('invalid review service URL');
+    expect(result.stderr).not.toContain('plain_env_token_should_not_echo');
+  });
+
   it('allows HTTPS service urls without contacting them during config validation', async () => {
     const result = await runCli([
       'status',
@@ -632,6 +650,28 @@ describe('review-agent hosted service commands', () => {
     } finally {
       await fixture.close();
       await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects invalid artifact formats before service configuration', async () => {
+    const fixture = await startReviewServiceFixture((_request, response) => {
+      response.statusCode = 500;
+      response.end('should not be called');
+    });
+    try {
+      const result = await runCli([
+        'artifact',
+        'review_1',
+        'html',
+        '--service-url',
+        fixture.url,
+      ]);
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).not.toContain('review service token is required');
+      expect(fixture.requests).toHaveLength(0);
+    } finally {
+      await fixture.close();
     }
   });
 

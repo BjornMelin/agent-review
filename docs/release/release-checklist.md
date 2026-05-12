@@ -29,11 +29,13 @@ issue closeout.
    4. `pnpm --filter @review-agent/review-cli dev watch <reviewId>`
    5. `pnpm --filter @review-agent/review-cli dev status <reviewId> --output -`
    6. `pnpm --filter @review-agent/review-cli dev artifact <reviewId> markdown --output -`
-   7. Submit a disposable commit-backed PR review and record its `reviewId`:
+   7. Submit a disposable commit-backed PR review and record its `cancelReviewId`:
       `pnpm --filter @review-agent/review-cli dev submit --commit <sha> --repo <owner/name> --pull-request <number> --provider gateway --format json --output -`
    8. Cancel the disposable review:
       `pnpm --filter @review-agent/review-cli dev cancel <cancelReviewId> --output -`
-   9. `pnpm --filter @review-agent/review-cli dev publish <reviewId> --output -`
+   9. Publish the successful review from step 3, not the cancelled disposable
+      review from step 8:
+      `pnpm --filter @review-agent/review-cli dev publish <reviewId> --output -`
 3. Run service API smoke tests:
    1. Start service: `pnpm --filter @review-agent/review-service dev`
    2. Submit inline review request to `/v1/review/start`
