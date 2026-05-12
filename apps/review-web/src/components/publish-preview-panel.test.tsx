@@ -64,6 +64,7 @@ function deferred<T>(): {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('PublishPreviewPanel', () => {

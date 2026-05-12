@@ -63,6 +63,12 @@ function targetLabel(
   return `${preview.target.owner}/${preview.target.repo}${pullRequest} @ ${preview.target.commitSha.slice(0, 12)}`;
 }
 
+/**
+ * Renders GitHub publication preview evidence and existing publication records.
+ *
+ * @param props - Preview eligibility, persisted publication records, and review ID.
+ * @returns Publish preview panel UI with abortable network refresh behavior.
+ */
 export function PublishPreviewPanel({
   canPreview,
   publications,
@@ -161,7 +167,10 @@ export function PublishPreviewPanel({
           onClick={() => void refreshPreview()}
         >
           {pending ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            <Loader2
+              className="h-4 w-4 animate-spin motion-reduce:animate-none"
+              aria-hidden="true"
+            />
           ) : (
             <RefreshCw className="h-4 w-4" aria-hidden="true" />
           )}

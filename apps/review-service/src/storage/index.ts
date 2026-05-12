@@ -2143,86 +2143,89 @@ export function createDrizzleReviewFindingTriageStore(
       };
     },
     async upsert(input) {
-      return db.transaction(async (tx) => {
-        const updatedAt = new Date(input.nowMs);
-        const note = input.note?.trim() ? input.note.trim() : null;
-        const [inserted] = await tx
-          .insert(reviewFindingTriage)
-          .values({
-            reviewId: input.reviewId,
-            fingerprint: input.fingerprint,
-            status: input.status,
-            note,
-            actor: input.actor ?? null,
-            createdAt: updatedAt,
-            updatedAt,
-          })
-          .onConflictDoNothing()
-          .returning();
-        let previous: ReviewFindingTriageRow | undefined;
-        let persisted = inserted;
-        if (!persisted) {
-          await tx.execute(sql`
+      return db.transaction(
+        async (tx) => {
+          const updatedAt = new Date(input.nowMs);
+          const note = input.note?.trim() ? input.note.trim() : null;
+          const [inserted] = await tx
+            .insert(reviewFindingTriage)
+            .values({
+              reviewId: input.reviewId,
+              fingerprint: input.fingerprint,
+              status: input.status,
+              note,
+              actor: input.actor ?? null,
+              createdAt: updatedAt,
+              updatedAt,
+            })
+            .onConflictDoNothing()
+            .returning();
+          let previous: ReviewFindingTriageRow | undefined;
+          let persisted = inserted;
+          if (!persisted) {
+            await tx.execute(sql`
             SELECT ${reviewFindingTriage.reviewId}
             FROM ${reviewFindingTriage}
             WHERE ${reviewFindingTriage.reviewId} = ${input.reviewId}
               AND ${reviewFindingTriage.fingerprint} = ${input.fingerprint}
             FOR UPDATE
           `);
-          [previous] = await tx
-            .select()
-            .from(reviewFindingTriage)
-            .where(
-              and(
-                eq(reviewFindingTriage.reviewId, input.reviewId),
-                eq(reviewFindingTriage.fingerprint, input.fingerprint)
+            [previous] = await tx
+              .select()
+              .from(reviewFindingTriage)
+              .where(
+                and(
+                  eq(reviewFindingTriage.reviewId, input.reviewId),
+                  eq(reviewFindingTriage.fingerprint, input.fingerprint)
+                )
+              );
+            const [updated] = await tx
+              .update(reviewFindingTriage)
+              .set({
+                status: input.status,
+                note,
+                actor: input.actor ?? null,
+                updatedAt,
+              })
+              .where(
+                and(
+                  eq(reviewFindingTriage.reviewId, input.reviewId),
+                  eq(reviewFindingTriage.fingerprint, input.fingerprint)
+                )
               )
-            );
-          const [updated] = await tx
-            .update(reviewFindingTriage)
-            .set({
-              status: input.status,
-              note,
-              actor: input.actor ?? null,
-              updatedAt,
-            })
-            .where(
-              and(
-                eq(reviewFindingTriage.reviewId, input.reviewId),
-                eq(reviewFindingTriage.fingerprint, input.fingerprint)
-              )
-            )
-            .returning();
-          persisted = updated;
-        }
-        if (!persisted) {
-          throw new Error('failed to persist finding triage record');
-        }
-        const auditRecord: ReviewFindingTriageAuditRecord = {
-          auditId: randomUUID(),
-          reviewId: input.reviewId,
-          fingerprint: input.fingerprint,
-          ...(previous ? { fromStatus: previous.status } : {}),
-          toStatus: input.status,
-          ...(note ? { note } : {}),
-          ...(input.actor ? { actor: input.actor } : {}),
-          createdAt: input.nowMs,
-        };
-        await tx.insert(reviewFindingTriageAudit).values({
-          auditId: auditRecord.auditId,
-          reviewId: auditRecord.reviewId,
-          fingerprint: auditRecord.fingerprint,
-          fromStatus: auditRecord.fromStatus ?? null,
-          toStatus: auditRecord.toStatus,
-          note: auditRecord.note ?? null,
-          actor: auditRecord.actor ?? null,
-          createdAt: new Date(auditRecord.createdAt),
-        });
-        return {
-          record: findingTriageRecordFromRow(persisted),
-          audit: auditRecord,
-        };
-      });
+              .returning();
+            persisted = updated;
+          }
+          if (!persisted) {
+            throw new Error('failed to persist finding triage record');
+          }
+          const auditRecord: ReviewFindingTriageAuditRecord = {
+            auditId: randomUUID(),
+            reviewId: input.reviewId,
+            fingerprint: input.fingerprint,
+            ...(previous ? { fromStatus: previous.status } : {}),
+            toStatus: input.status,
+            ...(note ? { note } : {}),
+            ...(input.actor ? { actor: input.actor } : {}),
+            createdAt: input.nowMs,
+          };
+          await tx.insert(reviewFindingTriageAudit).values({
+            auditId: auditRecord.auditId,
+            reviewId: auditRecord.reviewId,
+            fingerprint: auditRecord.fingerprint,
+            fromStatus: auditRecord.fromStatus ?? null,
+            toStatus: auditRecord.toStatus,
+            note: auditRecord.note ?? null,
+            actor: auditRecord.actor ?? null,
+            createdAt: new Date(auditRecord.createdAt),
+          });
+          return {
+            record: findingTriageRecordFromRow(persisted),
+            audit: auditRecord,
+          };
+        },
+        { isolationLevel: 'read committed' }
+      );
     },
   };
 }

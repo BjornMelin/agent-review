@@ -126,6 +126,12 @@ function publicationVariant(
   return 'warning';
 }
 
+/**
+ * Renders filterable findings with reviewer-owned triage state and notes.
+ *
+ * @param props - Findings, publication records, provider label, review ID, and triage records.
+ * @returns Review Room finding triage workspace UI.
+ */
 export function FindingWorkspace({
   findings,
   publications,
@@ -436,7 +442,7 @@ export function FindingWorkspace({
                   path: event.target.value,
                 }))
               }
-              placeholder="Filter by file path"
+              placeholder="e.g. src/components/…"
             />
           </label>
         </div>
@@ -570,7 +576,7 @@ export function FindingWorkspace({
                       >
                         {pending.has(finding.fingerprint) ? (
                           <Loader2
-                            className="h-4 w-4 animate-spin"
+                            className="h-4 w-4 animate-spin motion-reduce:animate-none"
                             aria-hidden="true"
                           />
                         ) : (

@@ -38,6 +38,7 @@ function deferred<T>(): {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   refresh.mockClear();
 });
 

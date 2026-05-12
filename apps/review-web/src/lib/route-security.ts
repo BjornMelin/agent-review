@@ -8,6 +8,13 @@ function expectedOrigin(request: Request): string | undefined {
   return new URL(request.url).origin;
 }
 
+/**
+ * Validates same-origin Review Room mutation requests and action headers.
+ *
+ * @param request - Incoming mutation request.
+ * @param expectedAction - Route-specific mutation action expected by the handler.
+ * @returns Guard result describing whether the request is accepted or rejected.
+ */
 export function validateReviewRoomMutation(
   request: Request,
   expectedAction: 'cancel' | 'publish' | 'triage'

@@ -230,6 +230,12 @@ export function publishReview(
   );
 }
 
+/**
+ * Fetches the side-effect-free GitHub publication preview for a review.
+ *
+ * @param reviewId - Canonical review identifier.
+ * @returns Service result containing publish preview data or an error.
+ */
 export function getPublishPreview(
   reviewId: string
 ): Promise<ReviewServiceReadResult<ReviewPublishPreviewResponse>> {
@@ -239,6 +245,14 @@ export function getPublishPreview(
   );
 }
 
+/**
+ * Updates reviewer-owned triage state for one finding fingerprint.
+ *
+ * @param reviewId - Canonical review identifier.
+ * @param fingerprint - Stable finding fingerprint within the review result.
+ * @param input - Triage status and note mutation payload.
+ * @returns Service result containing updated triage state or an error.
+ */
 export function updateFindingTriage(
   reviewId: string,
   fingerprint: string,

@@ -11,6 +11,13 @@ function noStoreHeaders(headers: HeadersInit = {}): Headers {
   return next;
 }
 
+/**
+ * Returns a side-effect-free GitHub publication preview for one review.
+ *
+ * @param request - Incoming read request carrying Review Room access credentials.
+ * @param context - Route context with the review identifier.
+ * @returns JSON response containing preview data or an error payload.
+ */
 export async function GET(
   request: Request,
   context: { params: Promise<{ reviewId: string }> }
