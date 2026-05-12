@@ -3487,6 +3487,61 @@ describe('createReviewServiceApp', () => {
     );
   });
 
+  it('rejects repository authorization records with path-like checkout segments', async () => {
+    const worker = createWorker();
+    const authStore = createInMemoryReviewAuthStore();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      authStore,
+      authPolicy: () => ({
+        principal: {
+          type: 'serviceToken',
+          tokenId: 'token-1',
+          tokenPrefix: 'rat_token-1',
+          name: 'CI',
+        },
+        repositories: [
+          {
+            ...createAuthorization().repository,
+            name: '../agent-review',
+            fullName: 'octo-org/../agent-review',
+          },
+        ],
+        scopes: ['review:start', 'review:read'],
+      }),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer injected-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createRequest({ cwd: '/repo/agent-review' }),
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'repository name must be a single safe path segment',
+    });
+    expect(worker.started).toEqual([]);
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'review:start',
+          result: 'denied',
+          reason: 'cwd_repository_mismatch',
+          status: 403,
+        }),
+      ])
+    );
+  });
+
   it('conceals review IDs across repository authorization boundaries', async () => {
     const worker = createWorker();
     const store = createStore();

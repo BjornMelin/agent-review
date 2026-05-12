@@ -664,20 +664,24 @@ export function createGitHubUserTokenAuthorizer(
       'x-github-api-version': options.apiVersion ?? '2026-03-10',
     },
   });
+  const createRequestSignal = (): AbortSignal =>
+    AbortSignal.timeout(requestTimeoutMs);
   const withTimeout = <TOptions extends Record<string, unknown>>(
+    signal: AbortSignal,
     requestOptions?: TOptions
   ): TOptions & { request: { signal: AbortSignal } } => ({
     ...(requestOptions ?? ({} as TOptions)),
-    request: { signal: AbortSignal.timeout(requestTimeoutMs) },
+    request: { signal },
   });
 
   async function authenticateUserToken(
-    token: string
+    token: string,
+    signal = createRequestSignal()
   ): Promise<Extract<ReviewAuthPrincipal, { type: 'githubUser' }>> {
     const authRequest = request.defaults({
       headers: { authorization: `Bearer ${token}` },
     });
-    const user = await authRequest('GET /user', withTimeout());
+    const user = await authRequest('GET /user', withTimeout(signal));
     const userData = user.data as { id: number; login: string };
     return {
       type: 'githubUser',
@@ -689,11 +693,12 @@ export function createGitHubUserTokenAuthorizer(
   return {
     authenticateUserToken,
     async authorizeUserToken(token, selection, scope) {
+      const signal = createRequestSignal();
       try {
         const authRequest = request.defaults({
           headers: { authorization: `Bearer ${token}` },
         });
-        const principal = await authenticateUserToken(token);
+        const principal = await authenticateUserToken(token, signal);
         const installationIds = selection.installationId
           ? [selection.installationId]
           : await (async () => {
@@ -701,7 +706,7 @@ export function createGitHubUserTokenAuthorizer(
               for (let page = 1; ; page += 1) {
                 const installations = await authRequest(
                   'GET /user/installations',
-                  withTimeout({
+                  withTimeout(signal, {
                     per_page: 100,
                     page,
                   })
@@ -730,7 +735,7 @@ export function createGitHubUserTokenAuthorizer(
           for (let page = 1; ; page += 1) {
             const repositories = await authRequest(
               'GET /user/installations/{installation_id}/repositories',
-              withTimeout({
+              withTimeout(signal, {
                 installation_id: installationId,
                 per_page: 100,
                 page,

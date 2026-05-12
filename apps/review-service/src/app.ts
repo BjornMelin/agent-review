@@ -294,6 +294,8 @@ function assertCwdMatchesAuthorizedRepository(
   repository: ReviewRunAuthorization['repository'],
   config: ReviewServiceConfig
 ): void {
+  assertRepositoryPathSegment(repository.owner, 'owner');
+  assertRepositoryPathSegment(repository.name, 'name');
   const canonicalCwd = canonicalizePath(request.cwd);
   const expectedRoots = config.hostedRepositoryRoots.map((root) =>
     canonicalizePath(resolve(root, repository.owner, repository.name))
@@ -304,6 +306,24 @@ function assertCwdMatchesAuthorizedRepository(
   if (!allowed) {
     throw new ReviewRequestPolicyError(
       'cwd must resolve under the authorized repository checkout root'
+    );
+  }
+}
+
+function assertRepositoryPathSegment(
+  value: string,
+  field: 'owner' | 'name'
+): void {
+  if (
+    value.length === 0 ||
+    value === '.' ||
+    value.includes('..') ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    isAbsolute(value)
+  ) {
+    throw new ReviewRequestPolicyError(
+      `repository ${field} must be a single safe path segment`
     );
   }
 }

@@ -6,7 +6,7 @@ describe('createGitHubUserTokenAuthorizer', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sends a fresh timeout signal with each GitHub API request', async () => {
+  it('shares one timeout signal across GitHub authorization API requests', async () => {
     const signals: AbortSignal[] = [];
     const fetch = vi.fn(
       async (input: string | URL | Request, init?: RequestInit) => {
@@ -58,7 +58,7 @@ describe('createGitHubUserTokenAuthorizer', () => {
     });
 
     expect(fetch).toHaveBeenCalledTimes(3);
-    expect(new Set(signals).size).toBe(3);
+    expect(new Set(signals).size).toBe(1);
     expect(signals.every((signal) => !signal.aborted)).toBe(true);
   });
 
