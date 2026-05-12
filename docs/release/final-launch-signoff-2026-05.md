@@ -31,7 +31,7 @@ signoff; hosted CI evidence is captured on the release PR before merge.
 
 ## Local Verification Evidence
 
-Run from `/home/bjorn/repos/agents/agent-review` on 2026-05-12.
+Run from the repository root on 2026-05-12.
 
 | Area | Command or evidence | Result |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ Run from `/home/bjorn/repos/agents/agent-review` on 2026-05-12.
 | Review service local read | `curl http://localhost:3042/v1/review` with `REVIEW_SERVICE_AUTH_MODE=disabled` | Returned `{\"runs\":[]}` |
 | Hosted CLI list smoke | `REVIEW_AGENT_SERVICE_URL=http://localhost:3042 REVIEW_AGENT_SERVICE_TOKEN=local-smoke-token pnpm --filter @review-agent/review-cli dev list --limit 1 --output -` | Passed, returned empty run list |
 | Provider doctor | `pnpm --filter @review-agent/review-cli dev doctor --provider all --json` | Codex delegate and AI Gateway auth available; OpenRouter missing |
-| Codex delegate pre-review | `pnpm --filter @review-agent/review-cli dev run --cwd /home/bjorn/repos/agents/agent-review --uncommitted --provider codex --format json markdown --output /tmp/issue-35-uncommitted-review --exclude-path dogfood-output/** ...` | Initial run found the `.next` reproducibility gap; fixed. Final rerun exited nonzero with a verbose Codex transcript, so it is not counted as passing release evidence. |
+| Codex delegate pre-review | `pnpm --filter @review-agent/review-cli dev run --cwd <repo-root> --uncommitted --provider codex --format json markdown --output /tmp/issue-35-uncommitted-review --exclude-path dogfood-output/** ...` | Initial run found the `.next` reproducibility gap; fixed. Final rerun exited nonzero with a verbose Codex transcript, so it is not counted as passing release evidence. |
 | Specialized reviewer pass | Runtime, security, docs, and Vercel/deployment read-only reviewers | Runtime and Vercel reviewers reported no findings; security/docs findings were fixed in this branch. |
 | Review Room desktop smoke | `agent-browser --session issue-35-desktop open http://localhost:3000` plus screenshot | Rendered Review Room empty state from local service |
 | Review Room mobile smoke | `agent-browser --session issue-35-mobile set viewport 390 844` plus screenshot | Rendered Review Room empty state at mobile width |
