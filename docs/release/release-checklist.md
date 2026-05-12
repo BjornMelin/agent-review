@@ -103,3 +103,6 @@ that break and rerun the clean gate.
    truth instead of historical `.agents/plans/*` files.
 3. Capture release notes (version, notable changes, known constraints,
    validation evidence, deployment evidence, and residual risks).
+4. For the May 2026 launch candidate, preserve the final signoff ledger in
+   [Final Launch Signoff - 2026-05](./final-launch-signoff-2026-05.md) and
+   append any production deployment evidence gathered after repository merge.
