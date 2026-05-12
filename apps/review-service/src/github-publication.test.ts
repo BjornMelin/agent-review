@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import type { ReviewRunResult } from '@review-agent/review-core';
 import type {
   ReviewRepositoryAuthorization,
@@ -16,6 +16,14 @@ import {
   createInMemoryReviewPublicationStore,
   type ReviewRecord,
 } from './storage/index.js';
+
+vi.mock('node:zlib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:zlib')>();
+  return {
+    ...actual,
+    gzipSync: vi.fn(actual.gzipSync),
+  };
+});
 
 const request: ReviewRequest = {
   cwd: '/repo',
@@ -401,6 +409,72 @@ describe('createGitHubPublicationService', () => {
     );
   });
 
+  it('fails SARIF publication before upload when the compressed payload is too large', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    vi.mocked(gzipSync).mockReturnValueOnce(Buffer.alloc(10 * 1024 * 1024 + 1));
+    const calls: Array<{ route: string; options?: Record<string, unknown> }> =
+      [];
+    const noFindingRunResult: ReviewRunResult = {
+      ...createRunResult(),
+      result: {
+        ...result,
+        findings: [],
+        overallCorrectness: 'patch is correct',
+      },
+    };
+    const requestClient = vi.fn(async (route, options) => {
+      calls.push({ route, options });
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/check-runs') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const response = await service.publish(
+      createRecord({ result: noFindingRunResult })
+    );
+
+    expect(response.status).toBe('partial');
+    expect(
+      calls.some(
+        (call) =>
+          call.route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs'
+      )
+    ).toBe(false);
+    expect(response.publications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channel: 'sarif',
+          status: 'failed',
+          error: expect.stringContaining('10 MB compressed limit'),
+          metadata: expect.objectContaining({
+            compressedBytes: 10 * 1024 * 1024 + 1,
+            limitBytes: 10 * 1024 * 1024,
+          }),
+        }),
+      ])
+    );
+  });
+
   it('ignores forged publication markers that are not owned by stored state', async () => {
     const publicationStore = createInMemoryReviewPublicationStore();
     const calls: Array<{ route: string; options?: Record<string, unknown> }> =
@@ -647,7 +721,7 @@ describe('createGitHubPublicationService', () => {
 
     const response = await service.publish(createRecord());
 
-    expect(response.status).toBe('partial');
+    expect(response.status).toBe('published');
     expect(
       calls.filter(
         (call) =>
@@ -787,6 +861,127 @@ describe('createGitHubPublicationService', () => {
           call.route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs'
       )
     ).toHaveLength(1);
+  });
+
+  it('holds the per-review lock until all concurrent publication branches settle', async () => {
+    const backingStore = createInMemoryReviewPublicationStore();
+    const publicationStore = {
+      list: (reviewId: string) => backingStore.list(reviewId),
+      upsert: async () => {
+        markStoreFailure();
+        throw new Error('publication store unavailable');
+      },
+    };
+    const calls: Array<{ route: string; options?: Record<string, unknown> }> =
+      [];
+    const commentBodies: string[] = [];
+    let releaseFirstCommentPost!: () => void;
+    let markFirstCommentPost!: () => void;
+    let markStoreFailure!: () => void;
+    const firstCommentPostStarted = new Promise<void>((resolveStarted) => {
+      markFirstCommentPost = resolveStarted;
+    });
+    const firstCommentPostReleased = new Promise<void>((resolveReleased) => {
+      releaseFirstCommentPost = resolveReleased;
+    });
+    const firstStoreFailure = new Promise<void>((resolveFailure) => {
+      markStoreFailure = resolveFailure;
+    });
+    let commentPostCount = 0;
+    const requestClient = vi.fn(async (route, options) => {
+      calls.push({ route, options });
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/check-runs') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs') {
+        return {
+          data: { id: 'sarif-1', url: 'https://api.github.com/sarif-1' },
+        };
+      }
+      if (
+        route === 'GET /repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}'
+      ) {
+        return { data: { processing_status: 'complete' } };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        return {
+          data:
+            commentBodies.length === 0
+              ? []
+              : [
+                  {
+                    id: 500,
+                    body: commentBodies.at(-1),
+                    html_url: 'https://github.com/comments/500',
+                  },
+                ],
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        commentPostCount += 1;
+        if (commentPostCount === 1) {
+          markFirstCommentPost();
+          await firstCommentPostReleased;
+        }
+        commentBodies.push(String(options?.body ?? ''));
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const first = service.publish(createRecord()).catch((error) => error);
+    await firstCommentPostStarted;
+    await firstStoreFailure;
+    const second = service.publish(createRecord()).catch((error) => error);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      calls.filter(
+        (call) => call.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}'
+      )
+    ).toHaveLength(1);
+
+    releaseFirstCommentPost();
+    const firstError = await first;
+    const secondError = await second;
+
+    expect(firstError).toBeInstanceOf(Error);
+    expect(firstError).toHaveProperty(
+      'message',
+      'publication store unavailable'
+    );
+    expect(secondError).toBeInstanceOf(Error);
+    expect(secondError).toHaveProperty(
+      'message',
+      'publication store unavailable'
+    );
+    expect(
+      calls.filter(
+        (call) => call.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}'
+      )
+    ).toHaveLength(2);
   });
 
   it('reports failed aggregate status when failures have no published channels', async () => {

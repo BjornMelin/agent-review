@@ -174,6 +174,7 @@ type PlannedComment = {
 
 const DEFAULT_GITHUB_API_BASE_URL = 'https://api.github.com';
 const DEFAULT_GITHUB_API_VERSION = '2026-03-10';
+const GITHUB_SARIF_GZIP_LIMIT_BYTES = 10 * 1024 * 1024;
 const PUBLICATION_PERMISSIONS = {
   checks: 'write',
   pull_requests: 'write',
@@ -599,7 +600,22 @@ async function publishSarif(
     pathForFinding: (finding) =>
       safeRepoPathForFinding(context.result, finding),
   });
-  const encodedSarif = gzipSync(Buffer.from(sarifJson)).toString('base64');
+  const gzippedSarif = gzipSync(Buffer.from(sarifJson));
+  if (gzippedSarif.byteLength > GITHUB_SARIF_GZIP_LIMIT_BYTES) {
+    return persistRecord(context, {
+      channel: 'sarif',
+      targetKey,
+      status: 'failed',
+      error: "SARIF upload exceeds GitHub's 10 MB compressed limit",
+      metadata: {
+        commitSha: context.target.commitSha,
+        ref: context.target.ref,
+        compressedBytes: gzippedSarif.byteLength,
+        limitBytes: GITHUB_SARIF_GZIP_LIMIT_BYTES,
+      },
+    });
+  }
+  const encodedSarif = gzippedSarif.toString('base64');
   try {
     const uploaded = await context.request<GitHubSarifUploadResponse>(
       'POST /repos/{owner}/{repo}/code-scanning/sarifs',
@@ -1008,10 +1024,16 @@ function responseStatusFor(
   const published = publications.filter(
     (item) => item.status === 'published'
   ).length;
+  const actionable = publications.filter(
+    (item) => item.status !== 'skipped'
+  ).length;
   if (failed > 0) {
     return published > 0 ? 'partial' : 'failed';
   }
-  if (published < publications.length) {
+  if (actionable === 0) {
+    return 'skipped';
+  }
+  if (published < actionable) {
     return published > 0 ? 'partial' : 'skipped';
   }
   return 'published';
@@ -1072,10 +1094,26 @@ export function createGitHubPublicationService(
           nowMs,
           mutationDelayMs,
         };
+        const [checkRun, sarif, pullRequestComments] = await Promise.allSettled(
+          [
+            publishCheckRun(context),
+            publishSarif(context),
+            publishPullRequestComments(context),
+          ]
+        );
+        if (checkRun.status === 'rejected') {
+          throw checkRun.reason;
+        }
+        if (sarif.status === 'rejected') {
+          throw sarif.reason;
+        }
+        if (pullRequestComments.status === 'rejected') {
+          throw pullRequestComments.reason;
+        }
         const publications = [
-          await publishCheckRun(context),
-          await publishSarif(context),
-          ...(await publishPullRequestComments(context)),
+          checkRun.value,
+          sarif.value,
+          ...pullRequestComments.value,
         ];
         return {
           reviewId: record.reviewId,
