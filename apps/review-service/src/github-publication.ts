@@ -903,6 +903,13 @@ function responseStatusFor(
   return 'published';
 }
 
+/**
+ * Creates a GitHub publication service for completed review results.
+ *
+ * @param options - Publication dependencies, request overrides, clock, and mutation pacing.
+ * @returns Service that publishes review outcomes to GitHub Checks, SARIF, and PR comments.
+ * @throws GitHubPublicationError from `publish` when a review lacks repository authorization or is not complete.
+ */
 export function createGitHubPublicationService(
   options: GitHubPublicationServiceOptions
 ): ReviewPublicationService {
