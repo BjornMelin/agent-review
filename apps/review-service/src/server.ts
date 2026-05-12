@@ -3,8 +3,16 @@ import { serve } from '@hono/node-server';
 import { ConvexMetadataBridge } from '@review-agent/review-convex-bridge';
 import { createReviewProviders } from '@review-agent/review-provider-registry';
 import { ReviewWorker } from '@review-agent/review-worker';
-import { createReviewServiceApp } from './app.js';
-import { createReviewStoreFromEnv } from './storage/index.js';
+import { createReviewServiceApp, type ReviewServiceAuthMode } from './app.js';
+import {
+  createGitHubUserTokenAuthorizer,
+  createReviewServiceAuthPolicy,
+} from './auth.js';
+import {
+  createReviewAuthStoreFromEnv,
+  createReviewStoreFromEnv,
+  type ReviewAuthStoreAdapter,
+} from './storage/index.js';
 
 function parseListEnv(name: string, fallback: string[]): string[] {
   const raw = process.env[name];
@@ -18,16 +26,69 @@ function parseListEnv(name: string, fallback: string[]): string[] {
   return values.length > 0 ? values : fallback;
 }
 
+function createAuthDependencies(): {
+  authMode: ReviewServiceAuthMode;
+  authStore?: ReviewAuthStoreAdapter;
+  authPolicy?: ReturnType<typeof createReviewServiceAuthPolicy>;
+} {
+  const authMode = process.env.REVIEW_SERVICE_AUTH_MODE ?? 'required';
+  if (authMode === 'disabled') {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'REVIEW_SERVICE_AUTH_MODE=disabled is not allowed in production'
+      );
+    }
+    return { authMode: 'disabled' };
+  }
+  if (authMode !== 'required') {
+    throw new Error(
+      'REVIEW_SERVICE_AUTH_MODE must be "required" or "disabled"'
+    );
+  }
+
+  const serviceTokenPepper = process.env.REVIEW_SERVICE_TOKEN_PEPPER;
+  if (!serviceTokenPepper) {
+    throw new Error(
+      'REVIEW_SERVICE_TOKEN_PEPPER is required when review-service auth is enabled'
+    );
+  }
+
+  const authStore = createReviewAuthStoreFromEnv(process.env, {
+    allowInMemoryFallback: process.env.NODE_ENV !== 'production',
+  });
+  return {
+    authMode: 'required',
+    authStore,
+    authPolicy: createReviewServiceAuthPolicy({
+      store: authStore,
+      serviceTokenPepper,
+      githubUserTokenAuthorizer: createGitHubUserTokenAuthorizer(
+        process.env.GITHUB_API_BASE_URL
+          ? { baseUrl: process.env.GITHUB_API_BASE_URL }
+          : {}
+      ),
+    }),
+  };
+}
+
+const authDependencies = createAuthDependencies();
+const allowedCwdRoots = parseListEnv('REVIEW_SERVICE_ALLOWED_CWD_ROOTS', [
+  process.cwd(),
+]);
+
 const app = createReviewServiceApp({
   providers: createReviewProviders(),
   worker: new ReviewWorker(),
   bridge: new ConvexMetadataBridge(),
   store: createReviewStoreFromEnv(),
+  ...authDependencies,
   uuid: randomUUID,
   config: {
-    allowedCwdRoots: parseListEnv('REVIEW_SERVICE_ALLOWED_CWD_ROOTS', [
-      process.cwd(),
-    ]),
+    allowedCwdRoots,
+    hostedRepositoryRoots: parseListEnv(
+      'REVIEW_SERVICE_HOSTED_REPOSITORY_ROOTS',
+      allowedCwdRoots
+    ),
   },
 });
 

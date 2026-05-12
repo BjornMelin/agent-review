@@ -69,6 +69,7 @@ const SECRET_LIKE_PATTERNS = [
   /\bsk-ant-[a-zA-Z0-9_-]{20,}\b/g,
   /\bgh[pousr]_[a-zA-Z0-9_]{20,}\b/g,
   /\bgithub_pat_[a-zA-Z0-9_]{20,}\b/g,
+  /\brat_[a-zA-Z0-9_-]{6,}_[a-zA-Z0-9_-]{20,}\b/g,
   /\bxox[baprs]-[a-zA-Z0-9-]{10,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
 ] as const;
@@ -306,6 +307,117 @@ export const ARTIFACT_CONTENT_TYPES = {
  * Defines minimum severity thresholds for reporting review findings.
  */
 export const SeverityThresholdSchema = z.enum(['p0', 'p1', 'p2', 'p3']);
+const GitHubNumericIdSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER);
+const GitHubOwnerSchema = boundedString('GitHub owner', 39).regex(
+  /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/,
+  'GitHub owner must be a valid user or organization login'
+);
+const GitHubRepositoryNameSchema = boundedString(
+  'GitHub repository name',
+  100
+).regex(
+  /^(?!.*\.git$)[A-Za-z0-9._-]+$/,
+  'GitHub repository name must use GitHub-safe characters and must not include .git suffix'
+);
+const GitHubPermissionLevelSchema = z.enum(['read', 'write', 'admin']);
+const GitHubRepositoryVisibilitySchema = z.enum([
+  'public',
+  'private',
+  'internal',
+]);
+
+/**
+ * Lists service authorization scopes enforced by hosted review routes.
+ */
+export const ReviewAuthScopeSchema = z.enum([
+  'review:start',
+  'review:read',
+  'review:cancel',
+  'review:publish',
+  'token:admin',
+]);
+
+const ReviewAuthScopeListSchema = z
+  .array(ReviewAuthScopeSchema)
+  .min(1)
+  .max(16)
+  .superRefine((scopes, context) => {
+    const seen = new Set<string>();
+    for (const [index, scope] of scopes.entries()) {
+      if (seen.has(scope)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'authorization scopes must not contain duplicates',
+          path: [index],
+        });
+      }
+      seen.add(scope);
+    }
+  });
+
+/**
+ * Defines a GitHub repository selected by a hosted review start request.
+ */
+export const ReviewRepositorySelectionSchema = z.strictObject({
+  provider: z.literal('github').default('github'),
+  owner: GitHubOwnerSchema,
+  name: GitHubRepositoryNameSchema,
+  repositoryId: GitHubNumericIdSchema.optional(),
+  installationId: GitHubNumericIdSchema.optional(),
+  pullRequestNumber: z.number().int().positive().optional(),
+  ref: SafeGitRefSchema.optional(),
+  commitSha: CommitObjectIdSchema.optional(),
+});
+
+/**
+ * Defines the effective GitHub repository authorization persisted with a run.
+ */
+export const ReviewRepositoryAuthorizationSchema = z.strictObject({
+  provider: z.literal('github'),
+  repositoryId: GitHubNumericIdSchema,
+  installationId: GitHubNumericIdSchema,
+  owner: GitHubOwnerSchema,
+  name: GitHubRepositoryNameSchema,
+  fullName: boundedString('GitHub repository full name', 140),
+  visibility: GitHubRepositoryVisibilitySchema,
+  permissions: z.record(z.string(), GitHubPermissionLevelSchema).default({}),
+  pullRequestNumber: z.number().int().positive().optional(),
+  ref: SafeGitRefSchema.optional(),
+  commitSha: CommitObjectIdSchema.optional(),
+});
+
+/**
+ * Defines the authenticated principal responsible for a hosted review action.
+ */
+export const ReviewAuthPrincipalSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('githubUser'),
+    githubUserId: GitHubNumericIdSchema,
+    login: GitHubOwnerSchema,
+  }),
+  z.strictObject({
+    type: z.literal('serviceToken'),
+    tokenId: boundedString('service token id', 64),
+    tokenPrefix: boundedString('service token prefix', 80),
+    name: boundedString('service token name', 128).optional(),
+  }),
+]);
+
+/**
+ * Defines the repository-scoped authorization snapshot persisted for a run.
+ */
+export const ReviewRunAuthorizationSchema = z.strictObject({
+  principal: ReviewAuthPrincipalSchema,
+  repository: ReviewRepositoryAuthorizationSchema,
+  scopes: ReviewAuthScopeListSchema,
+  actor: boundedString('authorization actor', 160),
+  requestHash: boundedString('request hash', 128),
+  authorizedAt: z.number().int().nonnegative(),
+});
 /**
  * Lists review run statuses that represent terminal states with no further transitions.
  */
@@ -536,6 +648,7 @@ export const ReviewDeliverySchema = z.enum(['inline', 'detached']);
 export const ReviewStartRequestSchema = z.strictObject({
   request: ReviewRequestSchema,
   delivery: ReviewDeliverySchema.default('inline'),
+  repository: ReviewRepositorySelectionSchema.optional(),
 });
 
 /**
@@ -746,6 +859,7 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   runId: z.string().min(1),
   status: ReviewRunStatusSchema,
   request: ReviewRequestSchema,
+  authorization: ReviewRunAuthorizationSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),
@@ -809,6 +923,32 @@ export type OutputFormat = z.infer<typeof OutputFormatSchema>;
  * Minimum finding severity threshold.
  */
 export type SeverityThreshold = z.infer<typeof SeverityThresholdSchema>;
+/**
+ * Hosted service authorization scope.
+ */
+export type ReviewAuthScope = z.infer<typeof ReviewAuthScopeSchema>;
+/**
+ * GitHub repository selected by a hosted review start request.
+ */
+export type ReviewRepositorySelection = z.infer<
+  typeof ReviewRepositorySelectionSchema
+>;
+/**
+ * Effective GitHub repository authorization persisted with a run.
+ */
+export type ReviewRepositoryAuthorization = z.infer<
+  typeof ReviewRepositoryAuthorizationSchema
+>;
+/**
+ * Authenticated hosted service principal.
+ */
+export type ReviewAuthPrincipal = z.infer<typeof ReviewAuthPrincipalSchema>;
+/**
+ * Repository-scoped authorization snapshot persisted with a run.
+ */
+export type ReviewRunAuthorization = z.infer<
+  typeof ReviewRunAuthorizationSchema
+>;
 /**
  * Canonical review request payload.
  */
@@ -1435,6 +1575,8 @@ export type JsonSchemaSet = {
   outputFormat: unknown;
   reviewRunStatus: unknown;
   reviewRequest: unknown;
+  reviewRepositorySelection: unknown;
+  reviewRunAuthorization: unknown;
   reviewFinding: unknown;
   reviewResult: unknown;
   rawModelOutput: unknown;
@@ -1460,8 +1602,48 @@ const JSON_SCHEMA_OPTIONS = {
   target: 'draft-7',
 } as const;
 
+type JsonSchemaObject = Record<string, unknown>;
+
+function isJsonSchemaObject(value: unknown): value is JsonSchemaObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function addUniqueItemsToAuthScopeArrays(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    for (const item of schema) {
+      addUniqueItemsToAuthScopeArrays(item);
+    }
+    return schema;
+  }
+  if (!isJsonSchemaObject(schema)) {
+    return schema;
+  }
+
+  const items = schema.items;
+  if (isJsonSchemaObject(items) && Array.isArray(items.enum)) {
+    const authScopes = new Set(ReviewAuthScopeSchema.options);
+    const enumValues = items.enum;
+    if (
+      enumValues.length === authScopes.size &&
+      enumValues.every(
+        (value): value is ReviewAuthScope =>
+          typeof value === 'string' && authScopes.has(value as ReviewAuthScope)
+      )
+    ) {
+      schema.uniqueItems = true;
+    }
+  }
+
+  for (const value of Object.values(schema)) {
+    addUniqueItemsToAuthScopeArrays(value);
+  }
+  return schema;
+}
+
 function toDraft7JsonSchema(schema: z.ZodType): unknown {
-  return z.toJSONSchema(schema, JSON_SCHEMA_OPTIONS);
+  return addUniqueItemsToAuthScopeArrays(
+    z.toJSONSchema(schema, JSON_SCHEMA_OPTIONS)
+  );
 }
 
 /**
@@ -1474,6 +1656,10 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     outputFormat: toDraft7JsonSchema(OutputFormatSchema),
     reviewRunStatus: toDraft7JsonSchema(ReviewRunStatusSchema),
     reviewRequest: toDraft7JsonSchema(ReviewRequestSchema),
+    reviewRepositorySelection: toDraft7JsonSchema(
+      ReviewRepositorySelectionSchema
+    ),
+    reviewRunAuthorization: toDraft7JsonSchema(ReviewRunAuthorizationSchema),
     reviewFinding: toDraft7JsonSchema(ReviewFindingSchema),
     reviewResult: toDraft7JsonSchema(ReviewResultSchema),
     rawModelOutput: toDraft7JsonSchema(RawModelOutputSchema),

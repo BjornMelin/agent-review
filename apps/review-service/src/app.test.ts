@@ -1,16 +1,23 @@
 import type { ReviewRunResult } from '@review-agent/review-core';
 import { ReviewRunCancelledError } from '@review-agent/review-core';
 import type {
+  ReviewAuthScope,
   ReviewProvider,
   ReviewProviderKind,
+  ReviewRepositorySelection,
   ReviewRequest,
   ReviewResult,
+  ReviewRunAuthorization,
 } from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createInMemoryReviewAuthStore,
   createInMemoryReviewStore,
   createReviewServiceApp,
+  createReviewServiceAuthPolicy,
+  createServiceTokenCredential,
+  type ReviewAuthStoreAdapter,
   type ReviewRecord,
   type ReviewServiceDependencies,
   type ReviewServiceRunner,
@@ -25,8 +32,12 @@ function createTestReviewServiceApp(
 ): ReturnType<typeof createReviewServiceApp> {
   return createReviewServiceApp({
     ...dependencies,
+    authMode:
+      dependencies.authMode ??
+      (dependencies.authPolicy ? 'required' : 'disabled'),
     config: {
       allowedCwdRoots: TEST_ALLOWED_CWD_ROOTS,
+      hostedRepositoryRoots: TEST_ALLOWED_CWD_ROOTS,
       ...(dependencies.config ?? {}),
     },
   });
@@ -43,6 +54,78 @@ function createRequest(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
     executionMode: 'localTrusted',
     outputFormats: ['json'],
     ...overrides,
+  };
+}
+
+function createHostedRequest(
+  overrides: Partial<ReviewRequest> = {}
+): ReviewRequest {
+  return createRequest({
+    cwd: '/repo/octo-org/agent-review',
+    ...overrides,
+  });
+}
+
+function createAuthorization(
+  overrides: Partial<ReviewRunAuthorization> = {}
+): ReviewRunAuthorization {
+  const repository: ReviewRunAuthorization['repository'] = {
+    provider: 'github' as const,
+    repositoryId: 42,
+    installationId: 7,
+    owner: 'octo-org',
+    name: 'agent-review',
+    fullName: 'octo-org/agent-review',
+    visibility: 'private' as const,
+    permissions: { metadata: 'read', contents: 'read' },
+  };
+  return {
+    principal: {
+      type: 'serviceToken',
+      tokenId: 'token-1',
+      tokenPrefix: 'rat_token-1',
+      name: 'CI',
+    },
+    repository,
+    scopes: ['review:start', 'review:read', 'review:cancel'],
+    actor: 'service-token:token-1',
+    requestHash: 'sha256:request',
+    authorizedAt: 1_000,
+    ...overrides,
+  };
+}
+
+async function createServiceTokenAuth(
+  options: {
+    scopes?: ReviewRunAuthorization['scopes'];
+    authorization?: ReviewRunAuthorization;
+    tokenId?: string;
+    secret?: string;
+  } = {}
+): Promise<{
+  authStore: ReviewAuthStoreAdapter;
+  authPolicy: NonNullable<ReviewServiceDependencies['authPolicy']>;
+  token: string;
+}> {
+  const authStore = createInMemoryReviewAuthStore();
+  const authorization = options.authorization ?? createAuthorization();
+  const credential = createServiceTokenCredential({
+    name: 'CI',
+    scopes: options.scopes ?? authorization.scopes,
+    repository: authorization.repository,
+    pepper: 'test-pepper',
+    ...(options.tokenId ? { tokenId: options.tokenId } : {}),
+    ...(options.secret ? { secret: options.secret } : {}),
+    nowMs: 1_000,
+  });
+  await authStore.setServiceToken(credential.record);
+  return {
+    authStore,
+    authPolicy: createReviewServiceAuthPolicy({
+      store: authStore,
+      serviceTokenPepper: 'test-pepper',
+    }),
+    token: credential.token,
   };
 }
 
@@ -497,6 +580,29 @@ async function readNextSseEvent(
 }
 
 describe('createReviewServiceApp', () => {
+  it('requires bearer authentication by default at the app boundary', async () => {
+    const worker = createWorker();
+    const app = createReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createRequest(),
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe('Bearer');
+    expect(await response.json()).toEqual({ error: 'authentication required' });
+    expect(worker.started).toEqual([]);
+  });
+
   it('runs detached reviews through injected worker without sharing state', async () => {
     const providers = createProviders();
     const worker = createWorker();
@@ -693,6 +799,55 @@ describe('createReviewServiceApp', () => {
       'artifactReady',
       'artifactReady',
     ]);
+  });
+
+  it('persists terminal detached start events in the exported stores', async () => {
+    const request = createRequest();
+    const result = createReviewResult(request);
+    const worker = createWorker(
+      createDetachedRun({
+        runId: 'workflow-run-terminal-store',
+        workflowRunId: 'workflow-run-terminal-store',
+        status: 'completed',
+        completedAt: 1_250,
+        result,
+      })
+    );
+    const store = createInMemoryReviewStore();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      nowMs: () => 1_250,
+      uuid: createUuid([
+        'review-terminal-store',
+        'event-start',
+        'event-exited',
+        'event-artifact-json',
+        'event-artifact-markdown',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    await expect(store.get('review-terminal-store')).resolves.toMatchObject({
+      status: 'completed',
+      events: [
+        expect.objectContaining({ type: 'enteredReviewMode' }),
+        expect.objectContaining({ type: 'exitedReviewMode' }),
+        expect.objectContaining({ type: 'artifactReady', format: 'json' }),
+        expect.objectContaining({ type: 'artifactReady', format: 'markdown' }),
+      ],
+    });
   });
 
   it('syncs detached completion into status and artifact routes', async () => {
@@ -2090,6 +2245,822 @@ describe('createReviewServiceApp', () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: 'unauthorized' });
     expect(worker.started).toEqual([]);
+  });
+
+  it('requires bearer auth when service token policy is enabled', async () => {
+    const worker = createWorker();
+    const { authPolicy, authStore } = await createServiceTokenAuth();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      authPolicy,
+      authStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'authentication required' });
+    expect(worker.started).toEqual([]);
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'authn',
+          result: 'denied',
+          reason: 'missing_bearer_token',
+          status: 401,
+        }),
+      ])
+    );
+  });
+
+  it('rejects revoked scoped service tokens before route work begins', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const credential = createServiceTokenCredential({
+      name: 'Revoked CI',
+      scopes: ['review:start', 'review:read'],
+      repository: createAuthorization().repository,
+      pepper: 'test-pepper',
+      nowMs: 1_000,
+    });
+    await authStore.setServiceToken({
+      ...credential.record,
+      revokedAt: 1_100,
+    });
+    const worker = createWorker();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+      }),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${credential.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(worker.started).toEqual([]);
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'authn',
+          result: 'denied',
+          reason: 'service_token_revoked',
+          status: 401,
+        }),
+      ])
+    );
+  });
+
+  it('accepts service token secrets that contain URL-safe separators', async () => {
+    const worker = createWorker();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      tokenId: 'token-id',
+      secret: 'secret_with_underscore_abcdefghijklmnopqrstuvwxyz',
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      authPolicy,
+      authStore,
+      nowMs: () => 1_000,
+      uuid: createUuid([
+        'audit-token-separator-start',
+        'review-token-separator',
+        'event-start',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(worker.started).toHaveLength(1);
+  });
+
+  it('rejects service token ids that the redaction policy cannot match', () => {
+    expect(() =>
+      createServiceTokenCredential({
+        name: 'CI',
+        scopes: ['review:start'],
+        repository: createAuthorization().repository,
+        pepper: 'test-pepper',
+        tokenId: 'a',
+        secret: 'abcdefghijklmnopqrstuvwxyz',
+      })
+    ).toThrow(/at least 6/);
+  });
+
+  it('binds authenticated starts to durable repository authorization', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy,
+      authStore,
+      nowMs: () => 1_000,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as { reviewId: string };
+    await expect(store.get(body.reviewId)).resolves.toMatchObject({
+      authorization: {
+        principal: {
+          type: 'serviceToken',
+        },
+        repository: {
+          repositoryId: 42,
+          installationId: 7,
+          fullName: 'octo-org/agent-review',
+        },
+        scopes: ['review:start', 'review:read', 'review:cancel'],
+      },
+    });
+
+    const status = await app.request(`/v1/review/${body.reviewId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(status.status).toBe(200);
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'authz',
+          operation: 'review:start',
+          result: 'allowed',
+        }),
+        expect.objectContaining({
+          eventType: 'authz',
+          operation: 'review:read',
+          result: 'allowed',
+        }),
+      ])
+    );
+  });
+
+  it('revalidates GitHub user tokens against stored run repositories', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const authStore = createInMemoryReviewAuthStore();
+    const repository = createAuthorization().repository;
+    const githubPrincipal = {
+      type: 'githubUser' as const,
+      githubUserId: 101,
+      login: 'octocat',
+    };
+    const authenticateUserToken = vi.fn(async () => githubPrincipal);
+    const authorizeUserToken = vi.fn(
+      async (
+        _token: string,
+        selection: ReviewRepositorySelection,
+        scope: ReviewAuthScope
+      ) => {
+        const scopes: ReviewAuthScope[] =
+          scope === 'review:read'
+            ? ['review:read']
+            : ['review:start', 'review:read'];
+        return {
+          principal: githubPrincipal,
+          repository: {
+            ...repository,
+            ...(selection.pullRequestNumber
+              ? { pullRequestNumber: selection.pullRequestNumber }
+              : {}),
+          },
+          scopes,
+        };
+      }
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken,
+          authorizeUserToken,
+        },
+      }),
+      nowMs: () => 1_000,
+      uuid: createUuid([
+        'audit-github-user-start',
+        'review-github-user-token',
+        'event-start',
+        'audit-github-user-read',
+        'audit-github-user-cancel',
+      ]),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const start = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer github-user-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: {
+          owner: 'octo-org',
+          name: 'agent-review',
+          pullRequestNumber: 24,
+        },
+        delivery: 'detached',
+      }),
+    });
+    expect(start.status).toBe(202);
+    const body = (await start.json()) as { reviewId: string };
+
+    const status = await app.request(`/v1/review/${body.reviewId}`, {
+      headers: { authorization: 'Bearer github-user-token' },
+    });
+
+    expect(status.status).toBe(200);
+    expect(authorizeUserToken.mock.calls.map((call) => call[2])).toEqual([
+      'review:start',
+      'review:read',
+    ]);
+    expect(authenticateUserToken).toHaveBeenCalledTimes(2);
+    await expect(store.get(body.reviewId)).resolves.toMatchObject({
+      authorization: {
+        principal: {
+          type: 'githubUser',
+          githubUserId: 101,
+          login: 'octocat',
+        },
+        repository: {
+          pullRequestNumber: 24,
+        },
+        scopes: ['review:start', 'review:read'],
+      },
+    });
+    const stored = await store.get(body.reviewId);
+    expect(stored?.authorization?.scopes).not.toContain('review:publish');
+    expect(stored?.authorization?.scopes).not.toContain('review:cancel');
+
+    const cancel = await app.request(`/v1/review/${body.reviewId}/cancel`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer github-user-token' },
+    });
+    expect(cancel.status).toBe(403);
+    expect(authorizeUserToken.mock.calls.map((call) => call[2])).toEqual([
+      'review:start',
+      'review:read',
+      'review:cancel',
+    ]);
+    expect(authenticateUserToken).toHaveBeenCalledTimes(3);
+    expect(worker.cancelledRunIds).toEqual([]);
+  });
+
+  it('maps invalid GitHub bearer tokens to authentication failures', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const invalidToken = Object.assign(new Error('Bad credentials'), {
+      status: 401,
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken: vi.fn(async () => {
+            throw invalidToken;
+          }),
+          authorizeUserToken: vi.fn(async () => {
+            throw new Error('should not authorize repository');
+          }),
+        },
+      }),
+      uuid: createUuid(['audit-invalid-github-token']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer github-user-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'invalid bearer token' });
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'request',
+          result: 'denied',
+          reason: 'github_token_invalid',
+          status: 401,
+        }),
+      ])
+    );
+  });
+
+  it('preserves authentication failures on existing GitHub run routes', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const invalidToken = Object.assign(new Error('Bad credentials'), {
+      status: 401,
+    });
+    const store = createStore();
+    store.records.set(
+      'review-github-invalid-token',
+      createReviewRecord({
+        reviewId: 'review-github-invalid-token',
+        authorization: createAuthorization({
+          principal: {
+            type: 'githubUser',
+            githubUserId: 101,
+            login: 'octocat',
+          },
+          actor: 'github:octocat',
+          scopes: ['review:start', 'review:read'],
+        }),
+        status: 'running',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken: vi.fn(async () => {
+            throw invalidToken;
+          }),
+          authorizeUserToken: vi.fn(async () => {
+            throw new Error('should not authorize repository');
+          }),
+        },
+      }),
+      uuid: createUuid(['audit-invalid-github-read']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-github-invalid-token',
+      {
+        headers: { authorization: 'Bearer github-user-token' },
+      }
+    );
+    const missing = await app.request('/v1/review/review-missing', {
+      headers: { authorization: 'Bearer github-user-token' },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'invalid bearer token' });
+    expect(missing.status).toBe(401);
+    expect(await missing.json()).toEqual({ error: 'invalid bearer token' });
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'request',
+          result: 'denied',
+          reason: 'github_token_invalid',
+          status: 401,
+        }),
+      ])
+    );
+  });
+
+  it('reports service-token auth store failures as dependency failures', async () => {
+    const authStore: ReviewAuthStoreAdapter = {
+      async getServiceToken() {
+        throw new Error('auth store unavailable');
+      },
+      async setServiceToken() {
+        throw new Error('not used');
+      },
+      async touchServiceToken() {
+        throw new Error('not used');
+      },
+      async upsertGitHubUser() {
+        throw new Error('not used');
+      },
+      async upsertGitHubInstallation() {
+        throw new Error('not used');
+      },
+      async upsertGitHubRepository() {
+        throw new Error('not used');
+      },
+      async upsertGitHubRepositoryPermission() {
+        throw new Error('not used');
+      },
+      async appendAuthAuditEvent() {
+        return undefined;
+      },
+      async listAuthAuditEvents() {
+        return [];
+      },
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+      }),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer rat_token-id_abcdefghijklmnopqrstuvwxyz',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: 'authentication unavailable',
+    });
+  });
+
+  it('reports auth audit store failures as dependency failures', async () => {
+    const authStore: ReviewAuthStoreAdapter = {
+      async getServiceToken() {
+        throw new Error('not used');
+      },
+      async setServiceToken() {
+        throw new Error('not used');
+      },
+      async touchServiceToken() {
+        throw new Error('not used');
+      },
+      async upsertGitHubUser() {
+        throw new Error('not used');
+      },
+      async upsertGitHubInstallation() {
+        throw new Error('not used');
+      },
+      async upsertGitHubRepository() {
+        throw new Error('not used');
+      },
+      async upsertGitHubRepositoryPermission() {
+        throw new Error('not used');
+      },
+      async appendAuthAuditEvent() {
+        throw new Error('audit store unavailable');
+      },
+      async listAuthAuditEvents() {
+        return [];
+      },
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+      }),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: 'authentication unavailable',
+    });
+  });
+
+  it('blocks route work when authorization audit writes fail', async () => {
+    const backingStore = createInMemoryReviewAuthStore();
+    const credential = createServiceTokenCredential({
+      name: 'CI',
+      scopes: ['review:start', 'review:read'],
+      repository: createAuthorization().repository,
+      pepper: 'test-pepper',
+      nowMs: 1_000,
+    });
+    await backingStore.setServiceToken(credential.record);
+    let auditCalls = 0;
+    const authStore: ReviewAuthStoreAdapter = {
+      ...backingStore,
+      async appendAuthAuditEvent(record) {
+        auditCalls += 1;
+        if (auditCalls > 1) {
+          throw new Error('audit store unavailable');
+        }
+        await backingStore.appendAuthAuditEvent(record);
+      },
+    };
+    const worker = createWorker();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+      }),
+      logger: { error: vi.fn() },
+      uuid: createUuid(['audit-authz-start']),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${credential.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: 'authorization unavailable',
+    });
+    expect(worker.started).toEqual([]);
+  });
+
+  it('rejects authenticated starts when cwd is outside the authorized checkout', async () => {
+    const worker = createWorker();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      authPolicy,
+      authStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createRequest({ cwd: '/repo/other-org/other-private' }),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'cwd must resolve under the authorized repository checkout root',
+    });
+    expect(worker.started).toEqual([]);
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'review:start',
+          result: 'denied',
+          reason: 'cwd_repository_mismatch',
+          status: 403,
+        }),
+      ])
+    );
+  });
+
+  it('conceals review IDs across repository authorization boundaries', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization: createAuthorization({
+        repository: {
+          ...createAuthorization().repository,
+          repositoryId: 99,
+          owner: 'other-org',
+          name: 'other-repo',
+          fullName: 'other-org/other-repo',
+        },
+      }),
+    });
+    store.records.set(
+      'review-owned-by-other-repo',
+      createReviewRecord({
+        reviewId: 'review-owned-by-other-repo',
+        authorization: createAuthorization(),
+        result: createReviewResult(createRequest()),
+        status: 'completed',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy,
+      authStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const status = await app.request('/v1/review/review-owned-by-other-repo', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const artifact = await app.request(
+      '/v1/review/review-owned-by-other-repo/artifacts/json',
+      {
+        headers: { authorization: `Bearer ${token}` },
+      }
+    );
+    const cancel = await app.request(
+      '/v1/review/review-owned-by-other-repo/cancel',
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+      }
+    );
+
+    expect(status.status).toBe(404);
+    expect(artifact.status).toBe(404);
+    expect(cancel.status).toBe(404);
+    expect(worker.cancelledRunIds).toEqual([]);
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'review:read',
+          result: 'denied',
+          status: 404,
+        }),
+        expect.objectContaining({
+          operation: 'review:cancel',
+          result: 'denied',
+          status: 404,
+        }),
+      ])
+    );
+  });
+
+  it('conceals cross-repository review IDs before reporting missing scopes', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      scopes: ['review:cancel'],
+      authorization: createAuthorization({
+        repository: {
+          ...createAuthorization().repository,
+          repositoryId: 99,
+          owner: 'other-org',
+          name: 'other-repo',
+          fullName: 'other-org/other-repo',
+        },
+      }),
+    });
+    store.records.set(
+      'review-wrong-repo-no-read-scope',
+      createReviewRecord({
+        reviewId: 'review-wrong-repo-no-read-scope',
+        authorization: createAuthorization(),
+        result: createReviewResult(createRequest()),
+        status: 'completed',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy,
+      authStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const status = await app.request(
+      '/v1/review/review-wrong-repo-no-read-scope',
+      {
+        headers: { authorization: `Bearer ${token}` },
+      }
+    );
+    const missing = await app.request('/v1/review/review-does-not-exist', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(status.status).toBe(404);
+    expect(await status.json()).toEqual({ error: 'review not found' });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'review not found' });
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'review:read',
+          result: 'denied',
+          reason: 'repository_not_granted',
+          status: 404,
+        }),
+      ])
+    );
+  });
+
+  it('returns 403 when token scope is missing for a known repository', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      scopes: ['review:read'],
+    });
+    store.records.set(
+      'review-no-cancel-scope',
+      createReviewRecord({
+        reviewId: 'review-no-cancel-scope',
+        authorization: createAuthorization(),
+        detachedRunId: 'detached-run-1',
+        status: 'running',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy,
+      authStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const cancel = await app.request(
+      '/v1/review/review-no-cancel-scope/cancel',
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+      }
+    );
+
+    expect(cancel.status).toBe(403);
+    expect(await cancel.json()).toEqual({ error: 'authorization denied' });
+    expect(worker.cancelledRunIds).toEqual([]);
   });
 
   it('returns canonical storage errors for start and read routes', async () => {
