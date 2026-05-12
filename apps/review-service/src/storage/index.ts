@@ -1041,7 +1041,12 @@ export function createInMemoryReviewFindingTriageStore(): ReviewFindingTriageSto
           .map(cloneFindingTriageRecord),
         audit: audit
           .filter((record) => record.reviewId === reviewId)
-          .sort((left, right) => left.createdAt - right.createdAt)
+          .sort(
+            (left, right) =>
+              left.createdAt - right.createdAt ||
+              left.fingerprint.localeCompare(right.fingerprint) ||
+              left.auditId.localeCompare(right.auditId)
+          )
           .map(cloneFindingTriageAuditRecord),
       };
     },
@@ -2134,7 +2139,11 @@ export function createDrizzleReviewFindingTriageStore(
           .select()
           .from(reviewFindingTriageAudit)
           .where(eq(reviewFindingTriageAudit.reviewId, reviewId))
-          .orderBy(asc(reviewFindingTriageAudit.createdAt)),
+          .orderBy(
+            asc(reviewFindingTriageAudit.createdAt),
+            asc(reviewFindingTriageAudit.fingerprint),
+            asc(reviewFindingTriageAudit.auditId)
+          ),
       ]);
       return {
         reviewId,

@@ -13,7 +13,8 @@ import {
   MessageSquareText,
   Save,
 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import type { Route } from 'next';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -53,6 +54,154 @@ type FindingWorkspaceProps = {
   reviewId: string;
   triage: ReviewFindingTriageRecord[];
 };
+
+type SearchParamsLike = Pick<URLSearchParams, 'get' | 'toString'>;
+type TriageFilterUpdate =
+  | TriageFilters
+  | ((current: TriageFilters) => TriageFilters);
+
+const DEFAULT_TRIAGE_FILTERS: TriageFilters = {
+  priority: 'all',
+  provider: 'all',
+  state: 'all',
+  reviewer: 'all',
+  publication: 'all',
+  path: '',
+};
+
+const TRIAGE_FILTER_PARAM_KEYS = {
+  priority: 'triagePriority',
+  provider: 'triageProvider',
+  state: 'triageState',
+  reviewer: 'triageReviewer',
+  publication: 'triagePublication',
+  path: 'triagePath',
+} as const;
+
+const PRIORITY_FILTER_VALUES = new Set(['all', '0', '1', '2', '3', '?']);
+const PUBLICATION_FILTER_VALUES = new Set<PublicationFilter>([
+  'all',
+  'published',
+  'failed',
+  'skipped',
+  'unsupported',
+  'unpublished',
+]);
+const STATE_FILTER_VALUES = new Set<string>(['all', ...TRIAGE_STATUSES]);
+const EMPTY_PENDING = new Set<string>();
+
+function enumFilterParam(
+  params: SearchParamsLike,
+  key: string,
+  allowed: ReadonlySet<string>,
+  fallback: string
+): string {
+  const value = params.get(key);
+  return value && allowed.has(value) ? value : fallback;
+}
+
+function textFilterParam(
+  params: SearchParamsLike,
+  key: string,
+  fallback: string
+): string {
+  const value = params.get(key);
+  return value?.trim() ? value : fallback;
+}
+
+function parseTriageFilters(params: SearchParamsLike): TriageFilters {
+  return {
+    priority: enumFilterParam(
+      params,
+      TRIAGE_FILTER_PARAM_KEYS.priority,
+      PRIORITY_FILTER_VALUES,
+      DEFAULT_TRIAGE_FILTERS.priority
+    ),
+    provider: textFilterParam(
+      params,
+      TRIAGE_FILTER_PARAM_KEYS.provider,
+      DEFAULT_TRIAGE_FILTERS.provider
+    ),
+    state: enumFilterParam(
+      params,
+      TRIAGE_FILTER_PARAM_KEYS.state,
+      STATE_FILTER_VALUES,
+      DEFAULT_TRIAGE_FILTERS.state
+    ),
+    reviewer: textFilterParam(
+      params,
+      TRIAGE_FILTER_PARAM_KEYS.reviewer,
+      DEFAULT_TRIAGE_FILTERS.reviewer
+    ),
+    publication: enumFilterParam(
+      params,
+      TRIAGE_FILTER_PARAM_KEYS.publication,
+      PUBLICATION_FILTER_VALUES,
+      DEFAULT_TRIAGE_FILTERS.publication
+    ) as PublicationFilter,
+    path:
+      params.get(TRIAGE_FILTER_PARAM_KEYS.path) ?? DEFAULT_TRIAGE_FILTERS.path,
+  };
+}
+
+function writeTriageFilterParam(
+  params: URLSearchParams,
+  key: string,
+  value: string,
+  defaultValue: string
+): void {
+  if (value === defaultValue || value.length === 0) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, value);
+}
+
+function triageFiltersHref(
+  pathname: string,
+  searchParams: SearchParamsLike,
+  filters: TriageFilters
+): string {
+  const params = new URLSearchParams(searchParams.toString());
+  writeTriageFilterParam(
+    params,
+    TRIAGE_FILTER_PARAM_KEYS.priority,
+    filters.priority,
+    DEFAULT_TRIAGE_FILTERS.priority
+  );
+  writeTriageFilterParam(
+    params,
+    TRIAGE_FILTER_PARAM_KEYS.provider,
+    filters.provider,
+    DEFAULT_TRIAGE_FILTERS.provider
+  );
+  writeTriageFilterParam(
+    params,
+    TRIAGE_FILTER_PARAM_KEYS.state,
+    filters.state,
+    DEFAULT_TRIAGE_FILTERS.state
+  );
+  writeTriageFilterParam(
+    params,
+    TRIAGE_FILTER_PARAM_KEYS.reviewer,
+    filters.reviewer,
+    DEFAULT_TRIAGE_FILTERS.reviewer
+  );
+  writeTriageFilterParam(
+    params,
+    TRIAGE_FILTER_PARAM_KEYS.publication,
+    filters.publication,
+    DEFAULT_TRIAGE_FILTERS.publication
+  );
+  writeTriageFilterParam(
+    params,
+    TRIAGE_FILTER_PARAM_KEYS.path,
+    filters.path,
+    DEFAULT_TRIAGE_FILTERS.path
+  );
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
 
 function priorityLabel(priority: ReviewFinding['priority']): string {
   if (priority === undefined) {
@@ -96,6 +245,14 @@ function triageRecordMap(
   return new Map(records.map((record) => [record.fingerprint, record]));
 }
 
+function draftNotesFromRecords(
+  records: Iterable<ReviewFindingTriageRecord>
+): Record<string, string> {
+  return Object.fromEntries(
+    [...records].map((record) => [record.fingerprint, record.note ?? ''])
+  );
+}
+
 function statusVariant(
   status: ReviewFindingTriageStatus
 ): React.ComponentProps<typeof Badge>['variant'] {
@@ -132,48 +289,110 @@ function publicationVariant(
  * @param props - Findings, publication records, provider label, review ID, and triage records.
  * @returns Review Room finding triage workspace UI.
  */
-export function FindingWorkspace({
-  findings,
-  publications,
-  provider,
-  reviewId,
-  triage,
-}: FindingWorkspaceProps): React.ReactNode {
+export function FindingWorkspace(
+  props: FindingWorkspaceProps
+): React.ReactNode {
+  const { findings, publications, provider, reviewId, triage } = props;
   const router = useRouter();
-  const [records, setRecords] = useState(() => triageRecordMap(triage));
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamString = searchParams.toString();
+  const incomingRecords = useMemo(() => triageRecordMap(triage), [triage]);
+  const incomingDraftNotes = useMemo(
+    () => draftNotesFromRecords(incomingRecords.values()),
+    [incomingRecords]
+  );
+  const [stateScope, setStateScope] = useState(reviewId);
+  const [records, setRecords] = useState(() => incomingRecords);
   const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
+  const dirtyNotesRef = useRef(new Set<string>());
+  const reviewScopeRef = useRef(reviewId);
   const pendingRef = useRef(new Set<string>());
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<TriageFilters>({
-    priority: 'all',
-    provider: 'all',
-    state: 'all',
-    reviewer: 'all',
-    publication: 'all',
-    path: '',
-  });
+  const [filters, setFiltersState] = useState<TriageFilters>(() =>
+    parseTriageFilters(searchParams)
+  );
+  const filtersRef = useRef(filters);
+  const recordsForReview = stateScope === reviewId ? records : incomingRecords;
+  const draftNotesForReview =
+    stateScope === reviewId ? draftNotes : incomingDraftNotes;
+  const pendingForReview = stateScope === reviewId ? pending : EMPTY_PENDING;
 
   useEffect(() => {
-    const next = triageRecordMap(triage);
-    setRecords(next);
-    setDraftNotes(
-      Object.fromEntries(
-        [...next.values()].map((record) => [
-          record.fingerprint,
-          record.note ?? '',
-        ])
-      )
-    );
-  }, [triage]);
+    if (reviewScopeRef.current !== reviewId) {
+      reviewScopeRef.current = reviewId;
+      dirtyNotesRef.current.clear();
+      pendingRef.current.clear();
+      setStateScope(reviewId);
+      setRecords(incomingRecords);
+      setDraftNotes(incomingDraftNotes);
+      setPending(new Set());
+      setError(null);
+      return;
+    }
+
+    setRecords(incomingRecords);
+    setDraftNotes((current) => {
+      const merged = { ...current };
+      for (const record of incomingRecords.values()) {
+        if (
+          !dirtyNotesRef.current.has(record.fingerprint) &&
+          !pendingRef.current.has(record.fingerprint)
+        ) {
+          merged[record.fingerprint] = record.note ?? '';
+        } else if (!(record.fingerprint in merged)) {
+          merged[record.fingerprint] = record.note ?? '';
+        }
+      }
+      for (const fingerprint of Object.keys(merged)) {
+        if (
+          !incomingRecords.has(fingerprint) &&
+          !dirtyNotesRef.current.has(fingerprint)
+        ) {
+          delete merged[fingerprint];
+        }
+      }
+      return merged;
+    });
+  }, [incomingDraftNotes, incomingRecords, reviewId]);
+
+  useEffect(() => {
+    const next = parseTriageFilters(new URLSearchParams(searchParamString));
+    filtersRef.current = next;
+    setFiltersState(next);
+  }, [searchParamString]);
+
+  const setFilters = useCallback(
+    (update: TriageFilterUpdate) => {
+      const next =
+        typeof update === 'function' ? update(filtersRef.current) : update;
+      filtersRef.current = next;
+      setFiltersState(next);
+      const nextHref = triageFiltersHref(
+        pathname,
+        new URLSearchParams(searchParamString),
+        next
+      );
+      const currentHref = searchParamString
+        ? `${pathname}?${searchParamString}`
+        : pathname;
+      if (nextHref !== currentHref) {
+        router.replace(nextHref as Route, { scroll: false });
+      }
+    },
+    [pathname, router, searchParamString]
+  );
 
   const reviewers = useMemo(() => {
     return [
-      ...new Set([...records.values()].flatMap((record) => record.actor ?? [])),
+      ...new Set(
+        [...recordsForReview.values()].flatMap((record) => record.actor ?? [])
+      ),
     ]
       .filter(Boolean)
       .sort();
-  }, [records]);
+  }, [recordsForReview]);
   const publicationStatuses = useMemo(
     () => publicationStatusMap(publications),
     [publications]
@@ -182,7 +401,7 @@ export function FindingWorkspace({
   const visibleFindings = useMemo(() => {
     const normalizedPath = filters.path.trim().toLowerCase();
     return findings.filter((finding) => {
-      const record = records.get(finding.fingerprint);
+      const record = recordsForReview.get(finding.fingerprint);
       const status = record?.status ?? 'open';
       const actor = record?.actor ?? 'unassigned';
       const publication = publicationStatusFor(publicationStatuses, finding);
@@ -217,7 +436,7 @@ export function FindingWorkspace({
       }
       return true;
     });
-  }, [filters, findings, provider, publicationStatuses, records]);
+  }, [filters, findings, provider, publicationStatuses, recordsForReview]);
 
   const setFindingPending = useCallback(
     (fingerprint: string, nextPending: boolean) => {
@@ -238,8 +457,8 @@ export function FindingWorkspace({
     if (pendingRef.current.has(finding.fingerprint)) {
       return;
     }
-    const previous = records.get(finding.fingerprint);
-    const note = draftNotes[finding.fingerprint]?.trim() ?? '';
+    const previous = recordsForReview.get(finding.fingerprint);
+    const note = draftNotesForReview[finding.fingerprint]?.trim() ?? '';
     const optimistic: ReviewFindingTriageRecord = {
       reviewId,
       fingerprint: finding.fingerprint,
@@ -270,6 +489,9 @@ export function FindingWorkspace({
         }
       );
       const body = await response.json().catch(() => undefined);
+      if (reviewScopeRef.current !== reviewId) {
+        return;
+      }
       if (!response.ok) {
         const message =
           body &&
@@ -292,12 +514,20 @@ export function FindingWorkspace({
       }
       if (body && typeof body === 'object' && 'record' in body) {
         const record = body.record as ReviewFindingTriageRecord;
+        dirtyNotesRef.current.delete(record.fingerprint);
         setRecords((current) =>
           new Map(current).set(record.fingerprint, record)
         );
+        setDraftNotes((current) => ({
+          ...current,
+          [record.fingerprint]: record.note ?? '',
+        }));
       }
       router.refresh();
     } catch (requestError) {
+      if (reviewScopeRef.current !== reviewId) {
+        return;
+      }
       setRecords((current) => {
         const next = new Map(current);
         if (previous) {
@@ -313,7 +543,9 @@ export function FindingWorkspace({
           : 'triage request failed'
       );
     } finally {
-      setFindingPending(finding.fingerprint, false);
+      if (reviewScopeRef.current === reviewId) {
+        setFindingPending(finding.fingerprint, false);
+      }
     }
   }
 
@@ -480,14 +712,14 @@ export function FindingWorkspace({
           </thead>
           <tbody>
             {visibleFindings.map((finding) => {
-              const record = records.get(finding.fingerprint);
+              const record = recordsForReview.get(finding.fingerprint);
               const status = record?.status ?? 'open';
               const publicationStatus = publicationStatusFor(
                 publicationStatuses,
                 finding
               );
               const note =
-                draftNotes[finding.fingerprint] ?? record?.note ?? '';
+                draftNotesForReview[finding.fingerprint] ?? record?.note ?? '';
               return (
                 <tr key={finding.fingerprint} className="align-top">
                   <td className="border-b border-[var(--border)] px-3 py-3">
@@ -528,7 +760,7 @@ export function FindingWorkspace({
                     <select
                       aria-label={`Triage state for ${finding.title}`}
                       className="h-8 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-xs text-[var(--foreground)]"
-                      disabled={pending.has(finding.fingerprint)}
+                      disabled={pendingForReview.has(finding.fingerprint)}
                       value={status}
                       onChange={(event) =>
                         void saveTriage(
@@ -554,27 +786,29 @@ export function FindingWorkspace({
                         aria-label={`Triage note for ${finding.title}`}
                         className={cn(
                           'min-h-20 flex-1 resize-y rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-xs text-[var(--foreground)]',
-                          pending.has(finding.fingerprint) && 'opacity-70'
+                          pendingForReview.has(finding.fingerprint) &&
+                            'opacity-70'
                         )}
-                        disabled={pending.has(finding.fingerprint)}
+                        disabled={pendingForReview.has(finding.fingerprint)}
                         maxLength={4096}
                         value={note}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          dirtyNotesRef.current.add(finding.fingerprint);
                           setDraftNotes((current) => ({
                             ...current,
                             [finding.fingerprint]: event.target.value,
-                          }))
-                        }
+                          }));
+                        }}
                       />
                       <Button
                         type="button"
                         size="icon"
                         variant="secondary"
                         aria-label={`Save triage note for ${finding.title}`}
-                        disabled={pending.has(finding.fingerprint)}
+                        disabled={pendingForReview.has(finding.fingerprint)}
                         onClick={() => void saveTriage(finding, status)}
                       >
-                        {pending.has(finding.fingerprint) ? (
+                        {pendingForReview.has(finding.fingerprint) ? (
                           <Loader2
                             className="h-4 w-4 animate-spin motion-reduce:animate-none"
                             aria-hidden="true"

@@ -69,11 +69,10 @@ function targetLabel(
  * @param props - Preview eligibility, persisted publication records, and review ID.
  * @returns Publish preview panel UI with abortable network refresh behavior.
  */
-export function PublishPreviewPanel({
-  canPreview,
-  publications,
-  reviewId,
-}: PublishPreviewPanelProps): React.ReactNode {
+export function PublishPreviewPanel(
+  props: PublishPreviewPanelProps
+): React.ReactNode {
+  const { canPreview, publications, reviewId } = props;
   const [preview, setPreview] = useState<ReviewPublishPreviewResponse | null>(
     null
   );

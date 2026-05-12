@@ -1825,7 +1825,7 @@ export function createReviewServiceApp(
       try {
         await syncDetachedRecord(record);
         await failExpiredRuntimeLease(record);
-        if (!record.result) {
+        if (record.status !== 'completed' || !record.result) {
           return jsonError(context, 'review findings are not ready', 409);
         }
         if (!hasFindingFingerprint(record, fingerprint)) {

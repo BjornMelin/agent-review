@@ -525,6 +525,52 @@ describe('review storage', () => {
     });
   });
 
+  it('orders finding triage audit records deterministically for equal timestamps', async () => {
+    const memory = createInMemoryReviewFindingTriageStore();
+    await memory.upsert({
+      reviewId: 'review-1',
+      fingerprint: 'finding-b',
+      status: 'accepted',
+      nowMs: BASE_TIME_MS,
+    });
+    await memory.upsert({
+      reviewId: 'review-1',
+      fingerprint: 'finding-a',
+      status: 'accepted',
+      nowMs: BASE_TIME_MS,
+    });
+    await expect(memory.list('review-1')).resolves.toMatchObject({
+      audit: [{ fingerprint: 'finding-a' }, { fingerprint: 'finding-b' }],
+    });
+
+    const request = createRequest();
+    await withTestStore(async ({ db, store }) => {
+      await store.set(
+        createRecord({
+          status: 'completed',
+          result: createReviewResult(request),
+        })
+      );
+      const triageStore = createDrizzleReviewFindingTriageStore(db);
+      await triageStore.upsert({
+        reviewId: 'review-1',
+        fingerprint: 'finding-b',
+        status: 'accepted',
+        nowMs: BASE_TIME_MS,
+      });
+      await triageStore.upsert({
+        reviewId: 'review-1',
+        fingerprint: 'finding-a',
+        status: 'accepted',
+        nowMs: BASE_TIME_MS,
+      });
+
+      await expect(triageStore.list('review-1')).resolves.toMatchObject({
+        audit: [{ fingerprint: 'finding-a' }, { fingerprint: 'finding-b' }],
+      });
+    });
+  });
+
   it('serializes concurrent durable finding triage audit transitions', async () => {
     const request = createRequest();
     await withTestStore(async ({ db, store }) => {

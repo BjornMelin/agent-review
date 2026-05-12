@@ -3,6 +3,9 @@ import { authorizeReviewRoomRequest } from '@/lib/review-room-access';
 import { getPublishPreview } from '@/lib/review-service';
 import { reviewRoomAccessHeaders } from '@/lib/route-security';
 
+/**
+ * Forces every publish preview request to fetch fresh service and GitHub state.
+ */
 export const dynamic = 'force-dynamic';
 
 function noStoreHeaders(headers: HeadersInit = {}): Headers {

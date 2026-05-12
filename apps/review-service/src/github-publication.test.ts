@@ -330,12 +330,13 @@ describe('createGitHubPublicationService', () => {
       }
       throw new Error(`unexpected route ${route}`);
     }) as unknown as GitHubRequestClient;
+    const installationTokenProvider = vi.fn(async () => ({
+      token: 'install-token',
+      expiresAt: 2_000,
+      permissions: {},
+    }));
     const service = createGitHubPublicationService({
-      installationTokenProvider: vi.fn(async () => ({
-        token: 'install-token',
-        expiresAt: 2_000,
-        permissions: {},
-      })),
+      installationTokenProvider,
       publicationStore,
       requestFactory: () => requestClient,
       nowMs: () => 1_500,
@@ -343,6 +344,11 @@ describe('createGitHubPublicationService', () => {
 
     const preview = await service.preview?.(createRecord());
 
+    expect(installationTokenProvider).toHaveBeenCalledWith({
+      installationId: 7,
+      repositoryIds: [42],
+      permissions: { pull_requests: 'read' },
+    });
     expect(preview).toMatchObject({
       reviewId: 'review-1',
       summary: {

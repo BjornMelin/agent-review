@@ -7,9 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FindingWorkspace } from './finding-workspace';
 
 const refresh = vi.fn();
+const replace = vi.fn((href: string) => {
+  window.history.replaceState(null, '', href);
+});
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh }),
+  usePathname: () => window.location.pathname,
+  useRouter: () => ({ refresh, replace }),
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 const finding: ReviewFinding = {
@@ -22,6 +27,18 @@ const finding: ReviewFinding = {
   },
   fingerprint: 'finding-1',
   priority: 1,
+};
+
+const secondaryFinding: ReviewFinding = {
+  title: 'Slow audit',
+  body: 'The audit path should stay deterministic.',
+  confidenceScore: 0.72,
+  codeLocation: {
+    absoluteFilePath: '/repo/src/audit.ts',
+    lineRange: { start: 22, end: 22 },
+  },
+  fingerprint: 'finding-2',
+  priority: 2,
 };
 
 function deferred<T>(): {
@@ -40,9 +57,175 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   refresh.mockClear();
+  replace.mockClear();
+  window.history.replaceState(null, '', '/review/review-1');
 });
 
 describe('FindingWorkspace', () => {
+  it('hydrates filters from URL search params for shareable triage views', () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/review/review-1?triagePath=src/app'
+    );
+
+    render(
+      <FindingWorkspace
+        findings={[finding, secondaryFinding]}
+        publications={[]}
+        provider="codexDelegate"
+        reviewId="review-1"
+        triage={[]}
+      />
+    );
+
+    expect(screen.getByText('1 of 2 findings visible')).toBeTruthy();
+  });
+
+  it('persists filter changes into URL search params without a scroll jump', async () => {
+    window.history.replaceState(null, '', '/review/review-1?tab=findings');
+
+    render(
+      <FindingWorkspace
+        findings={[finding, secondaryFinding]}
+        publications={[]}
+        provider="codexDelegate"
+        reviewId="review-1"
+        triage={[]}
+      />
+    );
+
+    await userEvent.selectOptions(screen.getByLabelText('Priority'), '1');
+
+    expect(replace).toHaveBeenLastCalledWith(
+      '/review/review-1?tab=findings&triagePriority=1',
+      { scroll: false }
+    );
+  });
+
+  it('preserves unsaved note drafts when refreshed triage records arrive', async () => {
+    const { rerender } = render(
+      <FindingWorkspace
+        findings={[finding, secondaryFinding]}
+        publications={[]}
+        provider="codexDelegate"
+        reviewId="review-1"
+        triage={[
+          {
+            reviewId: 'review-1',
+            fingerprint: 'finding-1',
+            status: 'open',
+            note: 'server note',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            reviewId: 'review-1',
+            fingerprint: 'finding-2',
+            status: 'open',
+            note: 'old note',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ]}
+      />
+    );
+    const draft = screen.getByLabelText(
+      'Triage note for Slow audit'
+    ) as HTMLTextAreaElement;
+
+    await userEvent.clear(draft);
+    await userEvent.type(draft, 'unsaved reviewer note');
+    rerender(
+      <FindingWorkspace
+        findings={[finding, secondaryFinding]}
+        publications={[]}
+        provider="codexDelegate"
+        reviewId="review-1"
+        triage={[
+          {
+            reviewId: 'review-1',
+            fingerprint: 'finding-1',
+            status: 'accepted',
+            note: 'server note changed',
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          {
+            reviewId: 'review-1',
+            fingerprint: 'finding-2',
+            status: 'open',
+            note: 'old note',
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ]}
+      />
+    );
+
+    expect(
+      (
+        screen.getByLabelText(
+          'Triage note for Unsafe publish'
+        ) as HTMLTextAreaElement
+      ).value
+    ).toBe('server note changed');
+    expect(draft.value).toBe('unsaved reviewer note');
+  });
+
+  it('clears unsaved note drafts when the review changes', async () => {
+    const { rerender } = render(
+      <FindingWorkspace
+        findings={[finding]}
+        publications={[]}
+        provider="codexDelegate"
+        reviewId="review-1"
+        triage={[
+          {
+            reviewId: 'review-1',
+            fingerprint: 'finding-1',
+            status: 'open',
+            note: 'review one note',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ]}
+      />
+    );
+    const draft = screen.getByLabelText(
+      'Triage note for Unsafe publish'
+    ) as HTMLTextAreaElement;
+
+    await userEvent.clear(draft);
+    await userEvent.type(draft, 'unsaved review one draft');
+    rerender(
+      <FindingWorkspace
+        findings={[finding]}
+        publications={[]}
+        provider="codexDelegate"
+        reviewId="review-2"
+        triage={[
+          {
+            reviewId: 'review-2',
+            fingerprint: 'finding-1',
+            status: 'open',
+            note: 'review two note',
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ]}
+      />
+    );
+
+    expect(
+      (
+        screen.getByLabelText(
+          'Triage note for Unsafe publish'
+        ) as HTMLTextAreaElement
+      ).value
+    ).toBe('review two note');
+  });
+
   it('rolls back optimistic triage state when the service rejects the write', async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(JSON.stringify({ error: 'triage denied' }), {

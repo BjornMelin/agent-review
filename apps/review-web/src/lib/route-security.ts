@@ -45,6 +45,12 @@ export function validateReviewRoomMutation(
   return { ok: true };
 }
 
+/**
+ * Converts a Review Room authorization result into response headers.
+ *
+ * @param access - Review Room access result from route-level authorization.
+ * @returns Headers needed to complete an authentication challenge, when present.
+ */
 export function reviewRoomAccessHeaders(
   access: ReviewRoomAccessResult
 ): HeadersInit {

@@ -193,6 +193,9 @@ const PUBLICATION_PERMISSIONS = {
   pull_requests: 'write',
   security_events: 'write',
 } as const;
+const PREVIEW_PERMISSIONS = {
+  pull_requests: 'read',
+} as const;
 const PUBLISH_MARKDOWN_LIMIT = 6_000;
 
 function createDefaultRequestFactory(options: {
@@ -1347,7 +1350,7 @@ export function createGitHubPublicationService(
       const installationToken = await options.installationTokenProvider({
         installationId: repository.installationId,
         repositoryIds: [repository.repositoryId],
-        permissions: PUBLICATION_PERMISSIONS,
+        permissions: PREVIEW_PERMISSIONS,
       });
       const request = requestFactory(installationToken.token);
       const existingPublications = await options.publicationStore.list(

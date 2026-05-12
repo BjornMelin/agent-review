@@ -1595,6 +1595,77 @@ describe('createReviewServiceApp', () => {
     });
   });
 
+  it('rejects finding triage writes before a review run completes', async () => {
+    const authorization = createAuthorization({
+      scopes: ['review:start', 'review:read', 'review:publish'],
+      repository: {
+        ...createAuthorization().repository,
+        pullRequestNumber: 25,
+      },
+    });
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization,
+      scopes: authorization.scopes,
+    });
+    const store = createStore();
+    const findingTriageStore = createInMemoryReviewFindingTriageStore();
+    const request = createHostedRequest();
+    const result = createReviewResult(request);
+    result.result.findings = [
+      {
+        title: 'Persisted risk',
+        body: 'Needs owner triage.',
+        confidenceScore: 0.9,
+        codeLocation: {
+          absoluteFilePath: '/repo/octo-org/agent-review/src/app.ts',
+          lineRange: { start: 10, end: 10 },
+        },
+        fingerprint: 'finding-1',
+      },
+    ];
+    store.records.set(
+      'review-triage-running',
+      createReviewRecord({
+        reviewId: 'review-triage-running',
+        status: 'running',
+        request,
+        authorization,
+        result,
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authPolicy,
+      authStore,
+      findingTriageStore,
+      nowMs: () => 2_500,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-triage-running/findings/finding-1/triage',
+      {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'accepted' }),
+      }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(
+      findingTriageStore.list('review-triage-running')
+    ).resolves.toEqual({
+      reviewId: 'review-triage-running',
+      items: [],
+      audit: [],
+    });
+  });
+
   it('previews publication plans before GitHub side effects', async () => {
     const authorization = createAuthorization({
       scopes: ['review:start', 'review:read', 'review:publish'],
