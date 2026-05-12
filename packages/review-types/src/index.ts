@@ -359,36 +359,69 @@ const ReviewAuthScopeListSchema = z
     }
   });
 
+const REPOSITORY_TARGET_FIELDS = [
+  'pullRequestNumber',
+  'ref',
+  'commitSha',
+] as const;
+
+type RepositoryTargetInput = Partial<
+  Record<(typeof REPOSITORY_TARGET_FIELDS)[number], unknown>
+>;
+
+function validateRepositoryTargetSelection(
+  input: RepositoryTargetInput,
+  context: z.RefinementCtx
+): void {
+  const present = REPOSITORY_TARGET_FIELDS.filter(
+    (field) => input[field] !== undefined
+  );
+  if (present.length <= 1) {
+    return;
+  }
+  const conflictingField = present[1] ?? present[0] ?? 'ref';
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      'repository target must specify at most one of pullRequestNumber, ref, or commitSha',
+    path: [conflictingField],
+  });
+}
+
 /**
  * Defines a GitHub repository selected by a hosted review start request.
  */
-export const ReviewRepositorySelectionSchema = z.strictObject({
-  provider: z.literal('github').default('github'),
-  owner: GitHubOwnerSchema,
-  name: GitHubRepositoryNameSchema,
-  repositoryId: GitHubNumericIdSchema.optional(),
-  installationId: GitHubNumericIdSchema.optional(),
-  pullRequestNumber: z.number().int().positive().optional(),
-  ref: SafeGitRefSchema.optional(),
-  commitSha: CommitObjectIdSchema.optional(),
-});
+export const ReviewRepositorySelectionSchema = z
+  .strictObject({
+    provider: z.literal('github').default('github'),
+    owner: GitHubOwnerSchema,
+    name: GitHubRepositoryNameSchema,
+    repositoryId: GitHubNumericIdSchema.optional(),
+    installationId: GitHubNumericIdSchema.optional(),
+    pullRequestNumber: z.number().int().positive().optional(),
+    ref: SafeGitRefSchema.optional(),
+    commitSha: CommitObjectIdSchema.optional(),
+  })
+  .superRefine(validateRepositoryTargetSelection);
 
 /**
  * Defines the effective GitHub repository authorization persisted with a run.
  */
-export const ReviewRepositoryAuthorizationSchema = z.strictObject({
-  provider: z.literal('github'),
-  repositoryId: GitHubNumericIdSchema,
-  installationId: GitHubNumericIdSchema,
-  owner: GitHubOwnerSchema,
-  name: GitHubRepositoryNameSchema,
-  fullName: boundedString('GitHub repository full name', 140),
-  visibility: GitHubRepositoryVisibilitySchema,
-  permissions: z.record(z.string(), GitHubPermissionLevelSchema).default({}),
-  pullRequestNumber: z.number().int().positive().optional(),
-  ref: SafeGitRefSchema.optional(),
-  commitSha: CommitObjectIdSchema.optional(),
-});
+export const ReviewRepositoryAuthorizationSchema = z
+  .strictObject({
+    provider: z.literal('github'),
+    repositoryId: GitHubNumericIdSchema,
+    installationId: GitHubNumericIdSchema,
+    owner: GitHubOwnerSchema,
+    name: GitHubRepositoryNameSchema,
+    fullName: boundedString('GitHub repository full name', 140),
+    visibility: GitHubRepositoryVisibilitySchema,
+    permissions: z.record(z.string(), GitHubPermissionLevelSchema).default({}),
+    pullRequestNumber: z.number().int().positive().optional(),
+    ref: SafeGitRefSchema.optional(),
+    commitSha: CommitObjectIdSchema.optional(),
+  })
+  .superRefine(validateRepositoryTargetSelection);
 
 /**
  * Defines the authenticated principal responsible for a hosted review action.
@@ -1640,9 +1673,40 @@ function addUniqueItemsToAuthScopeArrays(schema: unknown): unknown {
   return schema;
 }
 
+function addRepositoryTargetExclusivity(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    for (const item of schema) {
+      addRepositoryTargetExclusivity(item);
+    }
+    return schema;
+  }
+  if (!isJsonSchemaObject(schema)) {
+    return schema;
+  }
+
+  const properties = schema.properties;
+  if (
+    isJsonSchemaObject(properties) &&
+    REPOSITORY_TARGET_FIELDS.every((field) => field in properties)
+  ) {
+    schema.not = {
+      anyOf: [
+        { required: ['pullRequestNumber', 'ref'] },
+        { required: ['pullRequestNumber', 'commitSha'] },
+        { required: ['ref', 'commitSha'] },
+      ],
+    };
+  }
+
+  for (const value of Object.values(schema)) {
+    addRepositoryTargetExclusivity(value);
+  }
+  return schema;
+}
+
 function toDraft7JsonSchema(schema: z.ZodType): unknown {
-  return addUniqueItemsToAuthScopeArrays(
-    z.toJSONSchema(schema, JSON_SCHEMA_OPTIONS)
+  return addRepositoryTargetExclusivity(
+    addUniqueItemsToAuthScopeArrays(z.toJSONSchema(schema, JSON_SCHEMA_OPTIONS))
   );
 }
 

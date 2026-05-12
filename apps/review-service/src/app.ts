@@ -56,6 +56,9 @@ import {
   type ReviewStoreAdapter,
 } from './storage/index.js';
 
+/**
+ * Re-exports hosted authentication context and auth policy types.
+ */
 export type {
   ReviewAuthenticatedRequest,
   ReviewServiceAuthPolicy,

@@ -284,7 +284,6 @@ describe('review-types schemas', () => {
         name: 'review-agent',
         installationId: 123,
         pullRequestNumber: 42,
-        ref: 'refs/heads/main',
       })
     ).toMatchObject({
       provider: 'github',
@@ -304,6 +303,14 @@ describe('review-types schemas', () => {
         name: 'review-agent.git',
       })
     ).toThrow(/\.git suffix/);
+    expect(() =>
+      ReviewRepositorySelectionSchema.parse({
+        owner: 'octo-org',
+        name: 'review-agent',
+        pullRequestNumber: 42,
+        ref: 'refs/heads/main',
+      })
+    ).toThrow(/at most one/);
 
     const authorization = ReviewRunAuthorizationSchema.parse({
       principal: {
@@ -335,6 +342,15 @@ describe('review-types schemas', () => {
         scopes: ['review:read', 'review:read'],
       })
     ).toThrow(/duplicates/);
+    expect(() =>
+      ReviewRunAuthorizationSchema.parse({
+        ...authorization,
+        repository: {
+          ...authorization.repository,
+          ref: 'refs/heads/main',
+        },
+      })
+    ).toThrow(/at most one/);
   });
 
   it('centralizes run status and artifact format policy', () => {
@@ -534,6 +550,30 @@ describe('review-types schemas', () => {
         }
       ).properties.scopes.uniqueItems
     ).toBe(true);
+    expect(
+      (
+        schemas.reviewRepositorySelection as {
+          not: { anyOf: Array<{ required: string[] }> };
+        }
+      ).not.anyOf
+    ).toEqual(
+      expect.arrayContaining([
+        { required: ['pullRequestNumber', 'ref'] },
+        { required: ['pullRequestNumber', 'commitSha'] },
+        { required: ['ref', 'commitSha'] },
+      ])
+    );
+    expect(
+      (
+        schemas.reviewRunAuthorization as {
+          properties: {
+            repository: { not: { anyOf: Array<{ required: string[] }> } };
+          };
+        }
+      ).properties.repository.not.anyOf
+    ).toEqual(
+      expect.arrayContaining([{ required: ['pullRequestNumber', 'ref'] }])
+    );
   });
 
   it('keeps generated json schema artifacts in sync', async () => {

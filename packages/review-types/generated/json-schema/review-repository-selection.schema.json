@@ -47,5 +47,18 @@
     }
   },
   "required": ["owner", "name"],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "not": {
+    "anyOf": [
+      {
+        "required": ["pullRequestNumber", "ref"]
+      },
+      {
+        "required": ["pullRequestNumber", "commitSha"]
+      },
+      {
+        "required": ["ref", "commitSha"]
+      }
+    ]
+  }
 }

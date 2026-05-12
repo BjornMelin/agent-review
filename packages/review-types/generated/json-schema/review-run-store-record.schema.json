@@ -287,7 +287,20 @@
             "fullName",
             "visibility"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "not": {
+            "anyOf": [
+              {
+                "required": ["pullRequestNumber", "ref"]
+              },
+              {
+                "required": ["pullRequestNumber", "commitSha"]
+              },
+              {
+                "required": ["ref", "commitSha"]
+              }
+            ]
+          }
         },
         "scopes": {
           "minItems": 1,

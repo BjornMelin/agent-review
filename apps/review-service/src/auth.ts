@@ -24,14 +24,23 @@ import type {
   ServiceTokenRecord,
 } from './storage/index.js';
 
+/**
+ * Prefixes scoped review-service automation bearer tokens.
+ */
 export const REVIEW_SERVICE_TOKEN_PREFIX = 'rat';
 
+/**
+ * Lists hosted review operations that can be authorized by scopes.
+ */
 export type ReviewServiceAuthOperation =
   | 'review:start'
   | 'review:read'
   | 'review:cancel'
   | 'review:publish';
 
+/**
+ * Carries the authenticated principal and repository grants for one request.
+ */
 export type ReviewAuthenticatedRequest = {
   principal: ReviewAuthPrincipal;
   scopes: ReviewAuthScope[];
@@ -51,20 +60,32 @@ export type ReviewAuthenticatedRequest = {
   >;
 };
 
+/**
+ * Represents an auth policy decision before hosted routes execute.
+ */
 export type ReviewServiceAuthPolicyResult =
   | ReviewAuthenticatedRequest
   | Response
   | null;
 
+/**
+ * Evaluates a Hono request and returns auth context or an auth response.
+ */
 export type ReviewServiceAuthPolicy = (
   context: Context
 ) => ReviewServiceAuthPolicyResult | Promise<ReviewServiceAuthPolicyResult>;
 
+/**
+ * Contains the one-time raw service token and its durable hashed record.
+ */
 export type ServiceTokenCredential = {
   token: string;
   record: ServiceTokenRecord;
 };
 
+/**
+ * Verifies GitHub user bearer tokens and repository-scoped permissions.
+ */
 export type GitHubUserTokenAuthorizer = {
   authenticateUserToken(
     token: string
@@ -80,12 +101,18 @@ export type GitHubUserTokenAuthorizer = {
   }>;
 };
 
+/**
+ * Requests a GitHub App installation token narrowed to repositories.
+ */
 export type GitHubInstallationTokenRequest = {
   installationId: number;
   repositoryIds: [number, ...number[]];
   permissions?: Record<string, 'read' | 'write'>;
 };
 
+/**
+ * Describes a minted GitHub App installation access token.
+ */
 export type GitHubInstallationToken = {
   token: string;
   expiresAt: number;
@@ -93,6 +120,9 @@ export type GitHubInstallationToken = {
   repositorySelection?: string;
 };
 
+/**
+ * Signals an authenticated request that failed with an HTTP auth status.
+ */
 export class AuthHttpError extends Error {
   constructor(
     readonly status: 401 | 403,
@@ -247,6 +277,7 @@ async function audit(
  *
  * @param input - Token metadata, repository authorization, scopes, and hash pepper.
  * @returns Raw token shown once plus the durable record containing only its verifier hash.
+ * @throws Error - When token ID or secret overrides are not URL-safe or long enough.
  */
 export function createServiceTokenCredential(input: {
   name: string;
@@ -514,10 +545,22 @@ export async function authorizeRepositoryForRequest(
   return resolved.repository;
 }
 
+/**
+ * Determines whether an unknown error is a structured auth HTTP failure.
+ *
+ * @param error - Unknown error value to inspect.
+ * @returns True when the error is an `AuthHttpError`.
+ */
 export function isAuthHttpError(error: unknown): error is AuthHttpError {
   return error instanceof AuthHttpError;
 }
 
+/**
+ * Converts a structured auth failure into a JSON bearer-auth response.
+ *
+ * @param error - Auth HTTP failure to serialize.
+ * @returns Response with the matching status and safe body.
+ */
 export function authHttpErrorResponse(error: AuthHttpError): Response {
   return jsonAuthError(
     error.status === 401 ? 'authentication required' : 'authorization denied',
@@ -571,7 +614,9 @@ function repositoryAuthorizationFromGitHub(
     permissions: {
       metadata: 'read',
       ...(repository.permissions?.pull ? { contents: 'read' } : {}),
-      ...(repository.permissions?.push || repository.permissions?.admin
+      ...(repository.permissions?.push ||
+      repository.permissions?.maintain ||
+      repository.permissions?.admin
         ? { pullRequests: 'write' }
         : {}),
     },
@@ -724,6 +769,7 @@ export function createGitHubUserTokenAuthorizer(
  *
  * @param options - GitHub App credentials.
  * @returns Function that mints narrowed installation access tokens.
+ * @throws Error - When the returned token request has no repository IDs.
  */
 export function createGitHubAppInstallationTokenProvider(options: {
   appId: number | string;
@@ -759,6 +805,9 @@ export function createGitHubAppInstallationTokenProvider(options: {
 
 /**
  * Produces the hash stored with review runs to detect replayed or mixed requests.
+ *
+ * @param input - Review request payload or compatible structured value.
+ * @returns Stable SHA-256 hash string with the `sha256:` prefix.
  */
 export function reviewRequestHash(input: unknown): string {
   return `sha256:${createHash('sha256')
@@ -766,6 +815,12 @@ export function reviewRequestHash(input: unknown): string {
     .digest('hex')}`;
 }
 
+/**
+ * Converts a persisted repository authorization into a request selection.
+ *
+ * @param repository - Stored repository authorization snapshot.
+ * @returns Repository selection suitable for dynamic authorization checks.
+ */
 export function repositorySelectionFromAuthorization(
   repository: ReviewRepositoryAuthorization
 ): ReviewRepositorySelection {

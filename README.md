@@ -105,9 +105,9 @@ pnpm --filter @review-agent/review-service db:migrate
 | `DATABASE_URL` / `POSTGRES_URL` | `apps/review-service` | Enables durable Drizzle/Postgres review run, event, and artifact storage |
 | `REVIEW_SERVICE_STORAGE=memory` | `apps/review-service` | Explicitly allows volatile in-memory service storage when no database URL is set |
 | `REVIEW_SERVICE_AUTH_MODE=required\|disabled` | `apps/review-service` | Enables hosted auth; defaults to `required`; `disabled` is rejected in production |
-| `REVIEW_SERVICE_TOKEN_PEPPER` | `apps/review-service` | HMAC pepper for scoped service-token verifier hashes |
+| `REVIEW_SERVICE_TOKEN_PEPPER` | `apps/review-service` | Required when hosted auth is enabled; HMAC pepper for scoped service-token verifier hashes |
 | `REVIEW_SERVICE_ALLOWED_CWD_ROOTS` | `apps/review-service` | Comma-separated host root allowlist for review working directories |
-| `REVIEW_SERVICE_HOSTED_REPOSITORY_ROOTS` | `apps/review-service` | Comma-separated checkout parent roots; authenticated starts must run under `<root>/<owner>/<repo>` |
+| `REVIEW_SERVICE_HOSTED_REPOSITORY_ROOTS` | `apps/review-service` | Comma-separated checkout parent roots; defaults to `REVIEW_SERVICE_ALLOWED_CWD_ROOTS`; authenticated starts must run under `<root>/<owner>/<repo>` |
 | `GITHUB_API_BASE_URL` | `apps/review-service` | Optional GitHub API base URL override for Enterprise Server testing |
 | `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
