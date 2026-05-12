@@ -379,11 +379,16 @@ describe('review-types schemas', () => {
       redactReviewResult(result).result.metadata.providerTelemetry
     ).toEqual(providerTelemetry);
 
+    const firstAttempt = providerTelemetry.attempts[0];
+    expect(firstAttempt).toBeDefined();
+    if (!firstAttempt) {
+      throw new Error('provider telemetry fixture must include an attempt');
+    }
     const redactionProbeTelemetry = ProviderPolicyTelemetrySchema.parse({
       ...providerTelemetry,
       attempts: [
         {
-          ...providerTelemetry.attempts[0]!,
+          ...firstAttempt,
           errorCode: 'Bearer abc.def.ghi',
           generationId: 'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456',
         },
