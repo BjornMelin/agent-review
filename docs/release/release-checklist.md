@@ -45,6 +45,14 @@ issue closeout.
    1. Start detached run (`delivery=detached`)
    2. Poll `/v1/review/:reviewId`
    3. Cancel using `/v1/review/:reviewId/cancel`
+5. Run Review Room smoke tests:
+   1. Start the service and configure `REVIEW_WEB_SERVICE_URL` plus a
+      server-only `REVIEW_WEB_SERVICE_TOKEN`.
+   2. Start Review Room with `pnpm --filter @review-agent/review-web dev`.
+   3. Verify the run list loads from `GET /v1/review`.
+   4. Open a run detail view and verify status metadata, findings, artifacts,
+      and lifecycle events render without console errors on desktop and mobile
+      viewports.
 
 ## Security and Policy Verification
 

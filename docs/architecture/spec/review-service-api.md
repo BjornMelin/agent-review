@@ -218,6 +218,81 @@ cwd allowlist rejection. Durable records store redacted request and completed
 run payloads; the raw accepted request is kept in memory only long enough to
 dispatch the runner or detached worker.
 
+## `GET /v1/review`
+
+Lists review runs as compact operational summaries for CLI and Review Room
+consumers. The route returns newest-updated runs first and does not hydrate
+lifecycle events, artifact bodies, or full review results.
+
+### Query Parameters
+
+- `limit`: positive integer up to `100`, default `25`.
+- `cursor`: opaque cursor returned as `nextCursor` by the previous page.
+- `status`: optional `queued|running|completed|failed|cancelled` filter.
+- `owner` and `name`: optional GitHub repository owner/name filter. They must
+  be provided together.
+
+### Authorization
+
+When auth is enabled, listing is authorized server-side before storage is
+queried:
+
+- A request with `owner` and `name` requires `review:read` for that repository.
+- A scoped service token bound to exactly one repository lists only that
+  repository when no explicit repository filter is supplied.
+- A token bound to multiple static repositories lists only those repositories.
+- A GitHub user token without an explicit repository filter returns `403` so the
+  caller must choose a repository before listing.
+
+Unauthorized repositories are not returned and are not filtered in the browser.
+
+### Response
+
+The response body follows `ReviewRunListResponseSchema`:
+
+```json
+{
+  "runs": [
+    {
+      "reviewId": "review_123",
+      "status": "completed",
+      "request": {
+        "provider": "openaiCompatible",
+        "executionMode": "localTrusted",
+        "targetType": "commit",
+        "outputFormats": ["json", "markdown"],
+        "model": "gateway:gpt-5.2"
+      },
+      "findingCount": 3,
+      "artifactFormats": ["json", "markdown"],
+      "publicationCount": 1,
+      "modelResolved": "gateway:gpt-5.2",
+      "createdAt": 1778560000000,
+      "updatedAt": 1778560060000,
+      "repository": {
+        "provider": "github",
+        "owner": "octo-org",
+        "name": "agent-review",
+        "fullName": "octo-org/agent-review",
+        "repositoryId": 987654,
+        "installationId": 123456,
+        "visibility": "private",
+        "pullRequestNumber": 42
+      }
+    }
+  ],
+  "nextCursor": "eyJ1cGRhdGVkQXQiOjE3Nzg1NjAwMDAwMDAsInJldmlld0lkIjoicmV2aWV3XzEyMyJ9"
+}
+```
+
+Responses:
+
+- `200`: list returned.
+- `400`: query parse/validation error.
+- `401`: missing or invalid bearer token.
+- `403`: authenticated token lacks a concrete authorized repository scope.
+- `502`: authorization dependencies or review storage are unavailable.
+
 ## `GET /v1/review/:reviewId`
 
 Returns review status and result summary when available.
@@ -228,6 +303,8 @@ Returns review status and result summary when available.
 - `status`
 - `error` (optional)
 - `result` (optional review result payload)
+- `summary` (optional compact `ReviewRunSummary`)
+- `artifacts` (optional artifact metadata list)
 - `createdAt`
 - `updatedAt`
 - `publications` (optional, durable GitHub publication records)

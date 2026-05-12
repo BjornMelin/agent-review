@@ -13,6 +13,10 @@ This directory contains canonical product and architecture documentation for the
 - [One-Issue-One-PR Release Playbook](./release/one-issue-one-pr-playbook.md)
 - [Dependency Modernization Ledger](./release/dependency-modernization-2026-05.md)
 
+## Deployment Docs
+
+- [Review Room Deployment](./deployment/review-web.md)
+
 ## Architecture Specifications
 
 - [System Overview](./architecture/spec/system-overview.md)
@@ -45,4 +49,6 @@ Implementation contracts are defined in code and mirrored here:
 - CLI surface: `apps/review-cli/src/index.ts`
 - Service surface: `apps/review-service/src/app.ts` and runtime entrypoint:
   `apps/review-service/src/server.ts`
+- Review Room web surface: `apps/review-web/src/app` and shared service client:
+  `apps/review-web/src/lib/review-service.ts`
 - Detached execution: `apps/review-worker/src/index.ts`

@@ -25,7 +25,7 @@ TypeScript owns:
 - provider registry, model policy, AI SDK, and Vercel AI Gateway integration
 - Vercel Workflow and Vercel Sandbox orchestration
 - `packages/review-types` Zod schemas and generated JSON Schema artifacts
-- the primary CLI surface and the future Review Room web application
+- the primary CLI surface and the Review Room web application
 
 Allow Rust only as helper crates that replace fragile implementation details and
 delete more complexity than they introduce. The first eligible Rust helpers are:

@@ -12,6 +12,8 @@ The platform reviews code changes from git context and produces structured findi
 - HTTP service for inline or detached review execution
 - GitHub publication path for Checks, SARIF upload, and idempotent PR comments
 - Detached worker path with Workflow API orchestration and durable service state
+- Review Room web app for hosted run history, live status, findings, artifacts,
+  and publish/cancel controls
 - Provider registry for Codex delegate and OpenAI-compatible model policy
 - Durable service storage with Drizzle/Postgres when a database URL is configured
 - Detached remote sandbox policy runner with Vercel Sandbox audit metadata
@@ -23,6 +25,7 @@ The platform reviews code changes from git context and produces structured findi
 apps/
   review-cli/
   review-service/
+  review-web/
   review-worker/
 packages/
   review-convex-bridge/
@@ -118,6 +121,22 @@ before startup; startup does not apply migrations automatically.
 pnpm --filter @review-agent/review-service db:migrate
 ```
 
+### Review Room
+
+Run the Next.js Review Room against a local or hosted review service:
+
+```bash
+export REVIEW_WEB_SERVICE_URL=http://localhost:3042
+export REVIEW_WEB_SERVICE_TOKEN=rat_<tokenId>_<secret>
+
+pnpm --filter @review-agent/review-web dev
+```
+
+The web app reads `GET /v1/review`, status, artifact, event, publish, and cancel
+service endpoints through server-side data loading and token-safe route
+handlers. Deployment notes are in
+[docs/deployment/review-web.md](docs/deployment/review-web.md).
+
 ## Environment Variables
 
 | Variable | Used By | Purpose |
@@ -134,6 +153,9 @@ pnpm --filter @review-agent/review-service db:migrate
 | `GITHUB_APP_PRIVATE_KEY` | `apps/review-service` | GitHub App private key used for publication tokens; escaped `\n` sequences are normalized at startup |
 | `REVIEW_AGENT_SERVICE_URL` / `REVIEW_SERVICE_URL` | `apps/review-cli` | Hosted review service URL for `submit`, `status`, `watch`, `artifact`, `cancel`, `publish`, and `run --detached` (default `http://localhost:3042`) |
 | `REVIEW_AGENT_SERVICE_TOKEN` / `REVIEW_SERVICE_TOKEN` | `apps/review-cli` | Hosted review service bearer token for service commands; prefer env over `--service-token` in CI |
+| `REVIEW_WEB_SERVICE_URL` / `REVIEW_AGENT_SERVICE_URL` / `REVIEW_SERVICE_URL` | `apps/review-web` | Review Room service URL; defaults to `http://localhost:3042` for local development |
+| `REVIEW_WEB_SERVICE_TOKEN` / `REVIEW_AGENT_SERVICE_TOKEN` / `REVIEW_SERVICE_TOKEN` | `apps/review-web` | Server-only bearer token used by Review Room route handlers; never expose it through `NEXT_PUBLIC_*` |
+| `REVIEW_WEB_ACCESS_TOKEN` | `apps/review-web` | Required in production/preview to gate browser access before any server-side service token is used; accepted through Basic auth, bearer auth, or `x-review-room-access-token` |
 | `GITHUB_REPOSITORY` / `GITHUB_REPOSITORY_ID` | `apps/review-cli` | Optional GitHub repository defaults attached to hosted start requests (`submit` and `run --detached`) |
 | `REVIEW_AGENT_GITHUB_INSTALLATION_ID` | `apps/review-cli` | Optional GitHub App installation ID attached to hosted start requests (`submit` and `run --detached`) |
 | `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
@@ -177,6 +199,7 @@ runs install, format, lint, typecheck, test, Rust helper gates, and build.
 
 - Docs index: [docs/README.md](docs/README.md)
 - Product requirements: [docs/PRD.md](docs/PRD.md)
+- Review Room deployment: [docs/deployment/review-web.md](docs/deployment/review-web.md)
 - Architecture requirements: [docs/architecture/requirements.md](docs/architecture/requirements.md)
 - Architecture specs: [docs/architecture/spec/](docs/architecture/spec/)
 - Architecture decisions: [docs/architecture/adr/](docs/architecture/adr/)
