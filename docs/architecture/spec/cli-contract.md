@@ -186,7 +186,8 @@ publication responses exit `4`.
 
 ## `review-agent models`
 
-Prints provider-registry model presets, including default route markers,
+Prints provider-registry model presets in a human-readable list by default.
+Pass `--json` to emit the machine-readable catalog with default route markers,
 capability policy, and the provider policy summary for each model:
 
 - `policy.version`
@@ -198,6 +199,10 @@ capability policy, and the provider policy summary for each model:
 - `policy.retention`
 - `policy.zdrRequired`
 - `policy.disallowPromptTraining`
+
+Options:
+
+- `--json`: emit the full model catalog as JSON
 
 ## `review-agent doctor`
 
