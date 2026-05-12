@@ -96,6 +96,12 @@ function normalizeServiceUrl(rawUrl: string): string {
         2
       );
     }
+    if (parsed.search || parsed.hash) {
+      throw new ServiceClientError(
+        'review service URL must not include query strings or fragments',
+        2
+      );
+    }
     if (parsed.protocol === 'http:' && !isLocalServiceHost(parsed.hostname)) {
       throw new ServiceClientError(
         'review service URL must use HTTPS unless it targets localhost or loopback',
@@ -151,7 +157,10 @@ function buildServiceUrl(
   path: string,
   query?: URLSearchParams
 ): string {
-  const base = new URL(`${config.baseUrl}/`);
+  const base = new URL(config.baseUrl);
+  if (!base.pathname.endsWith('/')) {
+    base.pathname = `${base.pathname}/`;
+  }
   const url = new URL(path.replace(/^\//, ''), base);
   if (query) {
     url.search = query.toString();
@@ -395,6 +404,8 @@ function parseSseFrames(buffer: string): {
   return { frames, remainder };
 }
 
+type SseFrame = ReturnType<typeof parseSseFrames>['frames'][number];
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
@@ -431,6 +442,45 @@ export async function watchReviewEvents(
   let terminalExitCode: number | undefined;
   const decoder = new TextDecoder();
 
+  const processFrames = async (frames: SseFrame[]): Promise<void> => {
+    for (const frame of frames) {
+      if (terminalExitCode !== undefined && frame.event === 'keepalive') {
+        return;
+      }
+      if (frame.event === 'keepalive' || frame.data.length === 0) {
+        continue;
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(frame.data);
+      } catch {
+        throw new ServiceClientError(
+          'review service returned invalid SSE event JSON',
+          4
+        );
+      }
+      let event: LifecycleEvent;
+      try {
+        event = LifecycleEventSchema.parse(payload);
+      } catch {
+        throw new ServiceClientError(
+          'review service returned invalid SSE event payload',
+          4
+        );
+      }
+      await options.onEvent(event);
+      if (event.type === 'failed' || event.type === 'cancelled') {
+        exitCode = 4;
+        terminalExitCode = exitCode;
+        controller.abort();
+        return;
+      }
+      if (event.type === 'exitedReviewMode') {
+        terminalExitCode = exitCode;
+      }
+    }
+  };
+
   try {
     for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
       buffer += decoder.decode(chunk, { stream: true });
@@ -443,44 +493,35 @@ export async function watchReviewEvents(
       const parsed = parseSseFrames(buffer);
       buffer = parsed.remainder;
 
-      for (const frame of parsed.frames) {
-        if (terminalExitCode !== undefined && frame.event === 'keepalive') {
+      await processFrames(parsed.frames);
+      if (terminalExitCode !== undefined && exitCode === 0) {
+        const lastFrame = parsed.frames.at(-1);
+        if (lastFrame?.event === 'keepalive') {
           return terminalExitCode;
-        }
-        if (frame.event === 'keepalive' || frame.data.length === 0) {
-          continue;
-        }
-        let payload: unknown;
-        try {
-          payload = JSON.parse(frame.data);
-        } catch {
-          throw new ServiceClientError(
-            'review service returned invalid SSE event JSON',
-            4
-          );
-        }
-        let event: LifecycleEvent;
-        try {
-          event = LifecycleEventSchema.parse(payload);
-        } catch {
-          throw new ServiceClientError(
-            'review service returned invalid SSE event payload',
-            4
-          );
-        }
-        await options.onEvent(event);
-        if (event.type === 'failed' || event.type === 'cancelled') {
-          exitCode = 4;
-          terminalExitCode = exitCode;
-          controller.abort();
-          break;
-        }
-        if (event.type === 'exitedReviewMode') {
-          terminalExitCode = exitCode;
         }
       }
       if (terminalExitCode !== undefined && exitCode !== 0) {
         break;
+      }
+    }
+
+    const flushed = decoder.decode();
+    if (flushed.length > 0) {
+      buffer += flushed;
+      if (Buffer.byteLength(buffer) > MAX_SSE_BUFFER_BYTES) {
+        throw new ServiceClientError(
+          'review service SSE buffer exceeded the CLI safety limit',
+          4
+        );
+      }
+      const parsed = parseSseFrames(buffer);
+      buffer = parsed.remainder;
+      await processFrames(parsed.frames);
+      if (terminalExitCode !== undefined && exitCode === 0) {
+        const lastFrame = parsed.frames.at(-1);
+        if (lastFrame?.event === 'keepalive') {
+          return terminalExitCode;
+        }
       }
     }
   } catch (error) {

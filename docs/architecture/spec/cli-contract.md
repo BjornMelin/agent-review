@@ -68,7 +68,8 @@ Service configuration:
   `REVIEW_AGENT_SERVICE_URL`, then `REVIEW_SERVICE_URL`, then
   `http://localhost:3042`. Remote service URLs must use HTTPS; plaintext HTTP
   is accepted only for `localhost`, IPv4 loopback (`127.0.0.0/8`), or IPv6
-  loopback (`::1`).
+  loopback (`::1`). Service URLs must not include query strings, fragments, or
+  embedded credentials.
 - `--service-token <token>`: bearer token. Defaults to
   `REVIEW_AGENT_SERVICE_TOKEN`, then `REVIEW_SERVICE_TOKEN`.
 

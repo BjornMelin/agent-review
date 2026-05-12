@@ -418,6 +418,30 @@ describe('review-agent hosted service commands', () => {
     expect(result.stderr).not.toContain('rat_should_not_send');
   });
 
+  it('rejects service urls with query strings or fragments', async () => {
+    for (const serviceUrl of [
+      'http://127.0.0.1:3042?debug=true',
+      'http://127.0.0.1:3042#fragment',
+    ]) {
+      const result = await runCli([
+        'status',
+        'review_1',
+        '--service-url',
+        serviceUrl,
+        '--service-token',
+        'rat_should_not_send',
+      ]);
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        'review service URL must not include query strings or fragments'
+      );
+      expect(result.stderr).not.toContain('debug=true');
+      expect(result.stderr).not.toContain('#fragment');
+      expect(result.stderr).not.toContain('rat_should_not_send');
+    }
+  });
+
   it('allows HTTPS service urls without contacting them during config validation', async () => {
     const result = await runCli([
       'status',
