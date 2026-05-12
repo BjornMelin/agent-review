@@ -527,7 +527,7 @@ export async function watchReviewEvents(
   const processFrames = async (frames: SseFrame[]): Promise<void> => {
     for (const frame of frames) {
       if (terminalExitCode !== undefined && frame.event === 'keepalive') {
-        return;
+        continue;
       }
       if (frame.event === 'keepalive' || frame.data.length === 0) {
         continue;

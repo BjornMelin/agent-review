@@ -535,6 +535,7 @@ describe('review-agent hosted service commands', () => {
           },
         })}\n\n`
       );
+      response.write('event: keepalive\ndata: \n\n');
       response.write(
         `event: artifactReady\nid: event_3\ndata: ${JSON.stringify({
           type: 'artifactReady',
