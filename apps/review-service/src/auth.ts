@@ -423,7 +423,14 @@ export function createReviewServiceAuthPolicy(options: {
             authError.status
           );
         }
-        throw error;
+        await audit(options.store, {
+          eventType: 'authn',
+          operation: 'request',
+          result: 'denied',
+          reason: 'github_auth_unavailable',
+          status: 502,
+        });
+        return jsonAuthDependencyError();
       }
       await audit(options.store, {
         eventType: 'authn',
@@ -731,13 +738,14 @@ export function createGitHubAppInstallationTokenProvider(options: {
         'repositoryIds must contain at least one repository for installation token scoping'
       );
     }
-    const options: InstallationAuthOptions = {
+    const authOptions: InstallationAuthOptions = {
       type: 'installation',
       installationId: input.installationId,
       repositoryIds: [...input.repositoryIds],
       ...(input.permissions ? { permissions: input.permissions } : {}),
     };
-    const result: InstallationAccessTokenAuthentication = await auth(options);
+    const result: InstallationAccessTokenAuthentication =
+      await auth(authOptions);
     return {
       token: result.token,
       expiresAt: Date.parse(result.expiresAt),

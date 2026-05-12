@@ -2616,6 +2616,57 @@ describe('createReviewServiceApp', () => {
     );
   });
 
+  it('maps GitHub authentication outages to dependency failures', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken: vi.fn(async () => {
+            throw new Error('github unavailable');
+          }),
+          authorizeUserToken: vi.fn(async () => {
+            throw new Error('should not authorize repository');
+          }),
+        },
+      }),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer github-user-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: 'authentication unavailable',
+    });
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'authn',
+          operation: 'request',
+          result: 'denied',
+          reason: 'github_auth_unavailable',
+          status: 502,
+        }),
+      ])
+    );
+  });
+
   it('preserves authentication failures on existing GitHub run routes', async () => {
     const authStore = createInMemoryReviewAuthStore();
     const invalidToken = Object.assign(new Error('Bad credentials'), {
