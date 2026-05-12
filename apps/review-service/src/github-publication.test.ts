@@ -437,7 +437,7 @@ describe('createGitHubPublicationService', () => {
               id: 777,
               body: `${forgedMarker}\nthird-party comment`,
               html_url: 'https://github.com/comments/777',
-              user: { login: 'octocat', type: 'User' },
+              user: { login: 'other-app[bot]', type: 'Bot' },
             },
           ],
         };
@@ -560,6 +560,19 @@ describe('createGitHubPublicationService', () => {
       status: 'published',
       externalId: '500',
       externalUrl: 'https://github.com/comments/500',
+      marker,
+      metadata: { fingerprint: 'finding-fingerprint' },
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+    await publicationStore.upsert({
+      publicationId: 'pub-comment-501',
+      reviewId: 'review-1',
+      channel: 'pullRequestComment',
+      targetKey: 'pr-comment:duplicate:finding-fingerprint:501',
+      status: 'published',
+      externalId: '501',
+      externalUrl: 'https://github.com/comments/501',
       marker,
       metadata: { fingerprint: 'finding-fingerprint' },
       createdAt: 1_000,
@@ -774,6 +787,62 @@ describe('createGitHubPublicationService', () => {
           call.route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs'
       )
     ).toHaveLength(1);
+  });
+
+  it('reports failed aggregate status when failures have no published channels', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const noFindingRunResult: ReviewRunResult = {
+      ...createRunResult(),
+      result: {
+        ...result,
+        findings: [],
+        overallCorrectness: 'patch is correct',
+      },
+    };
+    const requestClient = vi.fn(async (route) => {
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (
+        route === 'POST /repos/{owner}/{repo}/check-runs' ||
+        route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs'
+      ) {
+        throw new Error('GitHub write failed');
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const response = await service.publish(
+      createRecord({ result: noFindingRunResult })
+    );
+
+    expect(response.status).toBe('failed');
+    expect(response.publications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channel: 'checkRun', status: 'failed' }),
+        expect.objectContaining({ channel: 'sarif', status: 'failed' }),
+        expect.objectContaining({
+          channel: 'pullRequestComment',
+          status: 'skipped',
+        }),
+      ])
+    );
   });
 
   it('rejects stale pull request heads before GitHub write side effects', async () => {

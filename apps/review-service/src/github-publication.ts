@@ -817,13 +817,7 @@ function hasStoredCommentOwnership(
       marker.fingerprint ===
         (record.metadata as { fingerprint?: unknown } | undefined)?.fingerprint
   );
-  if (matchingRecords.some((record) => record.externalId === externalId)) {
-    return true;
-  }
-  return (
-    comment.user?.type === 'Bot' &&
-    matchingRecords.some((record) => Boolean(record.externalId))
-  );
+  return matchingRecords.some((record) => record.externalId === externalId);
 }
 
 async function deleteOwnedPullRequestComment(
@@ -1014,10 +1008,10 @@ function responseStatusFor(
   const published = publications.filter(
     (item) => item.status === 'published'
   ).length;
-  if (failed === publications.length) {
-    return 'failed';
+  if (failed > 0) {
+    return published > 0 ? 'partial' : 'failed';
   }
-  if (failed > 0 || published < publications.length) {
+  if (published < publications.length) {
     return published > 0 ? 'partial' : 'skipped';
   }
   return 'published';
