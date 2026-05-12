@@ -4,6 +4,7 @@ import {
   type LifecycleEvent,
   LifecycleEventSchema,
   OutputFormatSchema,
+  type ReviewCancelResponse,
   ReviewCancelResponseSchema,
   ReviewErrorResponseSchema,
   type ReviewPublishResponse,
@@ -448,7 +449,10 @@ export function getReviewStatus(
  * @returns Parsed hosted review cancellation response.
  * @throws ServiceClientError when the request fails or the response is invalid.
  */
-export function cancelReview(config: ReviewServiceConfig, reviewId: string) {
+export function cancelReview(
+  config: ReviewServiceConfig,
+  reviewId: string
+): Promise<ReviewCancelResponse> {
   return serviceJson(
     config,
     `/v1/review/${encodeURIComponent(reviewId)}/cancel`,

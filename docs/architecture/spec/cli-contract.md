@@ -74,7 +74,7 @@ Service configuration:
   `REVIEW_AGENT_SERVICE_TOKEN`, then `REVIEW_SERVICE_TOKEN`.
 
 One-shot hosted service requests (`submit`, `status`, `artifact`, `cancel`,
-`publish`, and `run --detached`) enforce a 30 second timeout across response
+`publish`, and `run --detached`) enforce a 30-second timeout across response
 headers and response body reads. Timeouts exit `4`.
 
 Repository selection:
