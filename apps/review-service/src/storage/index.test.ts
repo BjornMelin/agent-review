@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite';
 import type { ReviewRunResult } from '@review-agent/review-core';
 import type {
   LifecycleEvent,
+  ProviderPolicyTelemetry,
   ReviewRequest,
   ReviewResult,
 } from '@review-agent/review-types';
@@ -134,7 +135,43 @@ function runtimeScopeKeyForRequest(request: ReviewRequest): string {
   return `${request.executionMode}|${request.provider}|${request.cwd}|${request.target.type}`;
 }
 
-function createReviewResult(request: ReviewRequest): ReviewRunResult {
+function createProviderTelemetry(): ProviderPolicyTelemetry {
+  return {
+    policyVersion: 'provider-policy.test',
+    requestedModel: 'gateway:openai/gpt-5',
+    resolvedModel: 'gateway:openai/gpt-5',
+    route: 'gateway',
+    finalProvider: 'openai',
+    fallbackOrder: ['gateway:anthropic/claude-sonnet-4-5'],
+    fallbackUsed: false,
+    maxInputChars: 120_000,
+    maxOutputTokens: 4096,
+    timeoutMs: 120_000,
+    maxAttempts: 2,
+    retention: 'unknown',
+    zdrRequired: false,
+    disallowPromptTraining: true,
+    failureClass: 'none',
+    totalLatencyMs: 42,
+    attempts: [
+      {
+        route: 'gateway',
+        model: 'gateway:openai/gpt-5',
+        provider: 'openai',
+        status: 'success',
+        latencyMs: 42,
+        failureClass: 'none',
+        usage: { status: 'unknown' },
+      },
+    ],
+    usage: { status: 'unknown' },
+  };
+}
+
+function createReviewResult(
+  request: ReviewRequest,
+  options: { providerTelemetry?: ProviderPolicyTelemetry } = {}
+): ReviewRunResult {
   const result: ReviewResult = {
     findings: [],
     overallCorrectness: 'patch is correct',
@@ -148,6 +185,9 @@ function createReviewResult(request: ReviewRequest): ReviewRunResult {
       gitContext: {
         mode: 'custom',
       },
+      ...(options.providerTelemetry
+        ? { providerTelemetry: options.providerTelemetry }
+        : {}),
     },
   };
 
@@ -1411,7 +1451,9 @@ describe('review storage', () => {
           reviewId: 'review-old',
           authorization,
           request,
-          result: createReviewResult(request),
+          result: createReviewResult(request, {
+            providerTelemetry: createProviderTelemetry(),
+          }),
           status: 'completed',
           createdAt: BASE_TIME_MS,
           updatedAt: BASE_TIME_MS + 1_000,
@@ -1474,6 +1516,11 @@ describe('review storage', () => {
           status: 'completed',
           artifactFormats: ['json', 'markdown'],
           publicationCount: 1,
+          providerTelemetry: {
+            policyVersion: 'provider-policy.test',
+            route: 'gateway',
+            timeoutMs: 120_000,
+          },
           repository: {
             owner: 'octo-org',
             name: 'agent-review',
@@ -1545,6 +1592,53 @@ describe('review storage', () => {
       'event-2',
       'event-3',
     ]);
+  });
+
+  it('provides copy-on-read provider telemetry in memory', async () => {
+    const request: ReviewRequest = {
+      ...createRequest(),
+      provider: 'openaiCompatible',
+    };
+    const providerTelemetry = createProviderTelemetry();
+    const store = createInMemoryReviewStore();
+    await store.set(
+      createRecord({
+        request,
+        status: 'completed',
+        result: createReviewResult(request, { providerTelemetry }),
+      }),
+      { reason: 'completed' }
+    );
+
+    providerTelemetry.usage = { status: 'reported', totalTokens: 999 };
+
+    const hydrated = await store.get('review-1');
+    if (!hydrated?.result?.result.metadata.providerTelemetry) {
+      throw new Error('expected provider telemetry');
+    }
+    hydrated.result.result.metadata.providerTelemetry.usage = {
+      status: 'reported',
+      totalTokens: 777,
+    };
+    const [summary] = (await store.list({ limit: 10 })).runs;
+    if (!summary?.providerTelemetry) {
+      throw new Error('expected summary provider telemetry');
+    }
+    summary.providerTelemetry.usage = { status: 'reported', totalTokens: 555 };
+
+    const actual = await store.get('review-1');
+    expect(actual?.result?.result.metadata.providerTelemetry?.usage).toEqual({
+      status: 'unknown',
+    });
+    await expect(store.list({ limit: 10 })).resolves.toMatchObject({
+      runs: [
+        {
+          providerTelemetry: {
+            usage: { status: 'unknown' },
+          },
+        },
+      ],
+    });
   });
 
   it('deduplicates retried event appends without advancing stored sequence', async () => {

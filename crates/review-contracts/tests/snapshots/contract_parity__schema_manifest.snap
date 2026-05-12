@@ -11,7 +11,12 @@ schemas:
   - commandRunOutput -> command-run-output.schema.json
   - lifecycleEvent -> lifecycle-event.schema.json
   - outputFormat -> output-format.schema.json
+  - providerAttemptTelemetry -> provider-attempt-telemetry.schema.json
   - providerDiagnostic -> provider-diagnostic.schema.json
+  - providerFailureClass -> provider-failure-class.schema.json
+  - providerPolicyTelemetry -> provider-policy-telemetry.schema.json
+  - providerRetentionPolicy -> provider-retention-policy.schema.json
+  - providerUsage -> provider-usage.schema.json
   - rawModelOutput -> raw-model-output.schema.json
   - reviewArtifactMetadata -> review-artifact-metadata.schema.json
   - reviewArtifactStoreRecord -> review-artifact-store-record.schema.json

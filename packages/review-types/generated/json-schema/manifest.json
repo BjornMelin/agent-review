@@ -20,8 +20,28 @@
       "file": "output-format.schema.json"
     },
     {
+      "name": "providerAttemptTelemetry",
+      "file": "provider-attempt-telemetry.schema.json"
+    },
+    {
       "name": "providerDiagnostic",
       "file": "provider-diagnostic.schema.json"
+    },
+    {
+      "name": "providerFailureClass",
+      "file": "provider-failure-class.schema.json"
+    },
+    {
+      "name": "providerPolicyTelemetry",
+      "file": "provider-policy-telemetry.schema.json"
+    },
+    {
+      "name": "providerRetentionPolicy",
+      "file": "provider-retention-policy.schema.json"
+    },
+    {
+      "name": "providerUsage",
+      "file": "provider-usage.schema.json"
     },
     {
       "name": "rawModelOutput",

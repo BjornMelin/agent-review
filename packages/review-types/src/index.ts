@@ -567,6 +567,87 @@ export const ReviewFindingSchema = z.strictObject({
 });
 
 /**
+ * Classifies provider policy and runtime failures without exposing raw upstream errors.
+ */
+export const ProviderFailureClassSchema = z.enum([
+  'none',
+  'policy',
+  'budget',
+  'auth',
+  'rate_limit',
+  'timeout',
+  'provider_unavailable',
+  'invalid_response',
+  'cancelled',
+  'unknown',
+]);
+
+/**
+ * Describes whether a routed provider policy enforces data-retention constraints.
+ */
+export const ProviderRetentionPolicySchema = z.enum([
+  'zdrEnforced',
+  'providerRetained',
+  'unknown',
+  'byokUnverified',
+]);
+
+/**
+ * Captures provider-reported token and cost totals without raw provider payloads.
+ */
+export const ProviderUsageSchema = z.strictObject({
+  status: z.enum(['reported', 'unknown']),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+  reasoningTokens: z.number().int().nonnegative().optional(),
+  cachedInputTokens: z.number().int().nonnegative().optional(),
+  costUsd: z.number().nonnegative().optional(),
+  marketCostUsd: z.number().nonnegative().optional(),
+});
+
+/**
+ * Records one routed provider attempt, including sanitized status, latency, and
+ * optional usage evidence.
+ */
+export const ProviderAttemptTelemetrySchema = z.strictObject({
+  route: z.string().min(1),
+  model: z.string().min(1),
+  provider: z.string().min(1).optional(),
+  status: z.enum(['success', 'failed', 'skipped']),
+  latencyMs: z.number().int().nonnegative(),
+  failureClass: ProviderFailureClassSchema.optional(),
+  errorCode: z.string().min(1).optional(),
+  retryable: z.boolean().optional(),
+  generationId: z.string().min(1).optional(),
+  usage: ProviderUsageSchema.optional(),
+});
+
+/**
+ * Captures policy decisions, fallback evidence, and cost/latency telemetry for provider runs.
+ */
+export const ProviderPolicyTelemetrySchema = z.strictObject({
+  policyVersion: z.string().min(1),
+  requestedModel: z.string().min(1).optional(),
+  resolvedModel: z.string().min(1),
+  route: z.string().min(1),
+  finalProvider: z.string().min(1).optional(),
+  fallbackOrder: z.array(z.string().min(1)),
+  fallbackUsed: z.boolean(),
+  maxInputChars: z.number().int().positive(),
+  maxOutputTokens: z.number().int().positive(),
+  timeoutMs: z.number().int().positive(),
+  maxAttempts: z.number().int().positive(),
+  retention: ProviderRetentionPolicySchema,
+  zdrRequired: z.boolean(),
+  disallowPromptTraining: z.boolean(),
+  failureClass: ProviderFailureClassSchema,
+  totalLatencyMs: z.number().int().nonnegative(),
+  attempts: z.array(ProviderAttemptTelemetrySchema).min(1),
+  usage: ProviderUsageSchema,
+});
+
+/**
  * Validates the normalized review result returned to callers and rendered into artifacts.
  */
 export const ReviewResultSchema = z.strictObject({
@@ -590,6 +671,7 @@ export const ReviewResultSchema = z.strictObject({
       commitSha: z.string().min(1).optional(),
     }),
     sandboxId: z.string().min(1).optional(),
+    providerTelemetry: ProviderPolicyTelemetrySchema.optional(),
   }),
 });
 
@@ -941,6 +1023,7 @@ export const ReviewRunSummarySchema = z.strictObject({
   artifactFormats: z.array(OutputFormatSchema),
   publicationCount: z.number().int().nonnegative(),
   modelResolved: z.string().min(1).optional(),
+  providerTelemetry: ProviderPolicyTelemetrySchema.optional(),
   detachedRunId: z.string().min(1).optional(),
   workflowRunId: z.string().min(1).optional(),
   sandboxId: z.string().min(1).optional(),
@@ -1288,6 +1371,32 @@ export type ReviewRequest = z.infer<typeof ReviewRequestSchema>;
  */
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
 /**
+ * Redacted provider failure classification.
+ */
+export type ProviderFailureClass = z.infer<typeof ProviderFailureClassSchema>;
+/**
+ * Provider data-retention policy classification.
+ */
+export type ProviderRetentionPolicy = z.infer<
+  typeof ProviderRetentionPolicySchema
+>;
+/**
+ * Provider usage and cost data when exposed by an upstream SDK.
+ */
+export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
+/**
+ * Single provider/model attempt telemetry.
+ */
+export type ProviderAttemptTelemetry = z.infer<
+  typeof ProviderAttemptTelemetrySchema
+>;
+/**
+ * Provider policy and runtime telemetry persisted with review results.
+ */
+export type ProviderPolicyTelemetry = z.infer<
+  typeof ProviderPolicyTelemetrySchema
+>;
+/**
  * Normalized review result.
  */
 export type ReviewResult = z.infer<typeof ReviewResultSchema>;
@@ -1514,6 +1623,7 @@ export type ReviewProviderRunOutput = {
   raw: unknown;
   text: string;
   resolvedModel?: string;
+  providerTelemetry?: ProviderPolicyTelemetry;
   commandRun?: CommandRunOutput;
 };
 
@@ -1705,6 +1815,60 @@ export function redactErrorMessage(
   return redactSensitiveText(message || fallback).text || fallback;
 }
 
+function redactProviderAttemptTelemetry(
+  attempt: ProviderAttemptTelemetry,
+  redact: (value: string) => string
+): ProviderAttemptTelemetry {
+  return {
+    route: redact(attempt.route),
+    model: redact(attempt.model),
+    status: attempt.status,
+    latencyMs: attempt.latencyMs,
+    ...(attempt.provider ? { provider: redact(attempt.provider) } : {}),
+    ...(attempt.failureClass ? { failureClass: attempt.failureClass } : {}),
+    ...(attempt.errorCode ? { errorCode: redact(attempt.errorCode) } : {}),
+    ...(attempt.retryable === undefined
+      ? {}
+      : { retryable: attempt.retryable }),
+    ...(attempt.generationId
+      ? { generationId: redact(attempt.generationId) }
+      : {}),
+    ...(attempt.usage ? { usage: { ...attempt.usage } } : {}),
+  };
+}
+
+function redactProviderPolicyTelemetry(
+  telemetry: ProviderPolicyTelemetry,
+  redact: (value: string) => string
+): ProviderPolicyTelemetry {
+  return {
+    policyVersion: redact(telemetry.policyVersion),
+    resolvedModel: redact(telemetry.resolvedModel),
+    route: redact(telemetry.route),
+    fallbackOrder: telemetry.fallbackOrder.map((model) => redact(model)),
+    fallbackUsed: telemetry.fallbackUsed,
+    maxInputChars: telemetry.maxInputChars,
+    maxOutputTokens: telemetry.maxOutputTokens,
+    timeoutMs: telemetry.timeoutMs,
+    maxAttempts: telemetry.maxAttempts,
+    retention: telemetry.retention,
+    zdrRequired: telemetry.zdrRequired,
+    disallowPromptTraining: telemetry.disallowPromptTraining,
+    failureClass: telemetry.failureClass,
+    totalLatencyMs: telemetry.totalLatencyMs,
+    attempts: telemetry.attempts.map((attempt) =>
+      redactProviderAttemptTelemetry(attempt, redact)
+    ),
+    usage: { ...telemetry.usage },
+    ...(telemetry.requestedModel
+      ? { requestedModel: redact(telemetry.requestedModel) }
+      : {}),
+    ...(telemetry.finalProvider
+      ? { finalProvider: redact(telemetry.finalProvider) }
+      : {}),
+  };
+}
+
 /**
  * Redacts secret-bearing text fields in a lifecycle event.
  *
@@ -1778,6 +1942,14 @@ export function redactReviewResult(result: ReviewResult): {
       },
       ...(result.metadata.sandboxId
         ? { sandboxId: redact(result.metadata.sandboxId) }
+        : {}),
+      ...(result.metadata.providerTelemetry
+        ? {
+            providerTelemetry: redactProviderPolicyTelemetry(
+              result.metadata.providerTelemetry,
+              redact
+            ),
+          }
         : {}),
     },
   };
@@ -2010,6 +2182,11 @@ export type JsonSchemaSet = {
   reviewRepositorySelection: unknown;
   reviewRunAuthorization: unknown;
   reviewFinding: unknown;
+  providerFailureClass: unknown;
+  providerRetentionPolicy: unknown;
+  providerUsage: unknown;
+  providerAttemptTelemetry: unknown;
+  providerPolicyTelemetry: unknown;
   reviewResult: unknown;
   rawModelOutput: unknown;
   lifecycleEvent: unknown;
@@ -2143,6 +2320,13 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     ),
     reviewRunAuthorization: toDraft7JsonSchema(ReviewRunAuthorizationSchema),
     reviewFinding: toDraft7JsonSchema(ReviewFindingSchema),
+    providerFailureClass: toDraft7JsonSchema(ProviderFailureClassSchema),
+    providerRetentionPolicy: toDraft7JsonSchema(ProviderRetentionPolicySchema),
+    providerUsage: toDraft7JsonSchema(ProviderUsageSchema),
+    providerAttemptTelemetry: toDraft7JsonSchema(
+      ProviderAttemptTelemetrySchema
+    ),
+    providerPolicyTelemetry: toDraft7JsonSchema(ProviderPolicyTelemetrySchema),
     reviewResult: toDraft7JsonSchema(ReviewResultSchema),
     rawModelOutput: toDraft7JsonSchema(RawModelOutputSchema),
     lifecycleEvent: toDraft7JsonSchema(LifecycleEventSchema),

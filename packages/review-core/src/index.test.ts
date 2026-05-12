@@ -151,6 +151,81 @@ describe('runReview', () => {
     }
   });
 
+  it('persists provider policy telemetry in review metadata', async () => {
+    const repo = await makeRepo();
+    try {
+      const raw = {
+        findings: [],
+        overall_correctness: 'patch is correct',
+        overall_explanation: 'ok',
+        overall_confidence_score: 0.99,
+      };
+      const provider = {
+        ...makeProvider(raw, 'openaiCompatible'),
+        run: vi.fn(async () => ({
+          raw,
+          text: JSON.stringify(raw),
+          resolvedModel: 'gateway:openai/gpt-5',
+          providerTelemetry: {
+            policyVersion: 'provider-policy.test',
+            requestedModel: 'gateway:openai/gpt-5',
+            resolvedModel: 'gateway:openai/gpt-5',
+            route: 'gateway',
+            finalProvider: 'openai',
+            fallbackOrder: [],
+            fallbackUsed: false,
+            maxInputChars: 120_000,
+            maxOutputTokens: 4096,
+            timeoutMs: 120_000,
+            maxAttempts: 1,
+            retention: 'unknown' as const,
+            zdrRequired: false,
+            disallowPromptTraining: true,
+            failureClass: 'none' as const,
+            totalLatencyMs: 12,
+            attempts: [
+              {
+                route: 'gateway',
+                model: 'gateway:openai/gpt-5',
+                provider: 'openai',
+                status: 'success' as const,
+                latencyMs: 12,
+                failureClass: 'none' as const,
+                usage: { status: 'unknown' as const },
+              },
+            ],
+            usage: { status: 'unknown' as const },
+          },
+        })),
+      };
+
+      const review = await runReview(
+        {
+          cwd: repo.cwd,
+          target: { type: 'uncommittedChanges' },
+          provider: 'openaiCompatible',
+          outputFormats: ['json'],
+          model: 'gateway:openai/gpt-5',
+        },
+        {
+          providers: {
+            codexDelegate: makeProvider(raw, 'codexDelegate'),
+            openaiCompatible: provider,
+          },
+        }
+      );
+
+      expect(review.result.metadata.providerTelemetry).toMatchObject({
+        policyVersion: 'provider-policy.test',
+        resolvedModel: 'gateway:openai/gpt-5',
+        finalProvider: 'openai',
+      });
+      expect(review.artifacts.json).toContain('providerTelemetry');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('redacts provider output, command events, and generated artifacts', async () => {
     const repo = await makeRepo();
     try {

@@ -244,8 +244,8 @@ Required controls:
   backpressure before provider invocation.
 - Apply defaults for omitted `maxFiles` and `maxDiffBytes`; enforce untracked
   file count and file-size budgets before reading untracked file contents.
-- Provider routing has per-model budget policy, timeouts, retry ceilings, and
-  cost telemetry.
+- Provider routing has per-model input/output/timeout budget policy, retry
+  ceilings, and cost telemetry.
 - SSE, status polling, artifact reads, and cancellation endpoints have rate
   limits.
 
@@ -287,7 +287,9 @@ Required controls:
 
 - Provider registry enforces provider/model allowlist, budget class, retention
   class, and diagnostics before every run.
-- The request stores resolved provider/model and policy version.
+- Successful provider results store resolved provider/model, policy version,
+  fallback attempts, safe failure classes, usage/cost when reported, and
+  retention flags.
 - Provider selection cannot be changed by prompt content or provider output.
 - Private-code prompts are minimized and redacted before provider submission
   when redaction policy applies.
@@ -524,7 +526,7 @@ Future issues must preserve these gates:
 - #28 adds durable finding triage, publish previews, and mutation-specific
   same-origin controls without turning Review Room into a browser-native
   multi-user session surface.
-- #29 provider policy must add model budget classes, allowlists, fallback
+- #29 provider policy adds model budget classes, allowlists, bounded fallback
   rules, diagnostics, and telemetry without letting prompts select providers.
 - #30 observability must record audit-quality security decisions without raw
   private payloads.

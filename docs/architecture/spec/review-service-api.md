@@ -266,12 +266,45 @@ The response body follows `ReviewRunListResponseSchema`:
         "executionMode": "localTrusted",
         "targetType": "commit",
         "outputFormats": ["json", "markdown"],
-        "model": "gateway:gpt-5.2"
+        "model": "gateway:openai/gpt-5"
       },
       "findingCount": 3,
       "artifactFormats": ["json", "markdown"],
       "publicationCount": 1,
-      "modelResolved": "gateway:gpt-5.2",
+      "modelResolved": "gateway:openai/gpt-5",
+      "providerTelemetry": {
+        "policyVersion": "provider-policy.v1",
+        "requestedModel": "gateway:openai/gpt-5",
+        "resolvedModel": "gateway:openai/gpt-5",
+        "route": "gateway",
+        "finalProvider": "openai",
+        "fallbackOrder": [
+          "gateway:anthropic/claude-sonnet-4-5",
+          "gateway:google/gemini-3-flash"
+        ],
+        "fallbackUsed": false,
+        "maxInputChars": 120000,
+        "maxOutputTokens": 4096,
+        "timeoutMs": 120000,
+        "maxAttempts": 3,
+        "retention": "unknown",
+        "zdrRequired": false,
+        "disallowPromptTraining": true,
+        "failureClass": "none",
+        "totalLatencyMs": 1200,
+        "attempts": [
+          {
+            "route": "gateway",
+            "model": "gateway:openai/gpt-5",
+            "provider": "openai",
+            "status": "success",
+            "latencyMs": 1200,
+            "failureClass": "none",
+            "usage": { "status": "reported", "totalTokens": 1600 }
+          }
+        ],
+        "usage": { "status": "reported", "totalTokens": 1600 }
+      },
       "createdAt": 1778560000000,
       "updatedAt": 1778560060000,
       "repository": {
@@ -309,6 +342,9 @@ Returns review status and result summary when available.
 - `error` (optional)
 - `result` (optional review result payload)
 - `summary` (optional compact `ReviewRunSummary`)
+  - Completed OpenAI-compatible runs may include `summary.providerTelemetry`
+    with policy version, fallback attempts, final provider, usage/cost when
+    reported, input/output/timeout budgets, and retention flags.
 - `artifacts` (optional artifact metadata list)
 - `publications` (optional, durable GitHub publication records)
 - `triage` (optional, durable finding triage records)

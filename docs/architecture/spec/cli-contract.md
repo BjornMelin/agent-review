@@ -186,8 +186,23 @@ publication responses exit `4`.
 
 ## `review-agent models`
 
-Prints provider-registry model presets, including default route markers and
-capability policy.
+Prints provider-registry model presets in a human-readable list by default.
+Pass `--json` to emit the machine-readable catalog with default route markers,
+capability policy, and the provider policy summary for each model:
+
+- `policy.version`
+- `policy.fallbackOrder`
+- `policy.maxInputChars`
+- `policy.maxOutputTokens`
+- `policy.timeoutMs`
+- `policy.maxAttempts`
+- `policy.retention`
+- `policy.zdrRequired`
+- `policy.disallowPromptTraining`
+
+Options:
+
+- `--json`: emit the full model catalog as JSON
 
 ## `review-agent doctor`
 
@@ -222,6 +237,10 @@ Prints shell completion script for:
   `gateway:openai/gpt-5`.
 - A routed model prefix must match the selected route. For example,
   `--provider gateway --model openrouter:openai/gpt-5` fails as usage error.
+- OpenAI-compatible model IDs must exist in the provider-registry allowlist.
+  Ad hoc routed IDs fail before provider execution. Use
+  `review-agent models --json` to inspect approved IDs, fallback order, input,
+  output, and timeout budgets, retention class, and prompt-training policy.
 - `packages/review-provider-registry` is the only package that may own provider
   construction, CLI route normalization, default model IDs, model catalog
   presets, and route-specific doctor filtering.

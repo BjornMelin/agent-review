@@ -37,6 +37,11 @@ Engineering teams need repeatable, machine-readable code review output that can 
   - OpenAI-compatible (`gateway:*`, `openrouter:*`)
 - Provider construction, model defaults, model catalog presets, and doctor
   filtering are owned by `packages/review-provider-registry`.
+- OpenAI-compatible provider policy includes an allowlisted model catalog,
+  explicit fallback order, input/output budgets, per-attempt timeouts,
+  data-retention metadata, prompt-training controls, safe failure
+  classification, and successful-run token/cost/latency telemetry when exposed
+  by the AI SDK/Gateway.
 - Detached remote sandbox execution for custom targets with deny-all policy
   runner, artifact extraction, and sandbox audit propagation
 - Next.js Review Room with dense hosted run list, detail, lifecycle timeline,
@@ -51,7 +56,6 @@ Engineering teams need repeatable, machine-readable code review output that can 
   current service-token deployment shell
 - Billing and customer-specific quota products beyond the current service-level
   scope controls
-- Provider-specific retry classification beyond Workflow step retry defaults
 - Provider-token execution inside Vercel Sandbox before hosted auth/source
   binding is implemented
 - Git-backed remote sandbox target execution before sandbox source binding is

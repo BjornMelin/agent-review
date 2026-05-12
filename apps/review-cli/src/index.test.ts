@@ -193,6 +193,53 @@ function runDoctor(provider: 'gateway' | 'openrouter') {
 }
 
 describe('review-agent doctor provider filtering', () => {
+  it('prints provider policy details in the model catalog', () => {
+    const result = spawnSync('tsx', [cliPath, 'models', '--json'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'gateway:openai/gpt-5',
+          policy: expect.objectContaining({
+            fallbackOrder: [
+              'gateway:anthropic/claude-sonnet-4-5',
+              'gateway:google/gemini-3-flash',
+            ],
+            maxInputChars: 120_000,
+            maxOutputTokens: 4096,
+            timeoutMs: 120_000,
+            maxAttempts: 3,
+            disallowPromptTraining: true,
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('prints a human-readable model catalog by default', () => {
+    const result = spawnSync('tsx', [cliPath, 'models'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('gateway:openai/gpt-5 (default)');
+    expect(result.stdout).toContain(
+      'fallback: gateway:anthropic/claude-sonnet-4-5, gateway:google/gemini-3-flash'
+    );
+    expect(result.stdout).toContain(
+      'budget: input 120000 chars; output 4096 tokens; timeout 120000ms; attempts 3'
+    );
+  });
+
   it('does not fail gateway checks when OpenRouter auth is absent', () => {
     const result = runDoctor('gateway');
 

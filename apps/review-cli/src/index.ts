@@ -8,6 +8,7 @@ import {
   type DoctorCheck,
   filterDoctorChecks,
   listModelCatalog,
+  type ModelEntry,
   normalizeCliProviderModel,
   runProviderDoctorChecks,
 } from '@review-agent/review-provider-registry';
@@ -137,6 +138,30 @@ function printDoctorChecks(checks: DoctorCheck[]): void {
     if (!check.ok && check.remediation) {
       console.error(`  remediation: ${check.remediation}`);
     }
+  }
+}
+
+function printModelCatalog(models: ModelEntry[]): void {
+  for (const model of models) {
+    const fallback =
+      model.policy.fallbackOrder.length === 0
+        ? 'none'
+        : model.policy.fallbackOrder.join(', ');
+    const defaultMarker = model.default ? ' (default)' : '';
+    process.stdout.write(
+      [
+        `${model.id}${defaultMarker}`,
+        `  provider: ${model.provider}`,
+        `  retention: ${model.policy.retention}; zdr: ${
+          model.policy.zdrRequired ? 'required' : 'not required'
+        }; prompt training: ${
+          model.policy.disallowPromptTraining ? 'disabled' : 'allowed'
+        }`,
+        `  budget: input ${model.policy.maxInputChars} chars; output ${model.policy.maxOutputTokens} tokens; timeout ${model.policy.timeoutMs}ms; attempts ${model.policy.maxAttempts}`,
+        `  fallback: ${fallback}`,
+        '',
+      ].join('\n')
+    );
   }
 }
 
@@ -605,9 +630,14 @@ async function main(): Promise<void> {
   program
     .command('models')
     .description('List provider-registry model presets')
-    .action(() => {
+    .option('--json', 'emit machine-readable model catalog')
+    .action((options: { json?: boolean }) => {
       const models = listModelCatalog();
-      process.stdout.write(`${JSON.stringify(models, null, 2)}\n`);
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(models, null, 2)}\n`);
+        return;
+      }
+      printModelCatalog(models);
     });
 
   program

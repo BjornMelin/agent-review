@@ -9,6 +9,7 @@ import {
   DEFAULT_REVIEW_SECURITY_LIMITS,
   isTerminalReviewRunStatus,
   OutputFormatSchema,
+  ProviderPolicyTelemetrySchema,
   parseRawModelOutput,
   ReviewArtifactMetadataSchema,
   ReviewEventCursorSchema,
@@ -313,6 +314,110 @@ describe('review-types schemas', () => {
         'REVIEW_SERVICE_TOKEN=rat_tokenid_abcdefghijklmnopqrstuvwxyz'
       ).text
     ).toContain('[REDACTED_SECRET]');
+  });
+
+  it('validates and redacts provider policy telemetry', () => {
+    const providerTelemetry = ProviderPolicyTelemetrySchema.parse({
+      policyVersion: 'provider-policy.v1',
+      requestedModel: 'gateway:openai/gpt-5',
+      resolvedModel: 'gateway:openai/gpt-5',
+      route: 'gateway',
+      finalProvider: 'openai',
+      fallbackOrder: ['gateway:anthropic/claude-sonnet-4-5'],
+      fallbackUsed: false,
+      maxInputChars: 120_000,
+      maxOutputTokens: 4096,
+      timeoutMs: 120_000,
+      maxAttempts: 2,
+      retention: 'unknown',
+      zdrRequired: false,
+      disallowPromptTraining: true,
+      failureClass: 'none',
+      totalLatencyMs: 42,
+      attempts: [
+        {
+          route: 'gateway',
+          model: 'gateway:openai/gpt-5',
+          provider: 'openai',
+          status: 'success',
+          latencyMs: 42,
+          failureClass: 'none',
+          generationId: 'gen_secret',
+          usage: {
+            status: 'reported',
+            inputTokens: 100,
+            outputTokens: 20,
+            totalTokens: 120,
+            costUsd: 0.001,
+          },
+        },
+      ],
+      usage: {
+        status: 'reported',
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        costUsd: 0.001,
+      },
+    });
+    const result = ReviewResultSchema.parse({
+      findings: [],
+      overallCorrectness: 'patch is correct',
+      overallExplanation: 'ok',
+      overallConfidenceScore: 1,
+      metadata: {
+        provider: 'openaiCompatible',
+        modelResolved: 'gateway:openai/gpt-5',
+        executionMode: 'localTrusted',
+        promptPack: 'default',
+        gitContext: { mode: 'custom' },
+        providerTelemetry,
+      },
+    });
+
+    expect(
+      redactReviewResult(result).result.metadata.providerTelemetry
+    ).toEqual(providerTelemetry);
+
+    const firstAttempt = providerTelemetry.attempts[0];
+    expect(firstAttempt).toBeDefined();
+    if (!firstAttempt) {
+      throw new Error('provider telemetry fixture must include an attempt');
+    }
+    const redactionProbeTelemetry = ProviderPolicyTelemetrySchema.parse({
+      ...providerTelemetry,
+      attempts: [
+        {
+          ...firstAttempt,
+          errorCode: 'Bearer abc.def.ghi',
+          generationId: 'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456',
+        },
+      ],
+    });
+    const redactionProbe = ReviewResultSchema.parse({
+      ...result,
+      metadata: {
+        ...result.metadata,
+        providerTelemetry: redactionProbeTelemetry,
+      },
+    });
+    const redactedTelemetry =
+      redactReviewResult(redactionProbe).result.metadata.providerTelemetry;
+
+    expect(redactedTelemetry?.attempts[0]?.generationId).toBe(
+      'OPENAI_API_KEY=[REDACTED_SECRET]'
+    );
+    expect(redactedTelemetry?.attempts[0]?.errorCode).toBe('Bearer [REDACTED]');
+    expect(JSON.stringify(redactedTelemetry)).not.toContain(
+      'sk-abcdefghijklmnopqrstuvwxyz123456'
+    );
+    expect(redactedTelemetry?.usage.costUsd).toBe(0.001);
+    expect(() =>
+      ProviderPolicyTelemetrySchema.parse({
+        ...providerTelemetry,
+        attempts: [],
+      })
+    ).toThrow();
   });
 
   it('validates hosted repository authorization metadata', () => {
