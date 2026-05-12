@@ -763,7 +763,7 @@ export function createReviewServiceApp(
     }
     if (
       tokenRecord.expiresAt !== undefined &&
-      tokenRecord.expiresAt <= Date.now()
+      tokenRecord.expiresAt <= nowMs()
     ) {
       return denyStreamToken('service_token_expired');
     }

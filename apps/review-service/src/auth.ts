@@ -325,6 +325,7 @@ export function createServiceTokenCredential(input: {
  *
  * @param options - Auth store, token hash pepper, and optional GitHub user-token verifier.
  * @returns A Hono-compatible auth policy for `createReviewServiceApp`.
+ * @throws Error - When an unexpected non-auth dependency error escapes token verification.
  */
 export function createReviewServiceAuthPolicy(options: {
   store: ReviewAuthStoreAdapter;

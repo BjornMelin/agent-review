@@ -642,10 +642,14 @@ export function createInMemoryReviewAuthStore(): ReviewAuthStoreAdapter {
       if (!record) {
         return;
       }
+      const touchedAt = Math.max(
+        record.lastUsedAt ?? Number.NEGATIVE_INFINITY,
+        lastUsedAt
+      );
       tokens.set(tokenId, {
         ...record,
-        lastUsedAt,
-        updatedAt: Math.max(record.updatedAt, lastUsedAt),
+        lastUsedAt: touchedAt,
+        updatedAt: Math.max(record.updatedAt, touchedAt),
       });
     },
     async upsertGitHubUser(record) {
@@ -1406,11 +1410,12 @@ export function createDrizzleReviewAuthStore(
         });
     },
     async touchServiceToken(tokenId, lastUsedAt) {
+      const touchedAt = new Date(lastUsedAt);
       await db
         .update(serviceTokens)
         .set({
-          lastUsedAt: new Date(lastUsedAt),
-          updatedAt: new Date(lastUsedAt),
+          lastUsedAt: sql`GREATEST(COALESCE(${serviceTokens.lastUsedAt}, ${touchedAt}), ${touchedAt})`,
+          updatedAt: sql`GREATEST(${serviceTokens.updatedAt}, ${touchedAt})`,
         })
         .where(eq(serviceTokens.tokenId, tokenId));
     },
@@ -1594,9 +1599,7 @@ export function createReviewAuthStoreFromEnv(
   const databaseUrl = env.DATABASE_URL ?? env.POSTGRES_URL;
   if (!databaseUrl) {
     const allowInMemoryFallback =
-      options.allowInMemoryFallback ??
-      (env.REVIEW_SERVICE_STORAGE === 'memory' ||
-        env.NODE_ENV !== 'production');
+      options.allowInMemoryFallback ?? env.NODE_ENV !== 'production';
     if (!allowInMemoryFallback) {
       throw new Error(
         'DATABASE_URL or POSTGRES_URL is required for review-service auth storage in production'

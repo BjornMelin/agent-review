@@ -251,7 +251,6 @@
               "enum": ["public", "private", "internal"]
             },
             "permissions": {
-              "default": {},
               "type": "object",
               "propertyNames": {
                 "type": "string"
@@ -285,7 +284,8 @@
             "owner",
             "name",
             "fullName",
-            "visibility"
+            "visibility",
+            "permissions"
           ],
           "additionalProperties": false,
           "not": {

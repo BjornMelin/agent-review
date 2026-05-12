@@ -416,7 +416,7 @@ export const ReviewRepositoryAuthorizationSchema = z
     name: GitHubRepositoryNameSchema,
     fullName: boundedString('GitHub repository full name', 140),
     visibility: GitHubRepositoryVisibilitySchema,
-    permissions: z.record(z.string(), GitHubPermissionLevelSchema).default({}),
+    permissions: z.record(z.string(), GitHubPermissionLevelSchema),
     pullRequestNumber: z.number().int().positive().optional(),
     ref: SafeGitRefSchema.optional(),
     commitSha: CommitObjectIdSchema.optional(),

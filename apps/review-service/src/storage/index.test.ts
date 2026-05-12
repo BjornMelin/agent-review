@@ -17,6 +17,7 @@ import {
   createDrizzleReviewStore,
   createInMemoryReviewAuthStore,
   createInMemoryReviewStore,
+  createReviewAuthStoreFromEnv,
   createReviewStoreFromEnv,
   deleteReviewsById,
   listArtifactMetadata,
@@ -354,12 +355,14 @@ describe('review storage', () => {
       });
       await authStore.setServiceToken(createServiceTokenRecord());
       await authStore.touchServiceToken('token-1', BASE_TIME_MS + 1_000);
+      await authStore.touchServiceToken('token-1', BASE_TIME_MS - 1_000);
       await authStore.appendAuthAuditEvent(createAuditEvent());
 
       await expect(authStore.getServiceToken('token-1')).resolves.toMatchObject(
         {
           tokenHash: 'hash',
           lastUsedAt: BASE_TIME_MS + 1_000,
+          updatedAt: BASE_TIME_MS + 1_000,
         }
       );
       await expect(authStore.listAuthAuditEvents()).resolves.toEqual([
@@ -1305,6 +1308,24 @@ describe('review storage', () => {
         NODE_ENV: 'production',
         REVIEW_SERVICE_STORAGE: 'memory',
       })
+    ).toBeDefined();
+  });
+
+  it('requires durable auth storage in production unless fallback is explicit', () => {
+    expect(() =>
+      createReviewAuthStoreFromEnv({
+        NODE_ENV: 'production',
+        REVIEW_SERVICE_STORAGE: 'memory',
+      })
+    ).toThrow(/DATABASE_URL or POSTGRES_URL/);
+    expect(
+      createReviewAuthStoreFromEnv(
+        {
+          NODE_ENV: 'production',
+          REVIEW_SERVICE_STORAGE: 'memory',
+        },
+        { allowInMemoryFallback: true }
+      )
     ).toBeDefined();
   });
 
