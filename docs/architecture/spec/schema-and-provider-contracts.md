@@ -314,6 +314,11 @@ Each provider implements:
 
 - `raw` (provider-native output)
 - `text` (string representation)
+- optional `providerTelemetry` for successful provider-policy execution,
+  including policy version, requested/resolved model, fallback evidence,
+  max input/output budgets, per-attempt timeout budget, attempt latency,
+  token/cost usage when exposed by the SDK, retention class, and safe failure
+  classifications
 - optional `commandRun` when a provider invokes an external local command
 
 If a provider command fails after producing `CommandRunOutput`, it should throw
@@ -338,11 +343,14 @@ The registry owns:
 
 - route normalization for CLI providers (`codex`, `gateway`, `openrouter`)
 - default OpenAI-compatible model IDs
-- model catalog presets and capability policy
+- model catalog presets, provider allowlist, fallback order, max input/output
+  budgets, per-attempt timeout, attempt count, data-retention class, ZDR
+  requirement, and prompt-training policy
 - provider doctor execution and route-specific doctor filtering
 
 OpenAI-compatible provider implementations require a routed model ID from the
-request or a registry-supplied `defaultModelId`. They do not own fallback model
+request or a registry-supplied `defaultModelId`. They reject ad hoc routed IDs
+that are absent from the registry catalog and do not own fallback model
 defaults.
 
 ## Provider Implementations
@@ -363,6 +371,21 @@ defaults.
   - `openrouter`
 - Uses AI SDK structured output (`Output.object`) with `RawModelOutputSchema`.
 - Uses AI SDK Gateway `createGateway` for `gateway:*` model routing.
+- Passes Gateway provider options from registry policy: provider `only`/`order`
+  restrictions, `zeroDataRetention` when required, and
+  `disallowPromptTraining` when enabled. These follow AI SDK Gateway provider
+  options documented at
+  `https://ai-sdk.dev/providers/ai-sdk-providers/ai-gateway` and
+  `https://vercel.com/docs/ai-gateway/models-and-providers/provider-filtering-and-ordering`.
+- Applies explicit provider-level fallback attempts in registry order. A
+  fallback is never silent: successful results persist `providerTelemetry`
+  with all failed/skipped/successful attempts and the final resolved model.
+- Fails before SDK execution when the rendered prompt exceeds the model
+  policy's `maxInputChars`; passes `maxOutputTokens` and policy timeout
+  settings to `generateText`.
+- Records AI SDK usage and Gateway metadata when exposed, including
+  `providerMetadata.gateway.routing.finalProvider`,
+  `providerMetadata.gateway.generationId`, `cost`, and `marketCost`.
 - Environment variables:
   - `AI_GATEWAY_API_KEY`
   - `OPENROUTER_API_KEY`

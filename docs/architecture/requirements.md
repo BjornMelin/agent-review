@@ -26,6 +26,9 @@ System shall execute reviews through a provider interface with:
 - Stable provider IDs (`codexDelegate`, `openaiCompatible`)
 - Capability metadata
 - A normalized run method returning raw payload + text
+- Provider policy telemetry for successful policy-routed runs, including
+  allowlisted model, fallback evidence, input/output/timeout budgets, retention
+  metadata, and usage/latency data when reported by the upstream SDK
 
 ### FR-4 Artifact Generation
 

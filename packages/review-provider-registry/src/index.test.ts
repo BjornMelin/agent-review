@@ -5,6 +5,7 @@ import {
   DEFAULT_MODEL_BY_ROUTE,
   filterDoctorChecks,
   listModelCatalog,
+  MODEL_POLICY_VERSION,
   normalizeCliProviderModel,
   normalizeOpenAICompatibleModelId,
   parseOpenAICompatibleModelId,
@@ -54,6 +55,9 @@ describe('provider model policy', () => {
     expect(() =>
       normalizeOpenAICompatibleModelId('gateway', 'other:openai/gpt-5')
     ).toThrow(/unsupported model route/);
+    expect(() =>
+      normalizeOpenAICompatibleModelId('gateway', 'unapproved/model')
+    ).toThrow(/provider policy catalog/);
   });
 
   it('parses routed model identifiers', () => {
@@ -86,6 +90,29 @@ describe('provider model policy', () => {
         id: DEFAULT_MODEL_BY_ROUTE.openrouter,
       }),
     ]);
+  });
+
+  it('exposes budget, fallback, and retention policy in the model catalog', () => {
+    expect(listModelCatalog()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: DEFAULT_MODEL_BY_ROUTE.gateway,
+          policy: expect.objectContaining({
+            version: MODEL_POLICY_VERSION,
+            fallbackOrder: [
+              'gateway:anthropic/claude-sonnet-4-5',
+              'gateway:google/gemini-3-flash',
+            ],
+            maxInputChars: 120_000,
+            maxOutputTokens: 4096,
+            timeoutMs: 120_000,
+            maxAttempts: 3,
+            retention: 'unknown',
+            disallowPromptTraining: true,
+          }),
+        }),
+      ])
+    );
   });
 
   it('injects the canonical default model into OpenAI-compatible providers', () => {
@@ -143,6 +170,21 @@ describe('provider doctor policy', () => {
       checks.find((check) => check.name === 'provider.codexDelegate.doctor')
         ?.detail
     ).toContain('doctor failure');
+  });
+
+  it('redacts secret-like doctor failures before returning checks', async () => {
+    const checks = await runProviderDoctorChecks({
+      codexDelegate: makeProvider('codexDelegate', async () => {
+        throw new Error(
+          'failed with OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456'
+        );
+      }),
+    });
+
+    expect(
+      checks.find((check) => check.name === 'provider.codexDelegate.doctor')
+        ?.detail
+    ).toBe('failed with OPENAI_API_KEY=[REDACTED_SECRET]');
   });
 
   it('filters route-specific OpenAI-compatible diagnostics', () => {

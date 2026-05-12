@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "string",
+  "enum": [
+    "none",
+    "policy",
+    "budget",
+    "auth",
+    "rate_limit",
+    "timeout",
+    "provider_unavailable",
+    "invalid_response",
+    "cancelled",
+    "unknown"
+  ]
+}

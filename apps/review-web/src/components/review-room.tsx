@@ -1,4 +1,6 @@
 import type {
+  ProviderPolicyTelemetry,
+  ProviderUsage,
   ReviewArtifactMetadata,
   ReviewRunListResponse,
   ReviewRunStatus,
@@ -57,6 +59,32 @@ function issueCountLabel(count: number): string {
     return '1 finding';
   }
   return `${count} findings`;
+}
+
+function formatProviderUsage(usage: ProviderUsage | undefined): string {
+  if (!usage || usage.status === 'unknown') {
+    return 'unknown';
+  }
+  const tokenParts = [
+    usage.inputTokens === undefined ? undefined : `${usage.inputTokens} in`,
+    usage.outputTokens === undefined ? undefined : `${usage.outputTokens} out`,
+    usage.totalTokens === undefined ? undefined : `${usage.totalTokens} total`,
+  ].filter((part): part is string => Boolean(part));
+  const costPart =
+    usage.costUsd === undefined ? undefined : `$${usage.costUsd.toFixed(6)}`;
+  return [...tokenParts, costPart].filter(Boolean).join(' / ') || 'reported';
+}
+
+function formatProviderFallback(
+  telemetry: ProviderPolicyTelemetry | undefined
+): string {
+  if (!telemetry) {
+    return 'none';
+  }
+  if (!telemetry.fallbackUsed) {
+    return telemetry.fallbackOrder.length === 0 ? 'not configured' : 'not used';
+  }
+  return `used ${telemetry.resolvedModel}`;
 }
 
 function artifactIcon(
@@ -267,6 +295,9 @@ function DetailBody({
   detail: ReviewStatusResponse;
 }): React.ReactNode {
   const findings = detail.result?.findings ?? [];
+  const providerTelemetry =
+    detail.summary?.providerTelemetry ??
+    detail.result?.metadata.providerTelemetry;
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
       <main className="min-w-0 overflow-auto">
@@ -361,6 +392,30 @@ function DetailBody({
                   ['Detached Run', detail.summary?.detachedRunId ?? 'none'],
                   ['Workflow Run', detail.summary?.workflowRunId ?? 'none'],
                   ['Sandbox', detail.summary?.sandboxId ?? 'none'],
+                  [
+                    'Provider Policy',
+                    providerTelemetry?.policyVersion ?? 'none',
+                  ],
+                  ['Provider Route', providerTelemetry?.route ?? 'none'],
+                  [
+                    'Final Provider',
+                    providerTelemetry?.finalProvider ?? 'unknown',
+                  ],
+                  ['Fallback', formatProviderFallback(providerTelemetry)],
+                  [
+                    'Provider Latency',
+                    providerTelemetry
+                      ? `${providerTelemetry.totalLatencyMs}ms`
+                      : 'pending',
+                  ],
+                  [
+                    'Provider Timeout',
+                    providerTelemetry
+                      ? `${providerTelemetry.timeoutMs}ms`
+                      : 'pending',
+                  ],
+                  ['Usage', formatProviderUsage(providerTelemetry?.usage)],
+                  ['Retention', providerTelemetry?.retention ?? 'unknown'],
                 ].map(([label, value]) => (
                   <div
                     key={label}

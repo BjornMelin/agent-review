@@ -605,6 +605,7 @@ async function main(): Promise<void> {
   program
     .command('models')
     .description('List provider-registry model presets')
+    .option('--json', 'emit machine-readable model catalog')
     .action(() => {
       const models = listModelCatalog();
       process.stdout.write(`${JSON.stringify(models, null, 2)}\n`);

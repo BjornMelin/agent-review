@@ -736,6 +736,9 @@ export async function runReview(
       promptPack: REVIEW_PROMPT_PACK_ID,
       gitContext: diff.gitContext,
       ...(sandboxAudit ? { sandboxId: sandboxAudit.sandboxId } : {}),
+      ...(providerOutput.providerTelemetry
+        ? { providerTelemetry: providerOutput.providerTelemetry }
+        : {}),
     },
   };
   const result = redactReviewResult(rawResult).result;

@@ -1,7 +1,11 @@
-import { createGateway } from '@ai-sdk/gateway';
+import { createGateway, type GatewayProviderOptions } from '@ai-sdk/gateway';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import {
   type ProviderDiagnostic,
+  type ProviderFailureClass,
+  type ProviderPolicyTelemetry,
+  type ProviderRetentionPolicy,
+  type ProviderUsage,
   RawModelOutputSchema,
   type ReviewProvider,
   type ReviewProviderCapabilities,
@@ -14,6 +18,7 @@ import { generateText, Output } from 'ai';
 export type OpenAICompatibleProviderOptions = {
   defaultModelId?: string;
   capabilities: ReviewProviderCapabilities;
+  modelPolicies: readonly OpenAICompatibleModelPolicy[];
   routes: readonly OpenAICompatibleRouteConfig[];
 };
 
@@ -41,10 +46,34 @@ export type OpenAICompatibleRouteConfig =
   | GatewayRouteConfig
   | OpenAICompatibleChatRouteConfig;
 
+export type OpenAICompatibleModelPolicy = {
+  id: string;
+  route: string;
+  policyVersion: string;
+  fallbackModelIds: readonly string[];
+  maxInputChars: number;
+  maxOutputTokens: number;
+  timeoutMs: number;
+  maxAttempts: number;
+  retention: ProviderRetentionPolicy;
+  zdrRequired: boolean;
+  disallowPromptTraining: boolean;
+  gateway?: Pick<
+    GatewayProviderOptions,
+    'only' | 'order' | 'sort' | 'providerTimeouts'
+  >;
+};
+
 type TextModel = Parameters<typeof generateText>[0]['model'];
 type LanguageModelFactory = (modelId: string) => TextModel;
 type ResolvedRouteConfig = OpenAICompatibleRouteConfig & {
   apiKey: string | undefined;
+};
+type ParsedModelPolicy = {
+  route: ResolvedRouteConfig;
+  modelId: string;
+  routedModelId: string;
+  policy: OpenAICompatibleModelPolicy;
 };
 
 function buildReviewInput(input: ReviewProviderRunInput): string {
@@ -76,16 +105,207 @@ function resolveRouteApiKey(
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function optionalInteger(value: unknown): number | undefined {
+  const parsed = optionalNumber(value);
+  return parsed === undefined ? undefined : Math.floor(parsed);
+}
+
+function statusCodeFor(error: unknown): number | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+  return optionalInteger(error.statusCode ?? error.status);
+}
+
+function errorName(error: unknown): string | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+  return typeof error.name === 'string' ? error.name : undefined;
+}
+
+function retryableFor(error: unknown): boolean | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+  return typeof error.isRetryable === 'boolean' ? error.isRetryable : undefined;
+}
+
+function classifyProviderError(error: unknown): ProviderFailureClass {
+  const name = errorName(error);
+  if (name === 'TimeoutError' || name === 'GatewayTimeoutError') {
+    return 'timeout';
+  }
+  if (name === 'AbortError') {
+    return 'cancelled';
+  }
+  if (
+    name === 'AI_NoSuchModelError' ||
+    name === 'AI_NoSuchProviderError' ||
+    name === 'GatewayModelNotFoundError'
+  ) {
+    return 'policy';
+  }
+  const statusCode = statusCodeFor(error);
+  if (statusCode === 401 || statusCode === 403) {
+    return 'auth';
+  }
+  if (statusCode === 408 || statusCode === 504) {
+    return 'timeout';
+  }
+  if (statusCode === 429) {
+    return 'rate_limit';
+  }
+  if (statusCode !== undefined && statusCode >= 500) {
+    return 'provider_unavailable';
+  }
+  if (statusCode !== undefined && statusCode >= 400) {
+    return 'invalid_response';
+  }
+  return 'unknown';
+}
+
+function safeErrorCode(error: unknown): string {
+  const name = errorName(error);
+  if (name) {
+    return name;
+  }
+  const statusCode = statusCodeFor(error);
+  return statusCode === undefined ? 'unknown' : `http_${statusCode}`;
+}
+
+function extractGatewayMetadata(
+  providerMetadata: unknown
+): Record<string, unknown> | undefined {
+  if (!isRecord(providerMetadata)) {
+    return undefined;
+  }
+  const gateway = providerMetadata.gateway;
+  return isRecord(gateway) ? gateway : undefined;
+}
+
+function extractFinalProvider(providerMetadata: unknown): string | undefined {
+  const gateway = extractGatewayMetadata(providerMetadata);
+  const routing = gateway && isRecord(gateway.routing) ? gateway.routing : {};
+  const finalProvider = routing.finalProvider ?? routing.resolvedProvider;
+  return typeof finalProvider === 'string' && finalProvider
+    ? finalProvider
+    : undefined;
+}
+
+function extractGenerationId(providerMetadata: unknown): string | undefined {
+  const gateway = extractGatewayMetadata(providerMetadata);
+  return typeof gateway?.generationId === 'string' && gateway.generationId
+    ? gateway.generationId
+    : undefined;
+}
+
+function extractProviderUsage(result: unknown): ProviderUsage {
+  const resultRecord = isRecord(result) ? result : {};
+  const usage = isRecord(resultRecord.totalUsage)
+    ? resultRecord.totalUsage
+    : isRecord(resultRecord.usage)
+      ? resultRecord.usage
+      : {};
+  const gateway = extractGatewayMetadata(resultRecord.providerMetadata);
+  const costUsd = optionalNumber(gateway?.cost);
+  const marketCostUsd = optionalNumber(gateway?.marketCost);
+  const inputTokens = optionalInteger(usage.inputTokens);
+  const outputTokens = optionalInteger(usage.outputTokens);
+  const totalTokens = optionalInteger(usage.totalTokens);
+  const outputTokenDetails = isRecord(usage.outputTokenDetails)
+    ? usage.outputTokenDetails
+    : {};
+  const inputTokenDetails = isRecord(usage.inputTokenDetails)
+    ? usage.inputTokenDetails
+    : {};
+  const reasoningTokens = optionalInteger(outputTokenDetails.reasoningTokens);
+  const cachedInputTokens = optionalInteger(inputTokenDetails.cacheReadTokens);
+  const usageReported =
+    inputTokens !== undefined ||
+    outputTokens !== undefined ||
+    totalTokens !== undefined ||
+    costUsd !== undefined ||
+    marketCostUsd !== undefined;
+
+  return {
+    status: usageReported ? 'reported' : 'unknown',
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(marketCostUsd === undefined ? {} : { marketCostUsd }),
+  };
+}
+
+function buildGatewayProviderOptions(
+  policy: OpenAICompatibleModelPolicy
+): { gateway: GatewayProviderOptions } | undefined {
+  if (policy.route !== 'gateway') {
+    return undefined;
+  }
+  const gateway: GatewayProviderOptions = {
+    ...(policy.gateway ?? {}),
+    zeroDataRetention: policy.zdrRequired,
+    disallowPromptTraining: policy.disallowPromptTraining,
+    tags: ['review-agent', `policy:${policy.policyVersion}`],
+  };
+  return { gateway };
+}
+
+function retentionCompatible(
+  requested: OpenAICompatibleModelPolicy,
+  fallback: OpenAICompatibleModelPolicy
+): boolean {
+  if (requested.zdrRequired && fallback.retention !== 'zdrEnforced') {
+    return false;
+  }
+  if (requested.disallowPromptTraining && !fallback.disallowPromptTraining) {
+    return false;
+  }
+  return true;
+}
+
+function attemptLatencyMs(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt));
+}
+
 export class OpenAICompatibleReviewProvider implements ReviewProvider {
   id = 'openaiCompatible' as const;
   private readonly defaultModelId: string | undefined;
   private readonly capabilitiesPolicy: ReviewProviderCapabilities;
   private readonly factories = new Map<string, LanguageModelFactory>();
+  private readonly modelPolicies = new Map<
+    string,
+    OpenAICompatibleModelPolicy
+  >();
   private readonly routes = new Map<string, ResolvedRouteConfig>();
 
   constructor(options: OpenAICompatibleProviderOptions) {
     this.defaultModelId = options.defaultModelId;
     this.capabilitiesPolicy = options.capabilities;
+    for (const policy of options.modelPolicies) {
+      this.modelPolicies.set(policy.id, policy);
+    }
 
     for (const route of options.routes) {
       const apiKey = resolveRouteApiKey(route);
@@ -129,12 +349,9 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
     return { ...this.capabilitiesPolicy };
   }
 
-  private parseModelId(modelId: string):
-    | {
-        route: ResolvedRouteConfig;
-        modelId: string;
-      }
-    | ProviderDiagnostic {
+  private parseModelId(
+    modelId: string
+  ): ParsedModelPolicy | ProviderDiagnostic {
     const separator = modelId.indexOf(':');
     if (separator < 1 || separator === modelId.length - 1) {
       return {
@@ -171,10 +388,25 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
         remediation: `Use a non-empty ${routeId}:<model> identifier.`,
       };
     }
+    const routedModelId = `${route.id}:${providerModelId}`;
+    const policy = this.modelPolicies.get(routedModelId);
+    if (!policy) {
+      return {
+        code: 'invalid_model_id',
+        ok: false,
+        severity: 'error',
+        scope: routeId,
+        detail: `model "${routedModelId}" is not in the provider policy catalog.`,
+        remediation:
+          'Use `review-agent models --json` to select an allowlisted model.',
+      };
+    }
 
     return {
       route,
       modelId: providerModelId,
+      routedModelId,
+      policy,
     };
   }
 
@@ -260,31 +492,152 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
     if ('code' in parsed) {
       throw new Error(parsed.detail);
     }
-    const provider = this.factories.get(parsed.route.id);
-    if (!provider) {
+    const prompt = buildReviewInput(input);
+    if (prompt.length > parsed.policy.maxInputChars) {
       throw new Error(
-        `provider route "${parsed.route.id}" is not configured for execution.`
+        `provider input budget exceeded for ${parsed.routedModelId}; prompt has ${prompt.length} characters and policy allows ${parsed.policy.maxInputChars}.`
       );
     }
-    const model = provider(parsed.modelId);
 
-    const { output } = await generateText({
-      model,
-      system: input.rubric,
-      prompt: buildReviewInput(input),
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-      output: Output.object({
-        schema: RawModelOutputSchema,
-        name: 'code_review_output',
-        description: 'Structured review findings and correctness verdict',
-      }),
+    const fallbackModels = parsed.policy.fallbackModelIds.slice(
+      0,
+      Math.max(0, parsed.policy.maxAttempts - 1)
+    );
+    const fallbacks = fallbackModels.map((fallbackModelId) => {
+      const fallback = this.parseModelId(fallbackModelId);
+      if ('code' in fallback) {
+        throw new Error(
+          `provider policy ${parsed.policy.policyVersion} references invalid fallback ${fallbackModelId}.`
+        );
+      }
+      if (!retentionCompatible(parsed.policy, fallback.policy)) {
+        throw new Error(
+          `provider policy ${parsed.policy.policyVersion} fallback ${fallback.routedModelId} weakens retention constraints.`
+        );
+      }
+      return fallback;
     });
+    const attempts = [parsed, ...fallbacks];
+    const providerAttempts: ProviderPolicyTelemetry['attempts'] = [];
+    let lastFailureClass: ProviderFailureClass = 'unknown';
 
-    return {
-      raw: output,
-      text: JSON.stringify(output),
-      resolvedModel: resolvedModelId,
-    };
+    for (const attempt of attempts) {
+      const provider = this.factories.get(attempt.route.id);
+      if (!provider || !attempt.route.apiKey) {
+        const failureClass: ProviderFailureClass = attempt.route.apiKey
+          ? 'policy'
+          : 'auth';
+        lastFailureClass = failureClass;
+        providerAttempts.push({
+          route: attempt.route.id,
+          model: attempt.routedModelId,
+          status: 'skipped',
+          latencyMs: 0,
+          failureClass,
+          errorCode: attempt.route.apiKey
+            ? 'route_not_configured'
+            : 'auth_missing',
+          retryable: false,
+        });
+        continue;
+      }
+
+      const startedAt = performance.now();
+      try {
+        const providerOptions = buildGatewayProviderOptions(attempt.policy);
+        const result = await generateText({
+          model: provider(attempt.modelId),
+          system: input.rubric,
+          prompt,
+          maxOutputTokens: attempt.policy.maxOutputTokens,
+          timeout: {
+            totalMs: attempt.policy.timeoutMs,
+            stepMs: attempt.policy.timeoutMs,
+          },
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(providerOptions
+            ? {
+                providerOptions: providerOptions as Parameters<
+                  typeof generateText
+                >[0]['providerOptions'] & {},
+              }
+            : {}),
+          output: Output.object({
+            schema: RawModelOutputSchema,
+            name: 'code_review_output',
+            description: 'Structured review findings and correctness verdict',
+          }),
+        });
+        const usage = extractProviderUsage(result);
+        const finalProvider = extractFinalProvider(result.providerMetadata);
+        const generationId = extractGenerationId(result.providerMetadata);
+        const latencyMs = attemptLatencyMs(startedAt);
+        providerAttempts.push({
+          route: attempt.route.id,
+          model: attempt.routedModelId,
+          status: 'success',
+          latencyMs,
+          failureClass: 'none',
+          usage,
+          ...(finalProvider ? { provider: finalProvider } : {}),
+          ...(generationId ? { generationId } : {}),
+        });
+        const telemetry: ProviderPolicyTelemetry = {
+          policyVersion: parsed.policy.policyVersion,
+          requestedModel: resolvedModelId,
+          resolvedModel: attempt.routedModelId,
+          route: attempt.route.id,
+          ...(finalProvider ? { finalProvider } : {}),
+          fallbackOrder: fallbackModels,
+          fallbackUsed: attempt.routedModelId !== parsed.routedModelId,
+          maxInputChars: parsed.policy.maxInputChars,
+          maxOutputTokens: parsed.policy.maxOutputTokens,
+          timeoutMs: parsed.policy.timeoutMs,
+          maxAttempts: parsed.policy.maxAttempts,
+          retention: attempt.policy.retention,
+          zdrRequired: attempt.policy.zdrRequired,
+          disallowPromptTraining: attempt.policy.disallowPromptTraining,
+          failureClass: 'none',
+          totalLatencyMs: providerAttempts.reduce(
+            (
+              total: number,
+              item: ProviderPolicyTelemetry['attempts'][number]
+            ) => total + item.latencyMs,
+            0
+          ),
+          attempts: providerAttempts,
+          usage,
+        };
+
+        return {
+          raw: result.output,
+          text: JSON.stringify(result.output),
+          resolvedModel: attempt.routedModelId,
+          providerTelemetry: telemetry,
+        };
+      } catch (error) {
+        const failureClass = classifyProviderError(error);
+        lastFailureClass = failureClass;
+        providerAttempts.push({
+          route: attempt.route.id,
+          model: attempt.routedModelId,
+          status: 'failed',
+          latencyMs: attemptLatencyMs(startedAt),
+          failureClass,
+          errorCode: safeErrorCode(error),
+          ...(retryableFor(error) === undefined
+            ? {}
+            : { retryable: retryableFor(error) as boolean }),
+        });
+        if (failureClass === 'cancelled') {
+          throw error;
+        }
+      }
+    }
+
+    throw new Error(
+      `openaiCompatible provider failed with failure class ${lastFailureClass}; no policy fallback succeeded.`
+    );
   }
 }
 

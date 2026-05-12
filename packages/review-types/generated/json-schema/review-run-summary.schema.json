@@ -147,6 +147,260 @@
       "type": "string",
       "minLength": 1
     },
+    "providerTelemetry": {
+      "type": "object",
+      "properties": {
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestedModel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolvedModel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finalProvider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallbackOrder": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "fallbackUsed": {
+          "type": "boolean"
+        },
+        "maxInputChars": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "retention": {
+          "type": "string",
+          "enum": [
+            "zdrEnforced",
+            "providerRetained",
+            "unknown",
+            "byokUnverified"
+          ]
+        },
+        "zdrRequired": {
+          "type": "boolean"
+        },
+        "disallowPromptTraining": {
+          "type": "boolean"
+        },
+        "failureClass": {
+          "type": "string",
+          "enum": [
+            "none",
+            "policy",
+            "budget",
+            "auth",
+            "rate_limit",
+            "timeout",
+            "provider_unavailable",
+            "invalid_response",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "totalLatencyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "route": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": ["success", "failed", "skipped"]
+              },
+              "latencyMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "failureClass": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "policy",
+                  "budget",
+                  "auth",
+                  "rate_limit",
+                  "timeout",
+                  "provider_unavailable",
+                  "invalid_response",
+                  "cancelled",
+                  "unknown"
+                ]
+              },
+              "errorCode": {
+                "type": "string",
+                "minLength": 1
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "generationId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["reported", "unknown"]
+                  },
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "totalTokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "reasoningTokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "cachedInputTokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "costUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "marketCostUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": ["status"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["route", "model", "status", "latencyMs"],
+            "additionalProperties": false
+          }
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["reported", "unknown"]
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "totalTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "reasoningTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cachedInputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "costUsd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "marketCostUsd": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": ["status"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "policyVersion",
+        "resolvedModel",
+        "route",
+        "fallbackOrder",
+        "fallbackUsed",
+        "maxInputChars",
+        "maxOutputTokens",
+        "timeoutMs",
+        "maxAttempts",
+        "retention",
+        "zdrRequired",
+        "disallowPromptTraining",
+        "failureClass",
+        "totalLatencyMs",
+        "attempts",
+        "usage"
+      ],
+      "additionalProperties": false
+    },
     "detachedRunId": {
       "type": "string",
       "minLength": 1

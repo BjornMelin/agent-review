@@ -193,6 +193,35 @@ function runDoctor(provider: 'gateway' | 'openrouter') {
 }
 
 describe('review-agent doctor provider filtering', () => {
+  it('prints provider policy details in the model catalog', () => {
+    const result = spawnSync('tsx', [cliPath, 'models', '--json'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'gateway:openai/gpt-5',
+          policy: expect.objectContaining({
+            fallbackOrder: [
+              'gateway:anthropic/claude-sonnet-4-5',
+              'gateway:google/gemini-3-flash',
+            ],
+            maxInputChars: 120_000,
+            maxOutputTokens: 4096,
+            timeoutMs: 120_000,
+            maxAttempts: 3,
+            disallowPromptTraining: true,
+          }),
+        }),
+      ])
+    );
+  });
+
   it('does not fail gateway checks when OpenRouter auth is absent', () => {
     const result = runDoctor('gateway');
 

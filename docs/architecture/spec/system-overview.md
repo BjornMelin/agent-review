@@ -74,13 +74,19 @@ pass parity, benchmark, and generated-contract gates.
    which applies include/exclude paths and byte/file budgets before provider
    execution.
 6. Selected provider executes using prompt + rubric + normalized diff chunks.
-   Local Codex delegation runs through `review-runner` so the command path has
-   process-group timeout/cancellation and structured command telemetry.
+   OpenAI-compatible routing applies registry allowlist, fallback, input/output
+   budgets, per-attempt timeout, and retention policy before calling the AI SDK.
+   Local Codex delegation runs
+   through `review-runner` so the command path has process-group
+   timeout/cancellation and structured command telemetry.
 7. Provider output is normalized to `ReviewResult` shape.
 8. Command-run telemetry, when returned by a provider or attached to a provider
    failure, is surfaced through lifecycle progress correlation, including each
    structured runner event. Successful provider runs also include the command
-   run in the review result.
+   run in the review result. Successful OpenAI-compatible runs persist
+   `providerTelemetry` with policy version, fallback attempts, final provider,
+   usage/cost when reported, input/output/timeout budgets, retention flags, and
+   latency.
 9. Finding locations are normalized to absolute paths and validated against changed line index.
 10. Artifacts are rendered for requested formats.
 11. Optional mirror write is attempted.

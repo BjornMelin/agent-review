@@ -76,8 +76,13 @@ pnpm --filter @review-agent/review-cli dev run --uncommitted --provider codex --
 List provider-registry model presets:
 
 ```bash
-pnpm --filter @review-agent/review-cli dev models
+pnpm --filter @review-agent/review-cli dev models --json
 ```
+
+The model catalog is an allowlist. It includes the default marker, fallback
+order, maximum input characters, maximum output tokens, per-attempt timeout,
+attempt budget, retention class, ZDR requirement, and prompt-training policy for each
+`gateway:*` and `openrouter:*` model.
 
 Run provider checks:
 

@@ -4,6 +4,8 @@ import {
   ARTIFACT_CONTENT_TYPES,
   type LifecycleEvent,
   type OutputFormat,
+  type ProviderPolicyTelemetry,
+  ProviderPolicyTelemetrySchema,
   type ReviewArtifactMetadata,
   type ReviewAuthPrincipal,
   type ReviewAuthScope,
@@ -70,6 +72,7 @@ type ReviewRunListRow = Pick<
   requestModel: string | null;
   findingCount: number | string | null;
   modelResolved: string | null;
+  providerTelemetry: unknown;
 };
 type ReviewEventRow = typeof reviewEvents.$inferSelect;
 type ReviewArtifactRow = typeof reviewArtifacts.$inferSelect;
@@ -350,6 +353,7 @@ export type ClosableReviewStore = ReviewStoreAdapter & {
 };
 
 function cloneReviewRunResult(result: ReviewRunResult): ReviewRunResult {
+  const { gitContext, providerTelemetry, ...metadata } = result.result.metadata;
   const cloned: ReviewRunResult = {
     ...result,
     artifacts: { ...result.artifacts },
@@ -373,8 +377,11 @@ function cloneReviewRunResult(result: ReviewRunResult): ReviewRunResult {
         },
       })),
       metadata: {
-        ...result.result.metadata,
-        gitContext: { ...result.result.metadata.gitContext },
+        ...metadata,
+        gitContext: { ...gitContext },
+        ...(providerTelemetry
+          ? { providerTelemetry: structuredClone(providerTelemetry) }
+          : {}),
       },
     },
   };
@@ -603,6 +610,13 @@ export function buildReviewRunSummary(
     ...(record.result?.result.metadata.modelResolved
       ? { modelResolved: record.result.result.metadata.modelResolved }
       : {}),
+    ...(record.result?.result.metadata.providerTelemetry
+      ? {
+          providerTelemetry: structuredClone(
+            record.result.result.metadata.providerTelemetry
+          ),
+        }
+      : {}),
     ...(record.detachedRunId ? { detachedRunId: record.detachedRunId } : {}),
     ...(record.workflowRunId ? { workflowRunId: record.workflowRunId } : {}),
     ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
@@ -626,6 +640,7 @@ function buildReviewRunSummaryForListRow(
 ): ReviewRunSummary {
   const completedAt = msFromDate(run.completedAt);
   const findingCount = Number(run.findingCount ?? 0);
+  const providerTelemetry = parseProviderTelemetry(run.providerTelemetry);
   return {
     reviewId: run.reviewId,
     status: run.status,
@@ -644,6 +659,7 @@ function buildReviewRunSummaryForListRow(
     artifactFormats: options.artifactFormats ?? [],
     publicationCount: options.publicationCount ?? 0,
     ...(run.modelResolved ? { modelResolved: run.modelResolved } : {}),
+    ...(providerTelemetry ? { providerTelemetry } : {}),
     ...(run.detachedRunId ? { detachedRunId: run.detachedRunId } : {}),
     ...(run.workflowRunId ? { workflowRunId: run.workflowRunId } : {}),
     ...(run.sandboxId ? { sandboxId: run.sandboxId } : {}),
@@ -755,6 +771,13 @@ function dateFromMs(value: number | undefined): Date | null {
 
 function msFromDate(value: Date | null): number | undefined {
   return value ? value.getTime() : undefined;
+}
+
+function parseProviderTelemetry(
+  value: unknown
+): ProviderPolicyTelemetry | undefined {
+  const parsed = ProviderPolicyTelemetrySchema.safeParse(value);
+  return parsed.success ? structuredClone(parsed.data) : undefined;
 }
 
 function artifactRowsFor(
@@ -1649,6 +1672,10 @@ export function createDrizzleReviewStore(
           >`${reviewRuns.result}->'result'->'metadata'->>'modelResolved'`.as(
             'model_resolved'
           ),
+          providerTelemetry:
+            sql<unknown>`${reviewRuns.result}->'result'->'metadata'->'providerTelemetry'`.as(
+              'provider_telemetry'
+            ),
         })
         .from(reviewRuns)
         .where(reviewListWherePredicate(options) ?? sql`true`)
