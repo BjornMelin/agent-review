@@ -285,6 +285,10 @@ function safeObservableModel(model: string | undefined): string | undefined {
 
 function createRunSummary(record: ReviewRecord): ReviewRunSummary {
   const repository = record.authorization?.repository;
+  const safeRequestModel = safeObservableModel(record.request.model);
+  const safeModelResolved = safeObservableModel(
+    record.result?.result.metadata.modelResolved
+  );
   return {
     reviewId: record.reviewId,
     status: record.status,
@@ -293,9 +297,7 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
       executionMode: record.request.executionMode,
       targetType: record.request.target.type,
       outputFormats: record.request.outputFormats,
-      ...(safeObservableModel(record.request.model)
-        ? { model: safeObservableModel(record.request.model) }
-        : {}),
+      ...(safeRequestModel ? { model: safeRequestModel } : {}),
     },
     ...(repository
       ? {
@@ -328,9 +330,7 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
         )
       : [],
     publicationCount: 0,
-    ...(record.result?.result.metadata.modelResolved
-      ? { modelResolved: record.result.result.metadata.modelResolved }
-      : {}),
+    ...(safeModelResolved ? { modelResolved: safeModelResolved } : {}),
     ...(record.detachedRunId ? { detachedRunId: record.detachedRunId } : {}),
     ...(record.workflowRunId ? { workflowRunId: record.workflowRunId } : {}),
     ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),

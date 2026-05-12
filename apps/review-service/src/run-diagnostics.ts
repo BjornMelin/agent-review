@@ -7,6 +7,13 @@ const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
 const STACK_FRAME_RUN_ERROR_PATTERN =
   /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
 
+/**
+ * Converts an unknown run failure into a public diagnostic string or a safe fallback.
+ *
+ * @param error - Error-like value that may contain private runtime context.
+ * @param fallback - Public message returned when the input is empty or unsafe.
+ * @returns Redaction-safe diagnostic text for public run summaries and logs.
+ */
 export function safeRunDiagnosticMessage(
   error: unknown,
   fallback: string

@@ -1302,14 +1302,13 @@ export function createReviewServiceApp(
             `[review-service] failed to sync detached run ${record.reviewId} before list`,
             error
           );
-          logger.error(
-            '[review-service] list sync freshness unavailable',
-            'detached sync unavailable'
-          );
         }
       })
     );
     if (failures.length > 0) {
+      logger.error('[review-service] list sync freshness unavailable', {
+        failedReviewIds: failures,
+      });
       throw new Error('detached sync unavailable');
     }
   }
