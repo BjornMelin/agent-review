@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { relative, resolve, sep } from 'node:path';
+import {
+  redactErrorMessage,
+  redactSensitiveText,
+} from '@review-agent/review-types';
 import { type NetworkPolicy, Sandbox } from '@vercel/sandbox';
 import { z } from 'zod';
 
@@ -26,7 +30,7 @@ type ErrorWithSuppressedCleanup = Error & {
 };
 
 function cleanupErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactErrorMessage(error, 'sandbox cleanup failed');
 }
 
 function attachSuppressedCleanupError(
@@ -218,25 +222,6 @@ function enforceCommandPolicy(
   }
 }
 
-function redactSecrets(text: string): {
-  text: string;
-  redactions: { apiKeyLike: number; bearer: number };
-} {
-  const apiKeyLikePattern = /(sk-[a-zA-Z0-9]{20,})/g;
-  const bearerPattern = /(Bearer\s+[a-zA-Z0-9._-]+)/g;
-  const apiKeyLike = [...text.matchAll(apiKeyLikePattern)].length;
-  const bearer = [...text.matchAll(bearerPattern)].length;
-  return {
-    text: text
-      .replaceAll(apiKeyLikePattern, '[REDACTED_SECRET]')
-      .replaceAll(bearerPattern, 'Bearer [REDACTED]'),
-    redactions: {
-      apiKeyLike,
-      bearer,
-    },
-  };
-}
-
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) {
     return;
@@ -386,12 +371,19 @@ export async function runInSandbox(
       })();
       throwIfAborted(input.signal);
 
-      const stdoutSanitized = redactSecrets(
-        await finished.stdout(abortOptions(input.signal))
-      );
-      const stderrSanitized = redactSecrets(
-        await finished.stderr(abortOptions(input.signal))
-      );
+      const rawStdout = await finished.stdout(abortOptions(input.signal));
+      const rawStderr = await finished.stderr(abortOptions(input.signal));
+      const commandOutputBytes =
+        Buffer.byteLength(rawStdout) + Buffer.byteLength(rawStderr);
+      outputBytes += commandOutputBytes;
+      if (outputBytes > budget.maxOutputBytes) {
+        throw new Error(
+          `sandbox output budget exceeded: ${outputBytes} > ${budget.maxOutputBytes}`
+        );
+      }
+
+      const stdoutSanitized = redactSensitiveText(rawStdout);
+      const stderrSanitized = redactSensitiveText(rawStderr);
       const commandRedactions = {
         apiKeyLike:
           stdoutSanitized.redactions.apiKeyLike +
@@ -404,14 +396,6 @@ export async function runInSandbox(
 
       const stdout = stdoutSanitized.text;
       const stderr = stderrSanitized.text;
-      const commandOutputBytes =
-        Buffer.byteLength(stdout) + Buffer.byteLength(stderr);
-      outputBytes += Buffer.byteLength(stdout) + Buffer.byteLength(stderr);
-      if (outputBytes > budget.maxOutputBytes) {
-        throw new Error(
-          `sandbox output budget exceeded: ${outputBytes} > ${budget.maxOutputBytes}`
-        );
-      }
 
       outputs.push({
         commandId,
@@ -471,7 +455,7 @@ export async function runInSandbox(
         );
       }
 
-      const sanitized = redactSecrets(content.toString('utf8'));
+      const sanitized = redactSensitiveText(content.toString('utf8'));
       redactionTotals.apiKeyLike += sanitized.redactions.apiKeyLike;
       redactionTotals.bearer += sanitized.redactions.bearer;
       artifacts.push({

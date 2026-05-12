@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   collectDiffForReviewRequest,
@@ -32,8 +33,16 @@ import {
   type ReviewProviderRunOutput,
   type ReviewRequest,
   type ReviewResult,
+  type ReviewSecurityLimits,
+  redactCommandRunOutput,
+  redactErrorMessage,
+  redactLifecycleEvent,
+  redactReviewResult,
+  redactSensitiveText,
+  resolveReviewSecurityLimits,
   type SandboxAudit,
   severityToPriority,
+  withReviewRequestSecurityDefaults,
 } from '@review-agent/review-types';
 
 export class InvalidFindingLocationError extends Error {
@@ -79,6 +88,124 @@ export type SandboxReviewRunner = (
 ) => Promise<ReviewProviderRunOutput & { sandboxAudit: SandboxAudit }>;
 
 /**
+ * Redacts sensitive substrings from a review request before persistence or response use.
+ *
+ * @param request - Parsed review request to sanitize.
+ * @returns A redacted review request copy.
+ */
+export function redactReviewRequest(request: ReviewRequest): ReviewRequest {
+  const redact = (value: string) => redactSensitiveText(value).text;
+  const target =
+    request.target.type === 'baseBranch'
+      ? { ...request.target, branch: redact(request.target.branch) }
+      : request.target.type === 'commit'
+        ? {
+            ...request.target,
+            sha: redact(request.target.sha),
+            ...(request.target.title
+              ? { title: redact(request.target.title) }
+              : {}),
+          }
+        : request.target.type === 'custom'
+          ? {
+              ...request.target,
+              instructions: redact(request.target.instructions),
+            }
+          : request.target;
+
+  return {
+    ...request,
+    cwd: redact(request.cwd),
+    target,
+    ...(request.model ? { model: redact(request.model) } : {}),
+    ...(request.includePaths
+      ? { includePaths: request.includePaths.map(redact) }
+      : {}),
+    ...(request.excludePaths
+      ? { excludePaths: request.excludePaths.map(redact) }
+      : {}),
+  };
+}
+
+function redactSandboxAudit(audit: SandboxAudit): SandboxAudit {
+  const redact = (value: string) => redactSensitiveText(value).text;
+  return {
+    ...audit,
+    sandboxId: redact(audit.sandboxId),
+    commands: audit.commands.map((command) => ({
+      ...command,
+      commandId: redact(command.commandId),
+      cmd: redact(command.cmd),
+      args: command.args.map(redact),
+      cwd: redact(command.cwd),
+    })),
+  };
+}
+
+function redactDiffContext(diff: DiffContext): DiffContext {
+  const redact = (value: string) => redactSensitiveText(value).text;
+  return {
+    ...diff,
+    patch: redact(diff.patch),
+    chunks: diff.chunks.map((chunk) => ({
+      ...chunk,
+      file: redact(chunk.file),
+      absoluteFilePath: redact(chunk.absoluteFilePath),
+      patch: redact(chunk.patch),
+    })),
+    changedLineIndex: new Map(
+      [...diff.changedLineIndex.entries()].map(([path, lines]) => [
+        redact(path),
+        new Set(lines),
+      ])
+    ),
+    gitContext: {
+      ...diff.gitContext,
+      ...(diff.gitContext.baseRef
+        ? { baseRef: redact(diff.gitContext.baseRef) }
+        : {}),
+      ...(diff.gitContext.mergeBaseSha
+        ? { mergeBaseSha: redact(diff.gitContext.mergeBaseSha) }
+        : {}),
+      ...(diff.gitContext.commitSha
+        ? { commitSha: redact(diff.gitContext.commitSha) }
+        : {}),
+    },
+  };
+}
+
+/**
+ * Redacts sensitive substrings from the full review run payload.
+ *
+ * @param result - Review run result to sanitize.
+ * @returns A redacted review run result copy.
+ */
+export function redactReviewRunResult(
+  result: ReviewRunResult
+): ReviewRunResult {
+  return {
+    ...result,
+    request: redactReviewRequest(result.request),
+    result: redactReviewResult(result.result).result,
+    artifacts: Object.fromEntries(
+      Object.entries(result.artifacts).map(([format, artifact]) => [
+        format,
+        redactSensitiveText(artifact).text,
+      ])
+    ) as ReviewArtifacts,
+    diff: redactDiffContext(result.diff),
+    prompt: redactSensitiveText(result.prompt).text,
+    rubric: redactSensitiveText(result.rubric).text,
+    ...(result.commandRuns
+      ? { commandRuns: result.commandRuns.map(redactCommandRunOutput) }
+      : {}),
+    ...(result.sandboxAudit
+      ? { sandboxAudit: redactSandboxAudit(result.sandboxAudit) }
+      : {}),
+  };
+}
+
+/**
  * Configures provider selection, lifecycle event handling, and correlation metadata for one review run.
  */
 export type RunReviewOptions = {
@@ -88,6 +215,7 @@ export type RunReviewOptions = {
   correlation?: Omit<CorrelationIds, 'reviewId'>;
   sandboxRunner?: SandboxReviewRunner;
   signal?: AbortSignal;
+  limits?: Partial<ReviewSecurityLimits>;
 };
 
 export type MirrorWriteBridge = {
@@ -126,7 +254,7 @@ async function emit(
       correlation,
     },
   };
-  await context.onEvent?.(enrichedEvent);
+  await context.onEvent?.(redactLifecycleEvent(enrichedEvent));
 }
 
 async function emitCommandRunProgress(
@@ -331,6 +459,30 @@ function renderArtifacts(
   return artifacts;
 }
 
+function assertUtf8Budget(
+  label: string,
+  value: string,
+  maxBytes: number
+): void {
+  const byteLength = Buffer.byteLength(value, 'utf8');
+  if (byteLength > maxBytes) {
+    throw new Error(`${label} exceeds configured byte limit`);
+  }
+}
+
+function assertArtifactBudget(
+  artifacts: ReviewArtifacts,
+  maxBytes: number
+): void {
+  const totalBytes = Object.values(artifacts).reduce(
+    (total, artifact) => total + Buffer.byteLength(artifact, 'utf8'),
+    0
+  );
+  if (totalBytes > maxBytes) {
+    throw new Error('review artifact output exceeds configured byte limit');
+  }
+}
+
 function collectProviderDiagnostics(
   provider: ReviewProvider,
   request: ReviewRequest
@@ -420,7 +572,11 @@ export async function runReview(
   options: RunReviewOptions,
   bridge?: MirrorWriteBridge
 ): Promise<ReviewRunResult> {
-  const request = parseReviewRequest(input);
+  const limits = resolveReviewSecurityLimits(options.limits);
+  const request = withReviewRequestSecurityDefaults(
+    parseReviewRequest(input),
+    limits
+  );
   throwIfCancelled(options.signal);
   const reviewId = randomUUID();
   const now = options.now ?? (() => new Date());
@@ -457,6 +613,7 @@ export async function runReview(
     },
     request.cwd
   );
+  assertUtf8Budget('review prompt', resolved.prompt, limits.maxPromptBytes);
   throwIfCancelled(options.signal);
   await emit(emitContext, {
     type: 'enteredReviewMode',
@@ -564,7 +721,7 @@ export async function runReview(
 
   validateFindingsAgainstDiff(findingsWithFingerprint, diff, request.cwd);
 
-  const result: ReviewResult = {
+  const rawResult: ReviewResult = {
     findings: sortFindingsDeterministically(findingsWithFingerprint),
     overallCorrectness: normalized.overallCorrectness,
     overallExplanation: normalized.overallExplanation,
@@ -581,8 +738,10 @@ export async function runReview(
       ...(sandboxAudit ? { sandboxId: sandboxAudit.sandboxId } : {}),
     },
   };
+  const result = redactReviewResult(rawResult).result;
 
   const artifacts = renderArtifacts(result, request.outputFormats);
+  assertArtifactBudget(artifacts, limits.maxArtifactBytes);
   await emit(emitContext, {
     type: 'exitedReviewMode',
     review: result.overallExplanation,
@@ -597,7 +756,7 @@ export async function runReview(
     } catch (error) {
       await emit(emitContext, {
         type: 'progress',
-        message: `non-blocking mirror write failed: ${String(error)}`,
+        message: `non-blocking mirror write failed: ${redactErrorMessage(error)}`,
       });
     }
   }
@@ -608,7 +767,7 @@ export async function runReview(
     message: `Review ${reviewId} completed at ${now().toISOString()}`,
   });
 
-  return {
+  return redactReviewRunResult({
     reviewId,
     request,
     result,
@@ -618,7 +777,7 @@ export async function runReview(
     rubric: REVIEW_RUBRIC_PROMPT,
     ...(commandRuns.length > 0 ? { commandRuns } : {}),
     ...(sandboxAudit ? { sandboxAudit } : {}),
-  };
+  });
 }
 
 export function validateSeverityThreshold(

@@ -3,7 +3,14 @@ import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import type { ReviewRequest, ReviewTarget } from '@review-agent/review-types';
+import {
+  DEFAULT_REVIEW_SECURITY_LIMITS,
+  type ReviewRequest,
+  type ReviewTarget,
+  redactErrorMessage,
+  withReviewRequestSecurityDefaults,
+} from '@review-agent/review-types';
+import { minimatch } from 'minimatch';
 import {
   type DiffChunk,
   type DiffIndexOptions,
@@ -20,6 +27,9 @@ export {
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Git metadata describing how a diff was collected.
+ */
 export type GitContext = {
   mode: 'uncommitted' | 'baseBranch' | 'commit' | 'custom';
   baseRef?: string;
@@ -27,6 +37,9 @@ export type GitContext = {
   commitSha?: string;
 };
 
+/**
+ * Collected patch text, indexed diff chunks, changed lines, and git metadata.
+ */
 export type DiffContext = {
   patch: string;
   chunks: DiffChunk[];
@@ -36,6 +49,7 @@ export type DiffContext = {
 
 type GitExecOptions = {
   allowExitCodes?: number[];
+  maxBufferBytes?: number;
 };
 
 const SAFE_GIT_ENV = {
@@ -48,6 +62,9 @@ const SAFE_GIT_ENV = {
 } as const;
 
 const SAFE_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+const MAX_UNTRACKED_PATH_BYTES = 4096;
+const MIN_UNTRACKED_LIST_BUFFER_BYTES = 8 * 1024;
+const MAX_UNTRACKED_LIST_BUFFER_BYTES = 16 * 1024 * 1024;
 
 function assertSafeGitRevisionArgument(value: string, label: string): void {
   if (value.startsWith('-')) {
@@ -55,6 +72,22 @@ function assertSafeGitRevisionArgument(value: string, label: string): void {
   }
   if (value.includes('\0')) {
     throw new Error(`${label} must not contain NUL bytes`);
+  }
+  const segments = value.split('/');
+  if (
+    value.startsWith('/') ||
+    value.endsWith('/') ||
+    value.includes('..') ||
+    value.includes('@{') ||
+    value === '@' ||
+    value.endsWith('.') ||
+    segments.some(
+      (segment) => segment.startsWith('.') || segment.endsWith('.lock')
+    ) ||
+    value.includes('//') ||
+    /[\s~^:?*[\\]/.test(value)
+  ) {
+    throw new Error(`${label} must be a simple Git ref name`);
   }
 }
 
@@ -78,7 +111,7 @@ async function runGit(
         ...process.env,
         ...SAFE_GIT_ENV,
       },
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: options.maxBufferBytes ?? 16 * 1024 * 1024,
       encoding: 'utf8',
     });
     return stdout.trimEnd();
@@ -94,11 +127,17 @@ async function runGit(
     }
     const stderr = String(err.stderr ?? '').trim();
     throw new Error(
-      `git --no-pager ${args.join(' ')} failed: ${stderr || err.message}`
+      `git command failed: ${redactErrorMessage(stderr || err.message)}`
     );
   }
 }
 
+/**
+ * Resolves HEAD for a repository when it exists.
+ *
+ * @param cwd - Repository working directory.
+ * @returns HEAD object ID, or null when the repository has no HEAD.
+ */
 export async function resolveHead(cwd: string): Promise<string | null> {
   const out = await runGit(cwd, ['rev-parse', '--verify', 'HEAD'], {
     allowExitCodes: [0, 128],
@@ -106,6 +145,13 @@ export async function resolveHead(cwd: string): Promise<string | null> {
   return out.length > 0 ? out : null;
 }
 
+/**
+ * Resolves a safe branch or ref name to an object ID.
+ *
+ * @param cwd - Repository working directory.
+ * @param branch - Safe branch or ref name to resolve.
+ * @returns Object ID for the ref, or null when it cannot be resolved.
+ */
 export async function resolveBranchRef(
   cwd: string,
   branch: string
@@ -121,6 +167,13 @@ export async function resolveBranchRef(
   return out.length > 0 ? out : null;
 }
 
+/**
+ * Resolves the upstream ref when it is ahead of the local branch.
+ *
+ * @param cwd - Repository working directory.
+ * @param branch - Safe local branch name.
+ * @returns Upstream ref name when it is ahead, otherwise null.
+ */
 export async function resolveUpstreamIfRemoteAhead(
   cwd: string,
   branch: string
@@ -161,6 +214,13 @@ export async function resolveUpstreamIfRemoteAhead(
   return upstream;
 }
 
+/**
+ * Finds the merge base between HEAD and a safe branch ref.
+ *
+ * @param cwd - Repository working directory.
+ * @param branch - Safe branch name to compare with HEAD.
+ * @returns Merge-base object ID, or null when unavailable.
+ */
 export async function mergeBaseWithHead(
   cwd: string,
   branch: string
@@ -324,7 +384,8 @@ function buildUntrackedSymlinkPatch(
 
 async function buildUntrackedFilePatch(
   cwd: string,
-  relativePath: string
+  relativePath: string,
+  maxFileBytes: number | undefined
 ): Promise<string> {
   const root = await realpath(cwd);
   const absolutePath = resolve(root, relativePath);
@@ -340,6 +401,9 @@ async function buildUntrackedFilePatch(
 
   if (!stats.isFile()) {
     return '';
+  }
+  if (maxFileBytes !== undefined && stats.size > maxFileBytes) {
+    throw new Error('untracked file exceeds maxDiffBytes');
   }
 
   const resolvedPath = await realpath(absolutePath);
@@ -375,33 +439,210 @@ async function buildUntrackedFilePatch(
   ].join('\n');
 }
 
-async function buildUncommittedPatch(cwd: string): Promise<string> {
-  const [staged, unstaged, untrackedListRaw] = await Promise.all([
-    runGit(cwd, [
-      'diff',
-      ...SAFE_DIFF_ARGS,
-      '--no-color',
-      '--binary',
-      '--staged',
-    ]),
-    runGit(cwd, ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary']),
-    runGit(cwd, ['ls-files', '--others', '--exclude-standard', '-z']),
+function assertPatchWithinBudget(
+  patch: string,
+  maxDiffBytes: number | undefined
+): void {
+  if (
+    maxDiffBytes !== undefined &&
+    Buffer.byteLength(patch, 'utf8') > maxDiffBytes
+  ) {
+    throw new Error('git diff exceeds maxDiffBytes');
+  }
+}
+
+function joinedPatchByteLength(chunks: string[]): number {
+  return chunks.reduce(
+    (total, chunk, index) =>
+      total + Buffer.byteLength(chunk, 'utf8') + (index === 0 ? 0 : 1),
+    0
+  );
+}
+
+function gitBufferOptions(options: DiffIndexOptions): GitExecOptions {
+  return options.maxDiffBytes === undefined
+    ? {}
+    : { maxBufferBytes: options.maxDiffBytes };
+}
+
+function assertSafePathFilterArgument(value: string, label: string): void {
+  const segments = value.split('/');
+  if (
+    value.startsWith('/') ||
+    value.startsWith('~') ||
+    value.startsWith('!') ||
+    value.startsWith(':') ||
+    value.includes('\\') ||
+    value.includes('//') ||
+    value.includes('\0') ||
+    segments.includes('..') ||
+    value === '.' ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    })
+  ) {
+    throw new Error(`${label} must be a safe repository-relative path filter`);
+  }
+}
+
+function gitPathspecArgs(options: DiffIndexOptions): string[] {
+  const pathspecs: string[] = [];
+  for (const [index, includePath] of (options.includePaths ?? []).entries()) {
+    assertSafePathFilterArgument(includePath, `includePaths[${index}]`);
+    pathspecs.push(`:(top,glob)${includePath}`);
+  }
+  for (const [index, excludePath] of (options.excludePaths ?? []).entries()) {
+    assertSafePathFilterArgument(excludePath, `excludePaths[${index}]`);
+    pathspecs.push(`:(top,exclude,glob)${excludePath}`);
+  }
+  return pathspecs.length > 0 ? ['--', ...pathspecs] : [];
+}
+
+function untrackedListBufferOptions(options: DiffIndexOptions): GitExecOptions {
+  const maxFiles =
+    options.maxFiles ?? DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxFiles;
+  return {
+    maxBufferBytes: Math.min(
+      MAX_UNTRACKED_LIST_BUFFER_BYTES,
+      Math.max(
+        MIN_UNTRACKED_LIST_BUFFER_BYTES,
+        (maxFiles + 1) * (MAX_UNTRACKED_PATH_BYTES + 1)
+      )
+    ),
+  };
+}
+
+function pathMatchesAnyFilter(
+  relativePath: string,
+  patterns: string[]
+): boolean {
+  return patterns.some((pattern) =>
+    minimatch(relativePath, pattern, {
+      dot: true,
+      nonegate: true,
+      nocomment: true,
+      optimizationLevel: 0,
+    })
+  );
+}
+
+function untrackedPathMatchesFilters(
+  relativePath: string,
+  options: DiffIndexOptions
+): boolean {
+  if (
+    options.includePaths?.length &&
+    !pathMatchesAnyFilter(relativePath, options.includePaths)
+  ) {
+    return false;
+  }
+  if (
+    options.excludePaths?.length &&
+    pathMatchesAnyFilter(relativePath, options.excludePaths)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function buildUncommittedPatch(
+  cwd: string,
+  options: DiffIndexOptions = {}
+): Promise<string> {
+  const gitOptions = gitBufferOptions(options);
+  const pathspecArgs = gitPathspecArgs(options);
+  let untrackedListRaw: string;
+  try {
+    untrackedListRaw = await runGit(
+      cwd,
+      ['ls-files', '--others', '--exclude-standard', '-z', ...pathspecArgs],
+      untrackedListBufferOptions(options)
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('maxBuffer')) {
+      throw new Error('untracked file list exceeds configured budget');
+    }
+    throw error;
+  }
+  const [staged, unstaged] = await Promise.all([
+    runGit(
+      cwd,
+      [
+        'diff',
+        ...SAFE_DIFF_ARGS,
+        '--no-color',
+        '--binary',
+        '--staged',
+        ...pathspecArgs,
+      ],
+      gitOptions
+    ),
+    runGit(
+      cwd,
+      ['diff', ...SAFE_DIFF_ARGS, '--no-color', '--binary', ...pathspecArgs],
+      gitOptions
+    ),
   ]);
 
   const untrackedFiles = untrackedListRaw
     .split('\0')
-    .filter((line) => line.length > 0);
-  const untrackedPatches = await Promise.all(
-    untrackedFiles.map((relativePath) =>
-      buildUntrackedFilePatch(cwd, relativePath)
-    )
+    .filter((line) => line.length > 0)
+    .filter((relativePath) =>
+      untrackedPathMatchesFilters(relativePath, options)
+    );
+  if (
+    options.maxFiles !== undefined &&
+    untrackedFiles.length > options.maxFiles
+  ) {
+    throw new Error('untracked file count exceeds maxFiles');
+  }
+  const patchChunks = [staged, unstaged].filter(
+    (chunk) => chunk.trim().length > 0
   );
+  let patchBytes = joinedPatchByteLength(patchChunks);
+  for (const relativePath of untrackedFiles) {
+    const remainingBytes =
+      options.maxDiffBytes === undefined
+        ? undefined
+        : options.maxDiffBytes - patchBytes - (patchChunks.length > 0 ? 1 : 0);
+    if (remainingBytes !== undefined && remainingBytes <= 0) {
+      throw new Error('git diff exceeds maxDiffBytes');
+    }
+    const untrackedPatch = await buildUntrackedFilePatch(
+      cwd,
+      relativePath,
+      remainingBytes
+    );
+    if (untrackedPatch.trim().length === 0) {
+      continue;
+    }
+    const separatorBytes = patchChunks.length > 0 ? 1 : 0;
+    const nextPatchBytes =
+      patchBytes + separatorBytes + Buffer.byteLength(untrackedPatch, 'utf8');
+    if (
+      options.maxDiffBytes !== undefined &&
+      nextPatchBytes > options.maxDiffBytes
+    ) {
+      throw new Error('git diff exceeds maxDiffBytes');
+    }
+    patchChunks.push(untrackedPatch);
+    patchBytes = nextPatchBytes;
+  }
 
-  return [staged, unstaged, ...untrackedPatches]
-    .filter((chunk) => chunk.trim().length > 0)
-    .join('\n');
+  const patch = patchChunks.join('\n');
+  assertPatchWithinBudget(patch, options.maxDiffBytes);
+  return patch;
 }
 
+/**
+ * Collects and indexes the diff context for one review target.
+ *
+ * @param cwd - Repository working directory.
+ * @param target - Review target to collect.
+ * @param options - Optional path and budget constraints.
+ * @returns Diff context with filtered patch, chunks, line index, and git metadata.
+ */
 export async function collectDiffForTarget(
   cwd: string,
   target: ReviewTarget,
@@ -412,7 +653,7 @@ export async function collectDiffForTarget(
 
   switch (target.type) {
     case 'uncommittedChanges': {
-      patch = await buildUncommittedPatch(cwd);
+      patch = await buildUncommittedPatch(cwd, options);
       gitContext = { mode: 'uncommitted' };
       break;
     }
@@ -420,24 +661,35 @@ export async function collectDiffForTarget(
       assertSafeGitRevisionArgument(target.branch, 'target.branch');
       const mergeBaseSha = await mergeBaseWithHead(cwd, target.branch);
       if (mergeBaseSha) {
-        patch = await runGit(cwd, [
-          'diff',
-          ...SAFE_DIFF_ARGS,
-          '--no-color',
-          '--binary',
-          '--end-of-options',
-          mergeBaseSha,
-        ]);
+        patch = await runGit(
+          cwd,
+          [
+            'diff',
+            ...SAFE_DIFF_ARGS,
+            '--no-color',
+            '--binary',
+            '--end-of-options',
+            mergeBaseSha,
+            ...gitPathspecArgs(options),
+          ],
+          gitBufferOptions(options)
+        );
       } else {
-        patch = await runGit(cwd, [
-          'diff',
-          ...SAFE_DIFF_ARGS,
-          '--no-color',
-          '--binary',
-          '--end-of-options',
-          target.branch,
-        ]);
+        patch = await runGit(
+          cwd,
+          [
+            'diff',
+            ...SAFE_DIFF_ARGS,
+            '--no-color',
+            '--binary',
+            '--end-of-options',
+            target.branch,
+            ...gitPathspecArgs(options),
+          ],
+          gitBufferOptions(options)
+        );
       }
+      assertPatchWithinBudget(patch, options.maxDiffBytes);
       const context: GitContext = {
         mode: 'baseBranch',
         baseRef: target.branch,
@@ -450,23 +702,35 @@ export async function collectDiffForTarget(
     }
     case 'commit': {
       assertSafeGitObjectId(target.sha, 'target.sha');
-      patch = await runGit(cwd, [
-        'show',
-        ...SAFE_DIFF_ARGS,
-        '--no-color',
-        '--binary',
-        '--format=',
+      const commitSha = await runGit(cwd, [
+        'rev-parse',
+        '--verify',
         '--end-of-options',
-        target.sha,
+        `${target.sha}^{commit}`,
       ]);
+      patch = await runGit(
+        cwd,
+        [
+          'show',
+          ...SAFE_DIFF_ARGS,
+          '--no-color',
+          '--binary',
+          '--format=',
+          '--end-of-options',
+          commitSha,
+          ...gitPathspecArgs(options),
+        ],
+        gitBufferOptions(options)
+      );
+      assertPatchWithinBudget(patch, options.maxDiffBytes);
       gitContext = {
         mode: 'commit',
-        commitSha: target.sha,
+        commitSha,
       };
       break;
     }
     case 'custom': {
-      patch = await buildUncommittedPatch(cwd);
+      patch = await buildUncommittedPatch(cwd, options);
       gitContext = { mode: 'custom' };
       break;
     }
@@ -491,21 +755,35 @@ export async function collectDiffForTarget(
   };
 }
 
+/**
+ * Collects the diff context for a review request with security defaults applied.
+ *
+ * @param request - Review request with target and optional diff constraints.
+ * @returns Diff context with filtered patch, chunks, line index, and git metadata.
+ */
 export async function collectDiffForReviewRequest(
   request: ReviewRequest
 ): Promise<DiffContext> {
+  const boundedRequest = withReviewRequestSecurityDefaults(
+    request,
+    DEFAULT_REVIEW_SECURITY_LIMITS
+  );
   const options: DiffIndexOptions = {};
-  if (request.excludePaths) {
-    options.excludePaths = request.excludePaths;
+  if (boundedRequest.excludePaths) {
+    options.excludePaths = boundedRequest.excludePaths;
   }
-  if (request.includePaths) {
-    options.includePaths = request.includePaths;
+  if (boundedRequest.includePaths) {
+    options.includePaths = boundedRequest.includePaths;
   }
-  if (request.maxDiffBytes) {
-    options.maxDiffBytes = request.maxDiffBytes;
+  if (boundedRequest.maxDiffBytes) {
+    options.maxDiffBytes = boundedRequest.maxDiffBytes;
   }
-  if (request.maxFiles) {
-    options.maxFiles = request.maxFiles;
+  if (boundedRequest.maxFiles) {
+    options.maxFiles = boundedRequest.maxFiles;
   }
-  return collectDiffForTarget(request.cwd, request.target, options);
+  return collectDiffForTarget(
+    boundedRequest.cwd,
+    boundedRequest.target,
+    options
+  );
 }

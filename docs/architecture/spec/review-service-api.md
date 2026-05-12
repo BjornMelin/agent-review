@@ -70,11 +70,39 @@ Starts a review.
 Detached mode is active when `delivery=detached` or `request.detached=true`.
 The request body is parsed by `ReviewStartRequestSchema`.
 
+### Request Hardening
+
+The service rejects start bodies over `maxRequestBodyBytes` before JSON parsing
+and returns a generic validation error for malformed payloads. Parsed requests
+are normalized with review security defaults from `review-types`:
+
+- `maxFiles` defaults to `200` and cannot exceed `1000`.
+- `maxDiffBytes` defaults to `1048576` and cannot exceed `4194304`.
+- custom instructions, model IDs, refs, path filters, and output format lists
+  are bounded by the shared schema.
+- branch refs reject revision expressions and Git pathspec/control syntax;
+  commit targets must be object IDs and are verified as commits by the git
+  collector.
+- include/exclude path filters must be repository-relative and cannot use
+  absolute paths, `..` segments, negation syntax, or Git pathspec magic.
+- service-level `reviewLimits` may be stricter than the shared schema defaults;
+  explicit client `maxFiles` and `maxDiffBytes` values are clamped to those
+  configured service ceilings, and all other bounded request fields are checked
+  against the stricter resolved service limits before the runner, worker, or git
+  collector sees the request. Configured limits cannot widen the compiled
+  shared defaults.
+
+Hosted service construction must set `allowedCwdRoots`; `src/server.ts`
+defaults this to the service process cwd and accepts a comma-separated override
+through `REVIEW_SERVICE_ALLOWED_CWD_ROOTS`. Requests outside configured roots
+are rejected before runtime reservation or worker dispatch.
+
 ### Responses
 
 - `200`: inline run finished; response includes `result` summary payload
 - `202`: detached accepted; response includes `detachedRunId`
 - `400`: request parse/validation error
+- `413`: request body exceeds the configured byte limit
 - `429`: runtime queue, global concurrency, or per-scope active-run limit reached
 - `502`: worker or storage startup error
 
@@ -116,6 +144,16 @@ Nonterminal detached Workflow status refreshes only unexpired leases, while
 terminal Workflow status is still reconciled after lease expiry. Workflow
 remains the execution orchestrator; `ReviewStoreAdapter` remains the queryable
 lease/status source of truth.
+
+### Redaction and Safe Errors
+
+Service-owned logs, stored terminal errors, lifecycle events, status responses,
+provider/core outputs, sandbox outputs, and generated artifacts use the shared
+redaction helper from `review-types`. Public error responses are stable generic
+messages except for known safe runtime policy errors such as queue pressure and
+cwd allowlist rejection. Durable records store redacted request and completed
+run payloads; the raw accepted request is kept in memory only long enough to
+dispatch the runner or detached worker.
 
 ## `GET /v1/review/:reviewId`
 

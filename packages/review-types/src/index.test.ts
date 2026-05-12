@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   ARTIFACT_CONTENT_TYPES,
+  assertReviewRequestWithinSecurityLimits,
   buildJsonSchemaSet,
   CommandRunInputSchema,
   CommandRunOutputSchema,
+  DEFAULT_REVIEW_SECURITY_LIMITS,
   isTerminalReviewRunStatus,
   OutputFormatSchema,
   parseRawModelOutput,
@@ -15,7 +17,11 @@ import {
   ReviewRunStatusSchema,
   ReviewStartRequestSchema,
   ReviewStatusResponseSchema,
+  redactReviewResult,
+  redactSensitiveText,
+  resolveReviewSecurityLimits,
   SandboxAuditSchema,
+  withReviewRequestSecurityDefaults,
 } from './index.js';
 
 const request = {
@@ -54,6 +60,201 @@ describe('review-types schemas', () => {
       reviewId: 'review-1',
       limit: 100,
     });
+  });
+
+  it('enforces request hardening constraints at schema boundaries', () => {
+    expect(
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'origin/main' },
+        includePaths: ['packages/**'],
+        excludePaths: ['packages/generated/**'],
+        maxFiles: DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxFiles,
+        maxDiffBytes: DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxDiffBytes,
+        outputFormats: ['json', 'markdown'],
+      })
+    ).toMatchObject({
+      target: { branch: 'origin/main' },
+      includePaths: ['packages/**'],
+    });
+
+    expect(
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'custom', instructions: 'line one\nline two\tok' },
+      }).target
+    ).toEqual({
+      type: 'custom',
+      instructions: 'line one\nline two\tok',
+    });
+    expect(
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'release.lockstep' },
+      }).target
+    ).toEqual({
+      type: 'baseBranch',
+      branch: 'release.lockstep',
+    });
+
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'main..HEAD' },
+      })
+    ).toThrow(/git ref/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'feature/.tmp' },
+      })
+    ).toThrow(/git ref/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'baseBranch', branch: 'feature/topic.lock' },
+      })
+    ).toThrow(/git ref/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'commit', sha: 'HEAD' },
+      })
+    ).toThrow(/Git object id/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        includePaths: ['../secrets'],
+      })
+    ).toThrow(/path filter/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        outputFormats: ['json', 'json'],
+      })
+    ).toThrow(/duplicates/);
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        maxDiffBytes: DEFAULT_REVIEW_SECURITY_LIMITS.maxMaxDiffBytes + 1,
+      })
+    ).toThrow();
+    expect(() =>
+      ReviewRequestSchema.parse({
+        ...request,
+        target: { type: 'custom', instructions: 'line one\0line two' },
+      })
+    ).toThrow(/control characters/);
+  });
+
+  it('adds default diff caps and redacts secret-bearing review text', () => {
+    expect(
+      withReviewRequestSecurityDefaults(ReviewRequestSchema.parse(request))
+    ).toMatchObject({
+      maxFiles: DEFAULT_REVIEW_SECURITY_LIMITS.defaultMaxFiles,
+      maxDiffBytes: DEFAULT_REVIEW_SECURITY_LIMITS.defaultMaxDiffBytes,
+    });
+    expect(
+      withReviewRequestSecurityDefaults(
+        ReviewRequestSchema.parse({
+          ...request,
+          maxFiles: 50,
+          maxDiffBytes: 50,
+        }),
+        {
+          ...DEFAULT_REVIEW_SECURITY_LIMITS,
+          maxMaxFiles: 10,
+          maxMaxDiffBytes: 8,
+        }
+      )
+    ).toMatchObject({
+      maxFiles: 10,
+      maxDiffBytes: 8,
+    });
+    expect(
+      resolveReviewSecurityLimits({
+        defaultMaxFiles: 500,
+        maxMaxFiles: 5,
+        maxPromptBytes: -1,
+      })
+    ).toMatchObject({
+      defaultMaxFiles: 5,
+      maxMaxFiles: 5,
+      maxPromptBytes: DEFAULT_REVIEW_SECURITY_LIMITS.maxPromptBytes,
+    });
+    expect(() =>
+      withReviewRequestSecurityDefaults(
+        ReviewRequestSchema.parse({
+          ...request,
+          model: 'long-model-name',
+        }),
+        { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxModelBytes: 4 }
+      )
+    ).toThrow(/model exceeds/);
+    expect(() =>
+      assertReviewRequestWithinSecurityLimits(
+        ReviewRequestSchema.parse({
+          ...request,
+          maxFiles: 50,
+        }),
+        { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxMaxFiles: 10 }
+      )
+    ).toThrow(/maxFiles exceeds/);
+    expect(() =>
+      assertReviewRequestWithinSecurityLimits(
+        ReviewRequestSchema.parse({
+          ...request,
+          maxDiffBytes: 50,
+        }),
+        { ...DEFAULT_REVIEW_SECURITY_LIMITS, maxMaxDiffBytes: 10 }
+      )
+    ).toThrow(/maxDiffBytes exceeds/);
+
+    const secret =
+      'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 Bearer abc.def.ghi';
+    const redacted = redactSensitiveText(secret);
+    expect(redacted.text).not.toContain('abcdefghijklmnopqrstuvwxyz123456');
+    expect(redacted.text).toContain('[REDACTED_SECRET]');
+    expect(redacted.redactions.apiKeyLike).toBeGreaterThan(0);
+    expect(redacted.redactions.bearer).toBeGreaterThan(0);
+
+    const metadata = redactSensitiveText(
+      'author: reviewer\n"apiKey": "plain-secret-value"\nPASSWORD=plain-password'
+    );
+    expect(metadata.text).toContain('author: reviewer');
+    expect(metadata.text).toContain('"apiKey": "[REDACTED_SECRET]"');
+    expect(metadata.text).toContain('PASSWORD=[REDACTED_SECRET]');
+
+    const result = ReviewResultSchema.parse({
+      findings: [
+        {
+          title: 'Secret leak',
+          body: `Do not expose ${secret}`,
+          confidenceScore: 0.9,
+          codeLocation: {
+            absoluteFilePath: '/tmp/repo/src/index.ts',
+            lineRange: { start: 1, end: 1 },
+          },
+          fingerprint: 'finding-1',
+        },
+      ],
+      overallCorrectness: 'patch is incorrect',
+      overallExplanation: `Summary ${secret}`,
+      overallConfidenceScore: 0.9,
+      metadata: {
+        provider: 'codexDelegate',
+        modelResolved: 'codex',
+        executionMode: 'localTrusted',
+        promptPack: 'default',
+        gitContext: { mode: 'custom' },
+      },
+    });
+
+    const sanitized = redactReviewResult(result).result;
+    expect(JSON.stringify(sanitized)).not.toContain(
+      'sk-abcdefghijklmnopqrstuvwxyz'
+    );
+    expect(sanitized.findings[0]?.body).toContain('[REDACTED_SECRET]');
   });
 
   it('centralizes run status and artifact format policy', () => {

@@ -1,4 +1,8 @@
-import type { ReviewFinding, ReviewResult } from '@review-agent/review-types';
+import {
+  type ReviewFinding,
+  type ReviewResult,
+  redactReviewResult,
+} from '@review-agent/review-types';
 
 export type SarifLevel = 'error' | 'warning' | 'note';
 
@@ -94,7 +98,8 @@ export function sortFindingsDeterministically(
 }
 
 export function toSarif(result: ReviewResult): SarifReport {
-  const findings = sortFindingsDeterministically(result.findings);
+  const safeResult = redactReviewResult(result).result;
+  const findings = sortFindingsDeterministically(safeResult.findings);
   const rulesById = new Map<
     string,
     {
@@ -169,23 +174,24 @@ export function toSarif(result: ReviewResult): SarifReport {
 }
 
 export function renderMarkdown(result: ReviewResult): string {
-  const findings = sortFindingsDeterministically(result.findings);
+  const safeResult = redactReviewResult(result).result;
+  const findings = sortFindingsDeterministically(safeResult.findings);
   const lines: string[] = [];
 
   lines.push('# Review Report');
   lines.push('');
-  lines.push(`- Overall correctness: **${result.overallCorrectness}**`);
+  lines.push(`- Overall correctness: **${safeResult.overallCorrectness}**`);
   lines.push(
-    `- Overall confidence: **${result.overallConfidenceScore.toFixed(2)}**`
+    `- Overall confidence: **${safeResult.overallConfidenceScore.toFixed(2)}**`
   );
-  lines.push(`- Provider: \`${result.metadata.provider}\``);
-  lines.push(`- Model: \`${result.metadata.modelResolved}\``);
-  if (result.metadata.sandboxId) {
-    lines.push(`- Sandbox: \`${result.metadata.sandboxId}\``);
+  lines.push(`- Provider: \`${safeResult.metadata.provider}\``);
+  lines.push(`- Model: \`${safeResult.metadata.modelResolved}\``);
+  if (safeResult.metadata.sandboxId) {
+    lines.push(`- Sandbox: \`${safeResult.metadata.sandboxId}\``);
   }
   lines.push('');
   lines.push(
-    result.overallExplanation ||
+    safeResult.overallExplanation ||
       'No high-confidence correctness summary provided.'
   );
   lines.push('');
@@ -216,10 +222,11 @@ export function renderMarkdown(result: ReviewResult): string {
 }
 
 export function renderJson(result: ReviewResult): string {
+  const safeResult = redactReviewResult(result).result;
   return JSON.stringify(
     {
-      ...result,
-      findings: sortFindingsDeterministically(result.findings),
+      ...safeResult,
+      findings: sortFindingsDeterministically(safeResult.findings),
     },
     null,
     2
