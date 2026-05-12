@@ -9,7 +9,9 @@ import {
 } from '@review-agent/review-reporters';
 import {
   type ReviewFinding,
+  type ReviewPublicationPreviewItem,
   type ReviewPublicationRecord,
+  type ReviewPublishPreviewResponse,
   type ReviewPublishResponse,
   type ReviewRepositoryAuthorization,
   redactErrorMessage,
@@ -70,6 +72,13 @@ export type ReviewPublicationService = {
    * @returns Aggregate publication response and per-channel publication records.
    */
   publish(record: ReviewRecord): Promise<ReviewPublishResponse>;
+  /**
+   * Builds a side-effect-free preview of the GitHub publication plan.
+   *
+   * @param record - Completed review record with repository authorization.
+   * @returns GitHub target, planned effects, and persisted publication evidence.
+   */
+  preview?(record: ReviewRecord): Promise<ReviewPublishPreviewResponse>;
 };
 
 /**
@@ -132,6 +141,10 @@ type GitHubPublishTarget = {
   pullRequestHeadSha?: string;
 };
 
+type PublicationPreviewContext = PublicationContext & {
+  existingPublications: ReviewPublicationRecord[];
+};
+
 type GitHubPullResponse = {
   number: number;
   head: { sha: string };
@@ -179,6 +192,9 @@ const PUBLICATION_PERMISSIONS = {
   checks: 'write',
   pull_requests: 'write',
   security_events: 'write',
+} as const;
+const PREVIEW_PERMISSIONS = {
+  pull_requests: 'read',
 } as const;
 const PUBLISH_MARKDOWN_LIMIT = 6_000;
 
@@ -365,7 +381,7 @@ async function resolvePublishTarget(
     authorization: NonNullable<ReviewRecord['authorization']>;
   },
   result: ReviewRunResult,
-  request: GitHubRequestClient
+  request?: GitHubRequestClient
 ): Promise<GitHubPublishTarget> {
   const repository = record.authorization.repository;
   const base = {
@@ -374,6 +390,12 @@ async function resolvePublishTarget(
     installationId: repository.installationId,
   };
   if (repository.pullRequestNumber) {
+    if (!request) {
+      throw new GitHubPublicationError(
+        502,
+        'pull request preview requires GitHub access'
+      );
+    }
     const reviewedCommitSha =
       repository.commitSha ?? result.diff.gitContext.commitSha ?? undefined;
     if (!reviewedCommitSha) {
@@ -548,6 +570,124 @@ function hasRecordedSarifProcessingSuccess(
     (record.metadata as { processingStatus?: unknown } | undefined)
       ?.processingStatus === 'complete'
   );
+}
+
+function previewItemFromRecord(
+  record: ReviewPublicationRecord,
+  action: ReviewPublicationPreviewItem['action'],
+  message = record.message ?? record.status
+): ReviewPublicationPreviewItem {
+  const metadata = record.metadata as
+    | {
+        fingerprint?: unknown;
+        line?: unknown;
+        path?: unknown;
+      }
+    | undefined;
+  return {
+    channel: record.channel,
+    targetKey: record.targetKey,
+    action,
+    message,
+    ...(record.externalId ? { externalId: record.externalId } : {}),
+    ...(record.externalUrl ? { externalUrl: record.externalUrl } : {}),
+    ...(record.marker ? { marker: record.marker } : {}),
+    ...(typeof metadata?.fingerprint === 'string'
+      ? { fingerprint: metadata.fingerprint }
+      : {}),
+    ...(typeof metadata?.path === 'string' ? { path: metadata.path } : {}),
+    ...(typeof metadata?.line === 'number' ? { line: metadata.line } : {}),
+    ...(record.metadata ? { metadata: record.metadata } : {}),
+  };
+}
+
+function previewCheckRun(
+  context: PublicationPreviewContext
+): ReviewPublicationPreviewItem {
+  const targetKey = `check-run:${context.target.commitSha}`;
+  const previous = context.existing.get(storeKey('checkRun', targetKey));
+  const conclusion = checkConclusionFor(context.result);
+  return {
+    channel: 'checkRun',
+    targetKey,
+    action: previous?.externalId ? 'update' : 'create',
+    message: previous?.externalId
+      ? 'would update check run'
+      : 'would create check run',
+    ...(previous?.externalId ? { externalId: previous.externalId } : {}),
+    ...(previous?.externalUrl ? { externalUrl: previous.externalUrl } : {}),
+    metadata: {
+      commitSha: context.target.commitSha,
+      conclusion,
+      summary: summaryFor(context.result),
+    },
+  };
+}
+
+function previewSarif(
+  context: PublicationPreviewContext
+): ReviewPublicationPreviewItem {
+  if (!context.target.ref) {
+    return {
+      channel: 'sarif',
+      targetKey: `sarif:${context.target.commitSha}:missing-ref`,
+      action: 'unsupported',
+      message: 'SARIF upload requires a branch, tag, or pull request ref',
+    };
+  }
+
+  const targetKey = `sarif:${context.target.commitSha}:${context.target.ref}`;
+  const previous = context.existing.get(storeKey('sarif', targetKey));
+  const sarifJson = renderSarifJson(context.result.result, {
+    automationId: `agent-review/${context.record.reviewId}`,
+    pathForFinding: (finding) =>
+      safeRepoPathForFinding(context.result, finding),
+  });
+  const compressedBytes = gzipSync(Buffer.from(sarifJson)).byteLength;
+  const metadata = {
+    commitSha: context.target.commitSha,
+    ref: context.target.ref,
+    compressedBytes,
+    limitBytes: GITHUB_SARIF_GZIP_LIMIT_BYTES,
+    resultCount: context.result.result.findings.length,
+    toolName: 'review-agent',
+  };
+  if (compressedBytes > GITHUB_SARIF_GZIP_LIMIT_BYTES) {
+    return {
+      channel: 'sarif',
+      targetKey,
+      action: 'blocked',
+      message: "SARIF upload exceeds GitHub's 10 MB compressed limit",
+      metadata,
+    };
+  }
+  if (
+    previous?.status === 'published' &&
+    previous.externalId &&
+    hasRecordedSarifProcessingSuccess(previous) &&
+    !hasRecordedSarifProcessingFailure(previous)
+  ) {
+    return {
+      channel: 'sarif',
+      targetKey,
+      action: 'reuse',
+      message: 'would reuse successful SARIF upload',
+      externalId: previous.externalId,
+      ...(previous.externalUrl ? { externalUrl: previous.externalUrl } : {}),
+      metadata: previous.metadata ?? metadata,
+    };
+  }
+  return {
+    channel: 'sarif',
+    targetKey,
+    action: 'create',
+    message: previous?.externalId
+      ? 'would upload replacement SARIF'
+      : 'would upload SARIF',
+    ...(previous?.externalId ? { externalId: previous.externalId } : {}),
+    ...(previous?.externalUrl ? { externalUrl: previous.externalUrl } : {}),
+    metadata,
+  };
 }
 
 function hasSarifProcessingFailure(
@@ -1009,6 +1149,128 @@ async function publishPullRequestComments(
   return published;
 }
 
+async function previewPullRequestComments(
+  context: PublicationPreviewContext
+): Promise<ReviewPublicationPreviewItem[]> {
+  if (!context.target.pullRequestNumber) {
+    return [
+      {
+        channel: 'pullRequestComment',
+        targetKey: `pr-comments:missing-pr:${context.target.commitSha}`,
+        action: 'skip',
+        message: 'review target is not a pull request',
+      },
+    ];
+  }
+  if (context.result.result.findings.length === 0) {
+    return [
+      {
+        channel: 'pullRequestComment',
+        targetKey: `pr-comments:no-findings:${context.target.commitSha}`,
+        action: 'skip',
+        message: 'review has no findings to comment',
+      },
+    ];
+  }
+
+  const planned = planComments(context);
+  const existingComments = await listPullRequestComments(context);
+  const existingByTargetHash = new Map<string, OwnedPullRequestComment[]>();
+  for (const comment of existingComments) {
+    const marker = parseMarker(comment.body);
+    if (
+      marker?.reviewId === context.record.reviewId &&
+      hasStoredCommentOwnership(context, comment, marker)
+    ) {
+      const existing = existingByTargetHash.get(marker.targetHash) ?? [];
+      existing.push({ comment, marker });
+      existingByTargetHash.set(marker.targetHash, existing);
+    }
+  }
+
+  const preview: ReviewPublicationPreviewItem[] = planned.skipped.map(
+    (record) =>
+      previewItemFromRecord(
+        record,
+        'skip',
+        record.message ?? 'finding is not anchored to a changed line'
+      )
+  );
+  const plannedTargetHashes = new Set(
+    planned.comments.map((item) => item.targetHash)
+  );
+  for (const item of planned.comments) {
+    const existing = existingByTargetHash.get(item.targetHash) ?? [];
+    const [canonical, ...duplicates] = existing;
+    preview.push({
+      channel: 'pullRequestComment',
+      targetKey: item.targetKey,
+      action: canonical ? 'update' : 'create',
+      message: canonical
+        ? 'would update pull request comment'
+        : 'would create pull request comment',
+      ...(canonical ? { externalId: String(canonical.comment.id) } : {}),
+      ...(canonical?.comment.html_url
+        ? { externalUrl: canonical.comment.html_url }
+        : {}),
+      marker: item.marker,
+      fingerprint: item.finding.fingerprint,
+      ...(item.finding.priority === undefined
+        ? {}
+        : { priority: item.finding.priority }),
+      path: item.path,
+      line: item.line,
+      bodyPreview: item.body,
+      metadata: {
+        targetHash: item.targetHash,
+        duplicateCount: duplicates.length,
+      },
+    });
+    for (const duplicate of duplicates) {
+      preview.push({
+        channel: 'pullRequestComment',
+        targetKey: `pr-comment:duplicate:${item.targetHash}:${duplicate.comment.id}`,
+        action: 'delete',
+        message: 'would delete duplicate review-agent comment',
+        externalId: String(duplicate.comment.id),
+        ...(duplicate.comment.html_url
+          ? { externalUrl: duplicate.comment.html_url }
+          : {}),
+        ...(duplicate.comment.body
+          ? { marker: duplicate.comment.body.split('\n')[0] }
+          : {}),
+        fingerprint: duplicate.marker.fingerprint,
+        metadata: { targetHash: item.targetHash },
+      });
+    }
+  }
+
+  for (const [targetHash, existing] of existingByTargetHash.entries()) {
+    if (plannedTargetHashes.has(targetHash)) {
+      continue;
+    }
+    for (const comment of existing) {
+      preview.push({
+        channel: 'pullRequestComment',
+        targetKey: `pr-comment:obsolete:${targetHash}:${comment.comment.id}`,
+        action: 'delete',
+        message: 'would delete obsolete review-agent comment',
+        externalId: String(comment.comment.id),
+        ...(comment.comment.html_url
+          ? { externalUrl: comment.comment.html_url }
+          : {}),
+        ...(comment.comment.body
+          ? { marker: comment.comment.body.split('\n')[0] }
+          : {}),
+        fingerprint: comment.marker.fingerprint,
+        metadata: { targetHash },
+      });
+    }
+  }
+
+  return preview;
+}
+
 function responseStatusFor(
   publications: ReviewPublicationRecord[]
 ): ReviewPublishResponse['status'] {
@@ -1034,6 +1296,29 @@ function responseStatusFor(
   return 'published';
 }
 
+async function buildPreview(
+  context: PublicationPreviewContext
+): Promise<ReviewPublishPreviewResponse> {
+  const checkRun = previewCheckRun(context);
+  const sarif = previewSarif(context);
+  const pullRequestComments = await previewPullRequestComments(context);
+  const items = [checkRun, sarif, ...pullRequestComments];
+  return {
+    reviewId: context.record.reviewId,
+    target: context.target,
+    items,
+    existingPublications: context.existingPublications,
+    summary: {
+      checkRunAction: checkRun.action,
+      sarifAction: sarif.action,
+      pullRequestCommentCount: pullRequestComments.filter((item) =>
+        ['create', 'update'].includes(item.action)
+      ).length,
+      blockedCount: items.filter((item) => item.action === 'blocked').length,
+    },
+  };
+}
+
 /**
  * Creates a GitHub publication service for completed review results.
  *
@@ -1055,6 +1340,57 @@ export function createGitHubPublicationService(
   const withPublicationLock = createKeyedAsyncLock();
 
   return {
+    async preview(record) {
+      if (!record.authorization) {
+        throw new GitHubPublicationError(
+          409,
+          'review has no repository authorization to publish'
+        );
+      }
+      if (record.status !== 'completed' || !record.result) {
+        throw new GitHubPublicationError(409, 'review is not ready to publish');
+      }
+      const authorizedRecord = record as PublicationContext['record'];
+      const result = record.result;
+      const repository = authorizedRecord.authorization.repository;
+      let request: GitHubRequestClient | undefined;
+      if (repository.pullRequestNumber) {
+        const installationToken = await options.installationTokenProvider({
+          installationId: repository.installationId,
+          repositoryIds: [repository.repositoryId],
+          permissions: PREVIEW_PERMISSIONS,
+        });
+        request = requestFactory(installationToken.token);
+      }
+      const target = await resolvePublishTarget(
+        authorizedRecord,
+        result,
+        request
+      );
+      const existingPublications = await options.publicationStore.list(
+        record.reviewId
+      );
+      const context: PublicationPreviewContext = {
+        record: authorizedRecord,
+        result,
+        repository,
+        request:
+          request ??
+          (async () => {
+            throw new GitHubPublicationError(
+              502,
+              'non-pull-request preview does not have a GitHub request client'
+            );
+          }),
+        existing: buildExistingMap(existingPublications),
+        existingPublications,
+        target,
+        store: options.publicationStore,
+        nowMs,
+        mutationDelayMs: 0,
+      };
+      return buildPreview(context);
+    },
     async publish(record) {
       if (!record.authorization) {
         throw new GitHubPublicationError(

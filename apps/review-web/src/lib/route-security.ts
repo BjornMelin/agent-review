@@ -8,9 +8,16 @@ function expectedOrigin(request: Request): string | undefined {
   return new URL(request.url).origin;
 }
 
+/**
+ * Validates same-origin Review Room mutation requests and action headers.
+ *
+ * @param request - Incoming mutation request.
+ * @param expectedAction - Route-specific mutation action expected by the handler.
+ * @returns Guard result describing whether the request is accepted or rejected.
+ */
 export function validateReviewRoomMutation(
   request: Request,
-  expectedAction: 'cancel' | 'publish'
+  expectedAction: 'cancel' | 'publish' | 'triage'
 ): MutationGuardResult {
   const origin = request.headers.get('origin');
   const expected = expectedOrigin(request);
@@ -38,6 +45,12 @@ export function validateReviewRoomMutation(
   return { ok: true };
 }
 
+/**
+ * Converts a Review Room authorization result into response headers.
+ *
+ * @param access - Review Room access result from route-level authorization.
+ * @returns Headers needed to complete an authentication challenge, when present.
+ */
 export function reviewRoomAccessHeaders(
   access: ReviewRoomAccessResult
 ): HeadersInit {

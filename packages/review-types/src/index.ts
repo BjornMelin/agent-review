@@ -750,6 +750,155 @@ export const ReviewPublicationRecordSchema = z.strictObject({
 });
 
 /**
+ * Defines reviewer-owned triage states for immutable provider findings.
+ */
+export const ReviewFindingTriageStatusSchema = z.enum([
+  'open',
+  'accepted',
+  'false-positive',
+  'fixed',
+  'published',
+  'dismissed',
+  'ignored',
+]);
+
+const ReviewFindingFingerprintSchema = boundedString(
+  'finding fingerprint',
+  512
+);
+const ReviewFindingTriageNoteSchema = z
+  .string()
+  .max(4096)
+  .refine((value) => noControlCharacters(value, { allowMultiline: true }), {
+    message:
+      'finding triage note must not contain control characters other than tab or newline',
+  });
+
+/**
+ * Validates mutable reviewer state attached to one immutable finding.
+ */
+export const ReviewFindingTriageRecordSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  fingerprint: ReviewFindingFingerprintSchema,
+  status: ReviewFindingTriageStatusSchema,
+  note: ReviewFindingTriageNoteSchema.optional(),
+  actor: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+/**
+ * Validates append-only finding triage audit records.
+ */
+export const ReviewFindingTriageAuditRecordSchema = z.strictObject({
+  auditId: z.string().min(1),
+  reviewId: z.string().min(1),
+  fingerprint: ReviewFindingFingerprintSchema,
+  fromStatus: ReviewFindingTriageStatusSchema.optional(),
+  toStatus: ReviewFindingTriageStatusSchema,
+  note: ReviewFindingTriageNoteSchema.optional(),
+  actor: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+});
+
+/**
+ * Validates triage mutations from Review Room.
+ */
+export const ReviewFindingTriageUpdateRequestSchema = z
+  .strictObject({
+    status: ReviewFindingTriageStatusSchema.optional(),
+    note: ReviewFindingTriageNoteSchema.nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.status === undefined && value.note === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'status or note is required',
+      });
+    }
+  });
+
+/**
+ * Validates triage list responses used by status and Review Room APIs.
+ */
+export const ReviewFindingTriageListResponseSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  items: z.array(ReviewFindingTriageRecordSchema),
+  audit: z.array(ReviewFindingTriageAuditRecordSchema),
+});
+
+/**
+ * Validates one triage mutation response.
+ */
+export const ReviewFindingTriageUpdateResponseSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  record: ReviewFindingTriageRecordSchema,
+  audit: ReviewFindingTriageAuditRecordSchema,
+});
+
+/**
+ * Defines side-effect-free GitHub publication preview actions.
+ */
+export const ReviewPublicationPreviewActionSchema = z.enum([
+  'create',
+  'update',
+  'reuse',
+  'delete',
+  'skip',
+  'unsupported',
+  'blocked',
+]);
+
+/**
+ * Validates one planned or existing GitHub publication effect.
+ */
+export const ReviewPublicationPreviewItemSchema = z.strictObject({
+  channel: ReviewPublicationChannelSchema,
+  targetKey: z.string().min(1),
+  action: ReviewPublicationPreviewActionSchema,
+  message: z.string().min(1),
+  externalId: z.string().min(1).optional(),
+  externalUrl: z.string().min(1).optional(),
+  marker: z.string().min(1).optional(),
+  fingerprint: ReviewFindingFingerprintSchema.optional(),
+  priority: PrioritySchema.optional(),
+  path: z.string().min(1).optional(),
+  line: z.number().int().positive().optional(),
+  bodyPreview: z.string().min(1).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+/**
+ * Validates the GitHub target resolved for publication preview.
+ */
+export const ReviewPublicationPreviewTargetSchema = z.strictObject({
+  owner: GitHubOwnerSchema,
+  repo: GitHubRepositoryNameSchema,
+  repositoryId: GitHubNumericIdSchema,
+  installationId: GitHubNumericIdSchema,
+  commitSha: CommitObjectIdSchema,
+  ref: SafeGitRefSchema.optional(),
+  pullRequestNumber: z.number().int().positive().optional(),
+  pullRequestHeadSha: CommitObjectIdSchema.optional(),
+});
+
+/**
+ * Validates the side-effect-free publish preview response.
+ */
+export const ReviewPublishPreviewResponseSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  target: ReviewPublicationPreviewTargetSchema,
+  items: z.array(ReviewPublicationPreviewItemSchema),
+  existingPublications: z.array(ReviewPublicationRecordSchema),
+  summary: z.strictObject({
+    checkRunAction: ReviewPublicationPreviewActionSchema.optional(),
+    sarifAction: ReviewPublicationPreviewActionSchema.optional(),
+    pullRequestCommentCount: z.number().int().nonnegative(),
+    blockedCount: z.number().int().nonnegative(),
+  }),
+});
+
+/**
  * Summarizes the repository context shown in run lists and operational views.
  */
 export const ReviewRunRepositorySummarySchema = z.strictObject({
@@ -851,6 +1000,8 @@ export const ReviewStatusResponseSchema = z.strictObject({
   result: ReviewResultSchema.optional(),
   summary: ReviewRunSummarySchema.optional(),
   publications: z.array(ReviewPublicationRecordSchema).optional(),
+  triage: z.array(ReviewFindingTriageRecordSchema).optional(),
+  triageAudit: z.array(ReviewFindingTriageAuditRecordSchema).optional(),
   artifacts: z.array(ReviewArtifactMetadataSchema).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -1201,6 +1352,60 @@ export type ReviewPublicationStatus = z.infer<
  */
 export type ReviewPublicationRecord = z.infer<
   typeof ReviewPublicationRecordSchema
+>;
+/**
+ * Reviewer-owned triage state for one finding.
+ */
+export type ReviewFindingTriageStatus = z.infer<
+  typeof ReviewFindingTriageStatusSchema
+>;
+/**
+ * Mutable reviewer state attached to one immutable finding.
+ */
+export type ReviewFindingTriageRecord = z.infer<
+  typeof ReviewFindingTriageRecordSchema
+>;
+/**
+ * Append-only audit event for finding triage state changes.
+ */
+export type ReviewFindingTriageAuditRecord = z.infer<
+  typeof ReviewFindingTriageAuditRecordSchema
+>;
+/**
+ * Request body accepted by the finding triage mutation endpoint.
+ */
+export type ReviewFindingTriageUpdateRequest = z.infer<
+  typeof ReviewFindingTriageUpdateRequestSchema
+>;
+/**
+ * Response returned by the finding triage list endpoint.
+ */
+export type ReviewFindingTriageListResponse = z.infer<
+  typeof ReviewFindingTriageListResponseSchema
+>;
+/**
+ * Response returned by the finding triage mutation endpoint.
+ */
+export type ReviewFindingTriageUpdateResponse = z.infer<
+  typeof ReviewFindingTriageUpdateResponseSchema
+>;
+/**
+ * Side-effect-free GitHub publication preview action.
+ */
+export type ReviewPublicationPreviewAction = z.infer<
+  typeof ReviewPublicationPreviewActionSchema
+>;
+/**
+ * One planned or existing GitHub publication effect.
+ */
+export type ReviewPublicationPreviewItem = z.infer<
+  typeof ReviewPublicationPreviewItemSchema
+>;
+/**
+ * Response returned by the publish preview endpoint.
+ */
+export type ReviewPublishPreviewResponse = z.infer<
+  typeof ReviewPublishPreviewResponseSchema
 >;
 /**
  * Repository context shown in run lists and operational views.
@@ -1815,6 +2020,16 @@ export type JsonSchemaSet = {
   reviewStatusResponse: unknown;
   reviewCancelResponse: unknown;
   reviewPublicationRecord: unknown;
+  reviewFindingTriageStatus: unknown;
+  reviewFindingTriageRecord: unknown;
+  reviewFindingTriageAuditRecord: unknown;
+  reviewFindingTriageUpdateRequest: unknown;
+  reviewFindingTriageListResponse: unknown;
+  reviewFindingTriageUpdateResponse: unknown;
+  reviewPublicationPreviewAction: unknown;
+  reviewPublicationPreviewItem: unknown;
+  reviewPublicationPreviewTarget: unknown;
+  reviewPublishPreviewResponse: unknown;
   reviewRunRepositorySummary: unknown;
   reviewRunRequestSummary: unknown;
   reviewRunSummary: unknown;
@@ -1888,7 +2103,8 @@ function addRepositoryTargetExclusivity(schema: unknown): unknown {
   const properties = schema.properties;
   if (
     isJsonSchemaObject(properties) &&
-    REPOSITORY_TARGET_FIELDS.every((field) => field in properties)
+    REPOSITORY_TARGET_FIELDS.every((field) => field in properties) &&
+    !('repo' in properties)
   ) {
     schema.not = {
       anyOf: [
@@ -1937,6 +2153,36 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     reviewStatusResponse: toDraft7JsonSchema(ReviewStatusResponseSchema),
     reviewCancelResponse: toDraft7JsonSchema(ReviewCancelResponseSchema),
     reviewPublicationRecord: toDraft7JsonSchema(ReviewPublicationRecordSchema),
+    reviewFindingTriageStatus: toDraft7JsonSchema(
+      ReviewFindingTriageStatusSchema
+    ),
+    reviewFindingTriageRecord: toDraft7JsonSchema(
+      ReviewFindingTriageRecordSchema
+    ),
+    reviewFindingTriageAuditRecord: toDraft7JsonSchema(
+      ReviewFindingTriageAuditRecordSchema
+    ),
+    reviewFindingTriageUpdateRequest: toDraft7JsonSchema(
+      ReviewFindingTriageUpdateRequestSchema
+    ),
+    reviewFindingTriageListResponse: toDraft7JsonSchema(
+      ReviewFindingTriageListResponseSchema
+    ),
+    reviewFindingTriageUpdateResponse: toDraft7JsonSchema(
+      ReviewFindingTriageUpdateResponseSchema
+    ),
+    reviewPublicationPreviewAction: toDraft7JsonSchema(
+      ReviewPublicationPreviewActionSchema
+    ),
+    reviewPublicationPreviewItem: toDraft7JsonSchema(
+      ReviewPublicationPreviewItemSchema
+    ),
+    reviewPublicationPreviewTarget: toDraft7JsonSchema(
+      ReviewPublicationPreviewTargetSchema
+    ),
+    reviewPublishPreviewResponse: toDraft7JsonSchema(
+      ReviewPublishPreviewResponseSchema
+    ),
     reviewRunRepositorySummary: toDraft7JsonSchema(
       ReviewRunRepositorySummarySchema
     ),

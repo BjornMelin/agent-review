@@ -20,7 +20,17 @@ schemas:
   - reviewEventCursor -> review-event-cursor.schema.json
   - reviewEventStoreRecord -> review-event-store-record.schema.json
   - reviewFinding -> review-finding.schema.json
+  - reviewFindingTriageAuditRecord -> review-finding-triage-audit-record.schema.json
+  - reviewFindingTriageListResponse -> review-finding-triage-list-response.schema.json
+  - reviewFindingTriageRecord -> review-finding-triage-record.schema.json
+  - reviewFindingTriageStatus -> review-finding-triage-status.schema.json
+  - reviewFindingTriageUpdateRequest -> review-finding-triage-update-request.schema.json
+  - reviewFindingTriageUpdateResponse -> review-finding-triage-update-response.schema.json
+  - reviewPublicationPreviewAction -> review-publication-preview-action.schema.json
+  - reviewPublicationPreviewItem -> review-publication-preview-item.schema.json
+  - reviewPublicationPreviewTarget -> review-publication-preview-target.schema.json
   - reviewPublicationRecord -> review-publication-record.schema.json
+  - reviewPublishPreviewResponse -> review-publish-preview-response.schema.json
   - reviewPublishResponse -> review-publish-response.schema.json
   - reviewRepositorySelection -> review-repository-selection.schema.json
   - reviewRequest -> review-request.schema.json

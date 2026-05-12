@@ -29,6 +29,13 @@
       "when": 1778500003000,
       "tag": "0003_github_publications",
       "breakpoints": false
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778500004000,
+      "tag": "0004_finding_triage",
+      "breakpoints": false
     }
   ]
 }

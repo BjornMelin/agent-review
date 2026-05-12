@@ -56,8 +56,48 @@
       "file": "review-finding.schema.json"
     },
     {
+      "name": "reviewFindingTriageAuditRecord",
+      "file": "review-finding-triage-audit-record.schema.json"
+    },
+    {
+      "name": "reviewFindingTriageListResponse",
+      "file": "review-finding-triage-list-response.schema.json"
+    },
+    {
+      "name": "reviewFindingTriageRecord",
+      "file": "review-finding-triage-record.schema.json"
+    },
+    {
+      "name": "reviewFindingTriageStatus",
+      "file": "review-finding-triage-status.schema.json"
+    },
+    {
+      "name": "reviewFindingTriageUpdateRequest",
+      "file": "review-finding-triage-update-request.schema.json"
+    },
+    {
+      "name": "reviewFindingTriageUpdateResponse",
+      "file": "review-finding-triage-update-response.schema.json"
+    },
+    {
+      "name": "reviewPublicationPreviewAction",
+      "file": "review-publication-preview-action.schema.json"
+    },
+    {
+      "name": "reviewPublicationPreviewItem",
+      "file": "review-publication-preview-item.schema.json"
+    },
+    {
+      "name": "reviewPublicationPreviewTarget",
+      "file": "review-publication-preview-target.schema.json"
+    },
+    {
       "name": "reviewPublicationRecord",
       "file": "review-publication-record.schema.json"
+    },
+    {
+      "name": "reviewPublishPreviewResponse",
+      "file": "review-publish-preview-response.schema.json"
     },
     {
       "name": "reviewPublishResponse",

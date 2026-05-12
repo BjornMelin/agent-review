@@ -6,8 +6,8 @@ hosted-service client, not a second review engine.
 ## Runtime Shape
 
 - Server Components load run lists and run detail data from the review service.
-- Next.js route handlers proxy artifact downloads, lifecycle SSE, cancel, and
-  publish requests.
+- Next.js route handlers proxy artifact downloads, lifecycle SSE, finding
+  triage writes, publication previews, cancel, and publish requests.
 - The bearer token is read only on the server from environment variables and
   must never use a `NEXT_PUBLIC_*` name.
 - Browser-rendered findings and metadata rely on React escaping. Provider
@@ -34,8 +34,9 @@ schemes, and plaintext remote HTTP before a service token is attached. HTTP is
 allowed only for localhost and loopback development origins.
 
 The service token should carry the smallest scope set needed by the deployment:
-`review:read` for read-only dashboards, plus `review:cancel` and
-`review:publish` only when the deployment exposes those controls.
+`review:read` for read-only dashboards, plus `review:cancel` for cancellation
+and `review:publish` for finding triage, publication previews, and publish
+controls.
 
 ## Local Development
 

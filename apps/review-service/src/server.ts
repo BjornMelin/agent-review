@@ -12,9 +12,11 @@ import {
 import { createGitHubPublicationService } from './github-publication.js';
 import {
   createReviewAuthStoreFromEnv,
+  createReviewFindingTriageStoreFromEnv,
   createReviewPublicationStoreFromEnv,
   createReviewStoreFromEnv,
   type ReviewAuthStoreAdapter,
+  type ReviewFindingTriageStoreAdapter,
   type ReviewPublicationStoreAdapter,
 } from './storage/index.js';
 
@@ -81,17 +83,25 @@ function createAuthDependencies(): {
 
 function createPublicationDependencies(): {
   publicationStore: ReviewPublicationStoreAdapter;
+  findingTriageStore: ReviewFindingTriageStoreAdapter;
   publicationService?: ReturnType<typeof createGitHubPublicationService>;
 } {
   const publicationStore = createReviewPublicationStoreFromEnv(process.env, {
     allowInMemoryFallback: process.env.NODE_ENV !== 'production',
   });
+  const findingTriageStore = createReviewFindingTriageStoreFromEnv(
+    process.env,
+    {
+      allowInMemoryFallback: process.env.NODE_ENV !== 'production',
+    }
+  );
   const appId = process.env.GITHUB_APP_ID;
   const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !privateKey) {
-    return { publicationStore };
+    return { findingTriageStore, publicationStore };
   }
   return {
+    findingTriageStore,
     publicationStore,
     publicationService: createGitHubPublicationService({
       publicationStore,

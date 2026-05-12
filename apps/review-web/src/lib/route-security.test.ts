@@ -53,6 +53,21 @@ describe('validateReviewRoomMutation', () => {
     });
   });
 
+  it('accepts triage mutation requests with the triage action header', () => {
+    expect(
+      validateReviewRoomMutation(
+        request(
+          {
+            origin: 'http://localhost:3000',
+            'x-review-room-action': 'triage',
+          },
+          'http://localhost:3000/api/review/review_1/findings/finding-1/triage'
+        ),
+        'triage'
+      )
+    ).toEqual({ ok: true });
+  });
+
   it('rejects forwarded-host spoofing for mutation requests', () => {
     expect(
       validateReviewRoomMutation(

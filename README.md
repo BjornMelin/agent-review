@@ -13,7 +13,7 @@ The platform reviews code changes from git context and produces structured findi
 - GitHub publication path for Checks, SARIF upload, and idempotent PR comments
 - Detached worker path with Workflow API orchestration and durable service state
 - Review Room web app for hosted run history, live status, findings, artifacts,
-  and publish/cancel controls
+  finding triage, publish preview/evidence, and publish/cancel controls
 - Provider registry for Codex delegate and OpenAI-compatible model policy
 - Durable service storage with Drizzle/Postgres when a database URL is configured
 - Detached remote sandbox policy runner with Vercel Sandbox audit metadata
@@ -132,9 +132,9 @@ export REVIEW_WEB_SERVICE_TOKEN=rat_<tokenId>_<secret>
 pnpm --filter @review-agent/review-web dev
 ```
 
-The web app reads `GET /v1/review`, status, artifact, event, publish, and cancel
-service endpoints through server-side data loading and token-safe route
-handlers. Deployment notes are in
+The web app reads `GET /v1/review`, status, artifact, event, finding triage,
+publish preview, publish, and cancel service endpoints through server-side data
+loading and token-safe route handlers. Deployment notes are in
 [docs/deployment/review-web.md](docs/deployment/review-web.md).
 
 ## Environment Variables

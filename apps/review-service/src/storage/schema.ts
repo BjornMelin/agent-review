@@ -3,6 +3,8 @@ import type {
   OutputFormat,
   ReviewAuthPrincipal,
   ReviewAuthScope,
+  ReviewFindingTriageAuditRecord,
+  ReviewFindingTriageStatus,
   ReviewPublicationChannel,
   ReviewPublicationRecord,
   ReviewPublicationStatus,
@@ -53,6 +55,20 @@ export const reviewPublicationStatusEnum = pgEnum('review_publication_status', [
   'unsupported',
   'failed',
 ]);
+
+/** Defines reviewer-owned triage state for one immutable finding. */
+export const reviewFindingTriageStatusEnum = pgEnum(
+  'review_finding_triage_status',
+  [
+    'open',
+    'accepted',
+    'false-positive',
+    'fixed',
+    'published',
+    'dismissed',
+    'ignored',
+  ]
+);
 
 /** Stores canonical review run records, retention markers, and event cursors. */
 export const reviewRuns = pgTable(
@@ -266,6 +282,75 @@ export const reviewPublications = pgTable(
   ]
 );
 
+/** Stores mutable reviewer-owned state keyed by run and finding fingerprint. */
+export const reviewFindingTriage = pgTable(
+  'review_finding_triage',
+  {
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => reviewRuns.reviewId, { onDelete: 'cascade' }),
+    fingerprint: text('fingerprint').notNull(),
+    status: reviewFindingTriageStatusEnum('status')
+      .$type<ReviewFindingTriageStatus>()
+      .notNull(),
+    note: text('note'),
+    actor: text('actor'),
+    createdAt: timestamp('created_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    updatedAt: timestamp('updated_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.reviewId, table.fingerprint],
+      name: 'review_finding_triage_review_fingerprint_pk',
+    }),
+    index('review_finding_triage_review_status_idx').on(
+      table.reviewId,
+      table.status
+    ),
+  ]
+);
+
+/** Stores append-only finding triage audit events. */
+export const reviewFindingTriageAudit = pgTable(
+  'review_finding_triage_audit',
+  {
+    auditId: text('audit_id').primaryKey(),
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => reviewRuns.reviewId, { onDelete: 'cascade' }),
+    fingerprint: text('fingerprint').notNull(),
+    fromStatus:
+      reviewFindingTriageStatusEnum('from_status').$type<
+        ReviewFindingTriageAuditRecord['fromStatus']
+      >(),
+    toStatus: reviewFindingTriageStatusEnum('to_status')
+      .$type<ReviewFindingTriageStatus>()
+      .notNull(),
+    note: text('note'),
+    actor: text('actor'),
+    createdAt: timestamp('created_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    index('review_finding_triage_audit_review_created_at_idx').on(
+      table.reviewId,
+      table.createdAt
+    ),
+    index('review_finding_triage_audit_fingerprint_idx').on(
+      table.reviewId,
+      table.fingerprint
+    ),
+  ]
+);
+
 /** Stores GitHub user identities that have authorized the service. */
 export const githubUsers = pgTable('github_users', {
   githubUserId: text('github_user_id').primaryKey(),
@@ -443,6 +528,8 @@ export const reviewRunRelations = relations(reviewRuns, ({ many }) => ({
   events: many(reviewEvents),
   publications: many(reviewPublications),
   statusTransitions: many(reviewStatusTransitions),
+  findingTriage: many(reviewFindingTriage),
+  findingTriageAudit: many(reviewFindingTriageAudit),
 }));
 
 /** Declares lifecycle-event-to-run relations for Drizzle relational queries. */
@@ -481,6 +568,28 @@ export const reviewPublicationRelations = relations(
   ({ one }) => ({
     run: one(reviewRuns, {
       fields: [reviewPublications.reviewId],
+      references: [reviewRuns.reviewId],
+    }),
+  })
+);
+
+/** Declares finding-triage-to-run relations for Drizzle relational queries. */
+export const reviewFindingTriageRelations = relations(
+  reviewFindingTriage,
+  ({ one }) => ({
+    run: one(reviewRuns, {
+      fields: [reviewFindingTriage.reviewId],
+      references: [reviewRuns.reviewId],
+    }),
+  })
+);
+
+/** Declares finding-triage-audit-to-run relations for Drizzle relational queries. */
+export const reviewFindingTriageAuditRelations = relations(
+  reviewFindingTriageAudit,
+  ({ one }) => ({
+    run: one(reviewRuns, {
+      fields: [reviewFindingTriageAudit.reviewId],
       references: [reviewRuns.reviewId],
     }),
   })
