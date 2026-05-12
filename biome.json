@@ -4,6 +4,8 @@
     "includes": [
       "**",
       "!**/dist",
+      "!**/.next",
+      "!**/next-env.d.ts",
       "!**/.turbo",
       "!**/coverage",
       "!target",
