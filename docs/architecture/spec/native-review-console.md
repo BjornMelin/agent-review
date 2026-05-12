@@ -19,7 +19,9 @@ scriptable TypeScript CLI.
 - No interactive TUI behavior unless stdin, stdout, and stderr are TTYs.
 - No default interactive TUI behavior in CI, even when CI allocates a
   pseudo-TTY.
-- No Tauri or desktop packaging work under this decision.
+- No Tauri or desktop packaging work under this decision. Desktop work is
+  separately deferred by
+  [ADR-0008](../adr/0008-tauri-desktop-expansion-gate.md).
 
 ## Runtime Boundary
 
@@ -252,3 +254,8 @@ The first implementation PR may merge only when it proves that the TUI deletes
 operator friction without adding a second authority. Any request to collect
 local diffs, run providers, publish directly to GitHub, or store privileged
 tokens locally must return to ADR review before code lands.
+
+Ratatui evidence also gates any later Tauri work. If the web app, TypeScript
+CLI, and native terminal console cover the same workflows, desktop packaging
+should remain unbuilt rather than adding updater, signing, IPC, and platform
+support obligations.

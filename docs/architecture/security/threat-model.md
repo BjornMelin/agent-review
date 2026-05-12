@@ -556,8 +556,13 @@ Future issues must preserve these gates:
   hosted-service client that uses generated contracts, scoped tokens, and
   server-side authorization; it must not embed a second local review engine or
   bypass hosted publish/cancel controls.
-- #34 Tauri/desktop ADR must not bypass hosted authz, token storage, or IPC
-  capability restrictions if desktop distribution is later approved.
+- #34 Tauri/desktop is deferred by
+  [ADR-0008](../adr/0008-tauri-desktop-expansion-gate.md). If desktop
+  distribution is later approved, it must remain a hosted-service client,
+  preserve generated contracts and server-side authorization, keep bearer tokens
+  out of frontend JavaScript and plaintext config, use least-privilege Tauri
+  capabilities, avoid arbitrary shell/filesystem/sidecar access by default, and
+  ship only with signed updater and platform distribution controls.
 - #35 launch signoff must dogfood authentication, authorization, redaction,
   rate limits, sandbox policy, provider budget policy, metadata mirrors, GitHub
   publishing, web rendering, accessibility, artifact handling, and deployment
@@ -571,7 +576,8 @@ Future issues must preserve these gates:
   implementation in Review Room.
 - No review authoring UI beyond existing CLI/API start and submit paths.
 - No implemented native desktop, TUI, or Tauri product surface in the current
-  hosted launch. Ratatui and Tauri work remains design-gated expansion work.
+  hosted launch. Ratatui remains design-gated expansion work, and Tauri desktop
+  remains deferred unless a future approval issue satisfies ADR-0008.
 - No change to local-trusted CLI behavior.
 
 ## Open Assumptions for Later Issues

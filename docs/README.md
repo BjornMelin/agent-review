@@ -47,6 +47,7 @@ This directory contains canonical product and architecture documentation for the
 - [ADR-0005 Durable Review Storage](./architecture/adr/0005-durable-review-storage.md)
 - [ADR-0006 Durable Workflow Detached Execution](./architecture/adr/0006-durable-workflow-detached-execution.md)
 - [ADR-0007 Ratatui Review Console Expansion Gate](./architecture/adr/0007-ratatui-review-console.md)
+- [ADR-0008 Tauri Desktop Expansion Gate](./architecture/adr/0008-tauri-desktop-expansion-gate.md)
 
 ## Source of Truth
 

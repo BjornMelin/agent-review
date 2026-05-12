@@ -14,6 +14,10 @@ pass parity, benchmark, and generated-contract gates.
 ADR-0007 accepts a future Ratatui Review Console only as a hosted-service client
 over generated contracts; it is not a runtime, provider, GitHub publisher, or
 replacement for the TypeScript CLI.
+ADR-0008 defers Tauri desktop work by default. A desktop app may be approved
+only after web, CLI, and Ratatui evidence proves desktop-only value and after
+capability, IPC, token-storage, updater, signing, distribution, and support
+policy are accepted in a new implementation issue.
 
 ### Applications
 
@@ -66,9 +70,11 @@ replacement for the TypeScript CLI.
   as structured command events rather than dropping command output.
 
 Future native client work is documented in
-[Native Review Console](./native-review-console.md). It must consume the
+[Native Review Console](./native-review-console.md) and
+[ADR-0008](../adr/0008-tauri-desktop-expansion-gate.md). It must consume the
 service list/status/events/artifacts/triage/publish/cancel APIs and cannot
-collect diffs or execute providers locally.
+collect diffs or execute providers locally. Tauri, if later approved, is a
+desktop hosted-service client and not a second control plane.
 
 ## Core Data Flow
 
