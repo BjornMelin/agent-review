@@ -1,6 +1,7 @@
 import { createGateway, type GatewayProviderOptions } from '@ai-sdk/gateway';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import {
+  type ProviderAttemptTelemetry,
   type ProviderDiagnostic,
   type ProviderFailureClass,
   type ProviderPolicyTelemetry,
@@ -15,6 +16,9 @@ import {
 } from '@review-agent/review-types';
 import { generateText, Output } from 'ai';
 
+/**
+ * Configures the OpenAI-compatible provider registry for route factories, model policies, and defaults.
+ */
 export type OpenAICompatibleProviderOptions = {
   defaultModelId?: string;
   capabilities: ReviewProviderCapabilities;
@@ -79,6 +83,36 @@ type ParsedModelPolicy = {
   routedModelId: string;
   policy: OpenAICompatibleModelPolicy;
 };
+type ProviderFallbackErrorOptions = {
+  providerAttempts: readonly ProviderAttemptTelemetry[];
+  lastFailureClass: ProviderFailureClass;
+};
+
+function cloneProviderAttemptTelemetry(
+  attempt: ProviderAttemptTelemetry
+): ProviderAttemptTelemetry {
+  return {
+    ...attempt,
+    ...(attempt.usage ? { usage: { ...attempt.usage } } : {}),
+  };
+}
+
+/**
+ * Preserves sanitized provider-attempt telemetry when every routed attempt fails.
+ */
+export class ProviderFallbackError extends Error {
+  readonly providerAttempts: ProviderAttemptTelemetry[];
+  readonly lastFailureClass: ProviderFailureClass;
+
+  constructor(message: string, options: ProviderFallbackErrorOptions) {
+    super(message);
+    this.name = 'ProviderFallbackError';
+    this.providerAttempts = options.providerAttempts.map(
+      cloneProviderAttemptTelemetry
+    );
+    this.lastFailureClass = options.lastFailureClass;
+  }
+}
 
 function buildReviewInput(input: ReviewProviderRunInput): string {
   const chunks = input.normalizedDiffChunks
@@ -262,9 +296,10 @@ function extractProviderUsage(result: unknown): ProviderUsage {
 }
 
 function buildGatewayProviderOptions(
+  route: ResolvedRouteConfig,
   policy: OpenAICompatibleModelPolicy
 ): { gateway: GatewayProviderOptions } | undefined {
-  if (policy.route !== 'gateway') {
+  if (route.kind !== 'gateway') {
     return undefined;
   }
   const gateway: GatewayProviderOptions = {
@@ -498,11 +533,6 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
     }
     const prompt = buildReviewInput(input);
     const renderedInputChars = prompt.length + input.rubric.length;
-    if (renderedInputChars > parsed.policy.maxInputChars) {
-      throw new Error(
-        `provider input budget exceeded for ${parsed.routedModelId}; rendered input has ${renderedInputChars} characters and policy allows ${parsed.policy.maxInputChars}.`
-      );
-    }
 
     const fallbackModels = parsed.policy.fallbackModelIds.slice(
       0,
@@ -523,10 +553,23 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
       return fallback;
     });
     const attempts = [parsed, ...fallbacks];
-    const providerAttempts: ProviderPolicyTelemetry['attempts'] = [];
+    const providerAttempts: ProviderAttemptTelemetry[] = [];
     let lastFailureClass: ProviderFailureClass = 'unknown';
 
     for (const attempt of attempts) {
+      if (renderedInputChars > attempt.policy.maxInputChars) {
+        lastFailureClass = 'budget';
+        providerAttempts.push({
+          route: attempt.route.id,
+          model: attempt.routedModelId,
+          status: 'failed',
+          latencyMs: 0,
+          failureClass: 'budget',
+          errorCode: 'input_budget_exceeded',
+          retryable: false,
+        });
+        continue;
+      }
       const provider = this.factories.get(attempt.route.id);
       if (!provider || !attempt.route.apiKey) {
         const failureClass: ProviderFailureClass = attempt.route.apiKey
@@ -549,7 +592,10 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
 
       const startedAt = performance.now();
       try {
-        const providerOptions = buildGatewayProviderOptions(attempt.policy);
+        const providerOptions = buildGatewayProviderOptions(
+          attempt.route,
+          attempt.policy
+        );
         const result = await generateText({
           model: provider(attempt.modelId),
           system: input.rubric,
@@ -595,9 +641,9 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
           ...(finalProvider ? { finalProvider } : {}),
           fallbackOrder: fallbackModels,
           fallbackUsed: attempt.routedModelId !== parsed.routedModelId,
-          maxInputChars: parsed.policy.maxInputChars,
-          maxOutputTokens: parsed.policy.maxOutputTokens,
-          timeoutMs: parsed.policy.timeoutMs,
+          maxInputChars: attempt.policy.maxInputChars,
+          maxOutputTokens: attempt.policy.maxOutputTokens,
+          timeoutMs: attempt.policy.timeoutMs,
           maxAttempts: parsed.policy.maxAttempts,
           retention: attempt.policy.retention,
           zdrRequired: attempt.policy.zdrRequired,
@@ -639,8 +685,9 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
       }
     }
 
-    throw new Error(
-      `openaiCompatible provider failed with failure class ${lastFailureClass}; no policy fallback succeeded.`
+    throw new ProviderFallbackError(
+      `openaiCompatible provider failed with failure class ${lastFailureClass}; no policy fallback succeeded.`,
+      { providerAttempts, lastFailureClass }
     );
   }
 }

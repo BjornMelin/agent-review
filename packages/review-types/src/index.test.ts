@@ -412,6 +412,12 @@ describe('review-types schemas', () => {
       'sk-abcdefghijklmnopqrstuvwxyz123456'
     );
     expect(redactedTelemetry?.usage.costUsd).toBe(0.001);
+    expect(() =>
+      ProviderPolicyTelemetrySchema.parse({
+        ...providerTelemetry,
+        attempts: [],
+      })
+    ).toThrow();
   });
 
   it('validates hosted repository authorization metadata', () => {

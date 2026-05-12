@@ -643,7 +643,7 @@ export const ProviderPolicyTelemetrySchema = z.strictObject({
   disallowPromptTraining: z.boolean(),
   failureClass: ProviderFailureClassSchema,
   totalLatencyMs: z.number().int().nonnegative(),
-  attempts: z.array(ProviderAttemptTelemetrySchema),
+  attempts: z.array(ProviderAttemptTelemetrySchema).min(1),
   usage: ProviderUsageSchema,
 });
 

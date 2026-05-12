@@ -31,6 +31,7 @@ import {
   type OpenAICompatibleProviderOptions,
   OpenAICompatibleReviewProvider,
   type OpenAICompatibleRouteConfig,
+  ProviderFallbackError,
 } from './index.js';
 
 const RAW_OUTPUT = {
@@ -230,6 +231,64 @@ describe('openai-compatible provider contract', () => {
     });
   });
 
+  it('applies gateway provider options for custom gateway route ids', async () => {
+    generateTextMock.mockResolvedValue({
+      output: RAW_OUTPUT,
+      usage: { totalTokens: 1 },
+      providerMetadata: {},
+    });
+    const provider = makeProvider({
+      defaultModelId: 'review-gateway:openai/gpt-5',
+      modelPolicies: [
+        makePolicy('review-gateway:openai/gpt-5', {
+          disallowPromptTraining: true,
+          zdrRequired: true,
+          gateway: {
+            only: ['openai'],
+            providerTimeouts: { byok: { openai: 1_000 } },
+          },
+        }),
+      ],
+      routes: [
+        {
+          id: 'review-gateway',
+          kind: 'gateway',
+          displayName: 'Review Gateway',
+          apiKeyEnv: 'AI_GATEWAY_API_KEY',
+          apiKey: 'test-gateway-key',
+        },
+      ],
+    });
+
+    await provider.run({
+      request: {
+        cwd: process.cwd(),
+        target: { type: 'uncommittedChanges' },
+        provider: 'openaiCompatible',
+        executionMode: 'localTrusted',
+        outputFormats: ['json'],
+      },
+      resolvedPrompt: 'prompt',
+      rubric: 'rubric',
+      normalizedDiffChunks: [
+        { file: 'file.ts', patch: 'diff --git a/file.ts b/file.ts' },
+      ],
+    });
+
+    expect(generateTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerOptions: expect.objectContaining({
+          gateway: expect.objectContaining({
+            disallowPromptTraining: true,
+            zeroDataRetention: true,
+            only: ['openai'],
+            providerTimeouts: { byok: { openai: 1_000 } },
+          }),
+        }),
+      })
+    );
+  });
+
   it('diagnoses invalid model format in validateRequest', () => {
     const provider = makeProvider({
       gatewayApiKey: 'test-gateway-key',
@@ -406,25 +465,37 @@ describe('openai-compatible provider contract', () => {
       defaultModelId: 'gateway:openai/gpt-5',
     });
 
-    await expect(
-      provider.run({
-        request: {
-          cwd: process.cwd(),
-          target: { type: 'uncommittedChanges' },
-          provider: 'openaiCompatible',
-          executionMode: 'localTrusted',
-          outputFormats: ['json'],
+    const run = provider.run({
+      request: {
+        cwd: process.cwd(),
+        target: { type: 'uncommittedChanges' },
+        provider: 'openaiCompatible',
+        executionMode: 'localTrusted',
+        outputFormats: ['json'],
+      },
+      resolvedPrompt: 'prompt',
+      rubric: 'rubric',
+      normalizedDiffChunks: [
+        {
+          file: 'file.ts',
+          patch: 'diff --git a/file.ts b/file.ts\n'.repeat(10),
         },
-        resolvedPrompt: 'prompt',
-        rubric: 'rubric',
-        normalizedDiffChunks: [
-          {
-            file: 'file.ts',
-            patch: 'diff --git a/file.ts b/file.ts\n'.repeat(10),
-          },
-        ],
-      })
-    ).rejects.toThrow(/input budget exceeded/);
+      ],
+    });
+
+    await expect(run).rejects.toBeInstanceOf(ProviderFallbackError);
+    await expect(run).rejects.toMatchObject({
+      lastFailureClass: 'budget',
+      providerAttempts: [
+        expect.objectContaining({
+          model: 'gateway:openai/gpt-5',
+          status: 'failed',
+          failureClass: 'budget',
+          errorCode: 'input_budget_exceeded',
+          retryable: false,
+        }),
+      ],
+    });
     expect(generateTextMock).not.toHaveBeenCalled();
   });
 
@@ -439,22 +510,33 @@ describe('openai-compatible provider contract', () => {
       defaultModelId: 'gateway:openai/gpt-5',
     });
 
-    await expect(
-      provider.run({
-        request: {
-          cwd: process.cwd(),
-          target: { type: 'uncommittedChanges' },
-          provider: 'openaiCompatible',
-          executionMode: 'localTrusted',
-          outputFormats: ['json'],
-        },
-        resolvedPrompt: 'prompt',
-        rubric: 'rubric '.repeat(20),
-        normalizedDiffChunks: [
-          { file: 'file.ts', patch: 'diff --git a/file.ts b/file.ts' },
-        ],
-      })
-    ).rejects.toThrow(/rendered input has/);
+    const run = provider.run({
+      request: {
+        cwd: process.cwd(),
+        target: { type: 'uncommittedChanges' },
+        provider: 'openaiCompatible',
+        executionMode: 'localTrusted',
+        outputFormats: ['json'],
+      },
+      resolvedPrompt: 'prompt',
+      rubric: 'rubric '.repeat(20),
+      normalizedDiffChunks: [
+        { file: 'file.ts', patch: 'diff --git a/file.ts b/file.ts' },
+      ],
+    });
+
+    await expect(run).rejects.toBeInstanceOf(ProviderFallbackError);
+    await expect(run).rejects.toMatchObject({
+      lastFailureClass: 'budget',
+      providerAttempts: [
+        expect.objectContaining({
+          model: 'gateway:openai/gpt-5',
+          status: 'failed',
+          failureClass: 'budget',
+          errorCode: 'input_budget_exceeded',
+        }),
+      ],
+    });
     expect(generateTextMock).not.toHaveBeenCalled();
   });
 
@@ -486,6 +568,17 @@ describe('openai-compatible provider contract', () => {
     const provider = makeProvider({
       gatewayApiKey: 'test-gateway-key',
       defaultModelId: 'gateway:openai/gpt-5',
+      modelPolicies: [
+        makePolicy('gateway:openai/gpt-5', {
+          fallbackModelIds: ['gateway:anthropic/claude-sonnet-4-5'],
+          maxAttempts: 2,
+        }),
+        makePolicy('gateway:anthropic/claude-sonnet-4-5', {
+          maxInputChars: 80_000,
+          maxOutputTokens: 2048,
+          timeoutMs: 30_000,
+        }),
+      ],
     });
 
     const result = await provider.run({
@@ -509,6 +602,10 @@ describe('openai-compatible provider contract', () => {
       resolvedModel: 'gateway:anthropic/claude-sonnet-4-5',
       fallbackUsed: true,
       finalProvider: 'anthropic',
+      maxInputChars: 80_000,
+      maxOutputTokens: 2048,
+      timeoutMs: 30_000,
+      maxAttempts: 2,
       attempts: [
         {
           model: 'gateway:openai/gpt-5',
@@ -523,6 +620,66 @@ describe('openai-compatible provider contract', () => {
         },
       ],
     });
+  });
+
+  it('skips fallback attempts that exceed their own input budget', async () => {
+    generateTextMock.mockRejectedValueOnce(
+      Object.assign(new Error('upstream unavailable'), {
+        name: 'APICallError',
+        statusCode: 503,
+        isRetryable: true,
+      })
+    );
+    const provider = makeProvider({
+      gatewayApiKey: 'test-gateway-key',
+      defaultModelId: 'gateway:openai/gpt-5',
+      modelPolicies: [
+        makePolicy('gateway:openai/gpt-5', {
+          fallbackModelIds: ['gateway:anthropic/claude-sonnet-4-5'],
+          maxAttempts: 2,
+          maxInputChars: 120_000,
+        }),
+        makePolicy('gateway:anthropic/claude-sonnet-4-5', {
+          maxInputChars: 40,
+        }),
+      ],
+    });
+
+    const run = provider.run({
+      request: {
+        cwd: process.cwd(),
+        target: { type: 'uncommittedChanges' },
+        provider: 'openaiCompatible',
+        executionMode: 'localTrusted',
+        outputFormats: ['json'],
+      },
+      resolvedPrompt: 'prompt',
+      rubric: 'rubric',
+      normalizedDiffChunks: [
+        { file: 'file.ts', patch: 'diff --git a/file.ts b/file.ts' },
+      ],
+    });
+
+    await expect(run).rejects.toBeInstanceOf(ProviderFallbackError);
+    await expect(run).rejects.toMatchObject({
+      lastFailureClass: 'budget',
+      providerAttempts: [
+        expect.objectContaining({
+          model: 'gateway:openai/gpt-5',
+          status: 'failed',
+          failureClass: 'provider_unavailable',
+          retryable: true,
+        }),
+        expect.objectContaining({
+          model: 'gateway:anthropic/claude-sonnet-4-5',
+          status: 'failed',
+          failureClass: 'budget',
+          errorCode: 'input_budget_exceeded',
+          retryable: false,
+        }),
+      ],
+    });
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
   });
 
   it('classifies policy timeouts as fallback failures', async () => {

@@ -245,6 +245,7 @@
                   "maximum": 9007199254740991
                 },
                 "attempts": {
+                  "minItems": 1,
                   "type": "array",
                   "items": {
                     "type": "object",
@@ -672,6 +673,7 @@
               "maximum": 9007199254740991
             },
             "attempts": {
+              "minItems": 1,
               "type": "array",
               "items": {
                 "type": "object",
