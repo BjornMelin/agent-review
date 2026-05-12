@@ -4,6 +4,7 @@ import {
   ARTIFACT_CONTENT_TYPES,
   type LifecycleEvent,
   type OutputFormat,
+  type ReviewArtifactMetadata,
   type ReviewAuthPrincipal,
   type ReviewAuthScope,
   type ReviewPublicationRecord,
@@ -11,9 +12,12 @@ import {
   type ReviewRequest,
   type ReviewRunAuthorization,
   type ReviewRunLease,
+  type ReviewRunListResponse,
   type ReviewRunStatus,
+  type ReviewRunSummary,
 } from '@review-agent/review-types';
-import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import {
   drizzle as drizzleNodePostgres,
   type NodePgDatabase,
@@ -40,6 +44,26 @@ type ReviewStorageDatabase =
   | NodePgDatabase<ReviewStorageSchema>
   | PgliteDatabase<ReviewStorageSchema>;
 type ReviewRunRow = typeof reviewRuns.$inferSelect;
+type ReviewRunListRow = Pick<
+  ReviewRunRow,
+  | 'reviewId'
+  | 'runId'
+  | 'status'
+  | 'requestSummary'
+  | 'authorization'
+  | 'error'
+  | 'detachedRunId'
+  | 'workflowRunId'
+  | 'sandboxId'
+  | 'cancelRequestedAt'
+  | 'completedAt'
+  | 'createdAt'
+  | 'updatedAt'
+> & {
+  requestModel: string | null;
+  findingCount: number | string | null;
+  modelResolved: string | null;
+};
 type ReviewEventRow = typeof reviewEvents.$inferSelect;
 type ReviewArtifactRow = typeof reviewArtifacts.$inferSelect;
 type ReviewPublicationRow = typeof reviewPublications.$inferSelect;
@@ -208,6 +232,32 @@ export type ReviewStoreCleanupOptions = {
 };
 
 /**
+ * Carries the opaque run-list cursor after service-level decoding.
+ */
+export type ReviewRunListCursor = {
+  updatedAt: number;
+  reviewId: string;
+};
+
+/**
+ * Filters run lists to one or more authorized repositories.
+ */
+export type ReviewStoreListRepositoryFilter = Pick<
+  ReviewRepositoryAuthorization,
+  'repositoryId' | 'installationId' | 'owner' | 'name'
+>;
+
+/**
+ * Defines paginated run-list controls for operational views.
+ */
+export type ReviewStoreListOptions = {
+  limit: number;
+  cursor?: ReviewRunListCursor;
+  status?: ReviewRunStatus;
+  repositories?: ReviewStoreListRepositoryFilter[];
+};
+
+/**
  * Defines capacity gates evaluated while reserving a new runtime lease.
  */
 export type ReviewStoreRuntimeCapacityOptions = ReviewStoreWriteOptions & {
@@ -231,6 +281,7 @@ export type ReviewStoreRuntimeReservation =
  */
 export type ReviewStoreAdapter = {
   get(reviewId: string): Promise<ReviewRecord | undefined>;
+  list(options: ReviewStoreListOptions): Promise<ReviewRunListResponse>;
   reserve(
     record: ReviewRecordWithLease,
     options: ReviewStoreRuntimeCapacityOptions
@@ -407,6 +458,247 @@ function buildRequestSummary(
   };
 }
 
+function repositorySummaryFor(
+  authorization: ReviewRunAuthorization | undefined | null
+): ReviewRunSummary['repository'] {
+  if (!authorization) {
+    return undefined;
+  }
+  const repository = authorization.repository;
+  return {
+    provider: repository.provider,
+    owner: repository.owner,
+    name: repository.name,
+    fullName: repository.fullName,
+    repositoryId: repository.repositoryId,
+    installationId: repository.installationId,
+    visibility: repository.visibility,
+    ...(repository.pullRequestNumber === undefined
+      ? {}
+      : { pullRequestNumber: repository.pullRequestNumber }),
+    ...(repository.ref === undefined ? {} : { ref: repository.ref }),
+    ...(repository.commitSha === undefined
+      ? {}
+      : { commitSha: repository.commitSha }),
+  };
+}
+
+/**
+ * Builds artifact metadata from a hydrated review record without exposing artifact bodies.
+ *
+ * @param record - Review record whose generated artifacts should be summarized.
+ * @returns Artifact metadata suitable for service responses and Review Room links.
+ */
+export function artifactMetadataForRecord(
+  record: ReviewRecord
+): ReviewArtifactMetadata[] {
+  if (!record.result) {
+    return [];
+  }
+  return Object.entries(record.result.artifacts).flatMap(
+    ([format, content]) => {
+      if (!content) {
+        return [];
+      }
+      const outputFormat = format as OutputFormat;
+      return [
+        {
+          reviewId: record.reviewId,
+          format: outputFormat,
+          contentType: ARTIFACT_CONTENT_TYPES[outputFormat],
+          byteLength: Buffer.byteLength(content),
+          createdAt: record.updatedAt,
+        },
+      ];
+    }
+  );
+}
+
+/**
+ * Builds the compact operational summary used by run lists and status details.
+ *
+ * @param record - Review record to summarize.
+ * @param options - Optional precomputed counts and artifact formats.
+ * @returns Redaction-safe summary with no host-local path fields.
+ */
+export function buildReviewRunSummary(
+  record: ReviewRecord,
+  options: {
+    artifactFormats?: OutputFormat[];
+    publicationCount?: number;
+  } = {}
+): ReviewRunSummary {
+  const artifactFormats =
+    options.artifactFormats ??
+    artifactMetadataForRecord(record).map((artifact) => artifact.format);
+  return {
+    reviewId: record.reviewId,
+    status: record.status,
+    request: {
+      provider: record.request.provider,
+      executionMode: record.request.executionMode,
+      targetType: record.request.target.type,
+      outputFormats: record.request.outputFormats,
+      ...(record.request.model === undefined
+        ? {}
+        : { model: record.request.model }),
+    },
+    ...(record.authorization
+      ? { repository: repositorySummaryFor(record.authorization) }
+      : {}),
+    ...(record.error ? { error: record.error } : {}),
+    findingCount: record.result?.result.findings.length ?? 0,
+    artifactFormats,
+    publicationCount: options.publicationCount ?? 0,
+    ...(record.result?.result.metadata.modelResolved
+      ? { modelResolved: record.result.result.metadata.modelResolved }
+      : {}),
+    ...(record.detachedRunId ? { detachedRunId: record.detachedRunId } : {}),
+    ...(record.workflowRunId ? { workflowRunId: record.workflowRunId } : {}),
+    ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
+    ...(record.cancelRequestedAt === undefined
+      ? {}
+      : { cancelRequestedAt: record.cancelRequestedAt }),
+    ...(isTerminalStatus(record.status)
+      ? { completedAt: record.updatedAt }
+      : {}),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function buildReviewRunSummaryForListRow(
+  run: ReviewRunListRow,
+  options: {
+    artifactFormats?: OutputFormat[];
+    publicationCount?: number;
+  } = {}
+): ReviewRunSummary {
+  const completedAt = msFromDate(run.completedAt);
+  const findingCount = Number(run.findingCount ?? 0);
+  return {
+    reviewId: run.reviewId,
+    status: run.status,
+    request: {
+      provider: run.requestSummary.provider,
+      executionMode: run.requestSummary.executionMode,
+      targetType: run.requestSummary.targetType,
+      outputFormats: run.requestSummary.outputFormats,
+      ...(run.requestModel ? { model: run.requestModel } : {}),
+    },
+    ...(run.authorization
+      ? { repository: repositorySummaryFor(run.authorization) }
+      : {}),
+    ...(run.error ? { error: run.error } : {}),
+    findingCount: Number.isFinite(findingCount) ? findingCount : 0,
+    artifactFormats: options.artifactFormats ?? [],
+    publicationCount: options.publicationCount ?? 0,
+    ...(run.modelResolved ? { modelResolved: run.modelResolved } : {}),
+    ...(run.detachedRunId ? { detachedRunId: run.detachedRunId } : {}),
+    ...(run.workflowRunId ? { workflowRunId: run.workflowRunId } : {}),
+    ...(run.sandboxId ? { sandboxId: run.sandboxId } : {}),
+    ...(msFromDate(run.cancelRequestedAt) === undefined
+      ? {}
+      : { cancelRequestedAt: msFromDate(run.cancelRequestedAt) }),
+    ...(completedAt === undefined ? {} : { completedAt }),
+    createdAt: run.createdAt.getTime(),
+    updatedAt: run.updatedAt.getTime(),
+  };
+}
+
+function encodeReviewRunListCursor(summary: ReviewRunSummary): string {
+  return Buffer.from(
+    JSON.stringify({
+      updatedAt: summary.updatedAt,
+      reviewId: summary.reviewId,
+    }),
+    'utf8'
+  ).toString('base64url');
+}
+
+/**
+ * Decodes an opaque run-list cursor emitted by the service store.
+ *
+ * @param cursor - Base64url cursor from a previous list response.
+ * @returns Decoded cursor with updated-at and review-id tie breaker.
+ * @throws Error when the cursor is malformed.
+ */
+export function decodeReviewRunListCursor(cursor: string): ReviewRunListCursor {
+  const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    typeof parsed.updatedAt !== 'number' ||
+    !Number.isSafeInteger(parsed.updatedAt) ||
+    parsed.updatedAt < 0 ||
+    typeof parsed.reviewId !== 'string' ||
+    parsed.reviewId.length === 0
+  ) {
+    throw new Error('invalid review run list cursor');
+  }
+  return { updatedAt: parsed.updatedAt, reviewId: parsed.reviewId };
+}
+
+function compareRunSummariesForList(
+  left: ReviewRunSummary,
+  right: ReviewRunSummary
+): number {
+  const updatedAtCompare = right.updatedAt - left.updatedAt;
+  return updatedAtCompare === 0
+    ? right.reviewId.localeCompare(left.reviewId)
+    : updatedAtCompare;
+}
+
+function isSummaryAfterCursor(
+  summary: ReviewRunSummary,
+  cursor: ReviewRunListCursor | undefined
+): boolean {
+  if (!cursor) {
+    return true;
+  }
+  return (
+    summary.updatedAt < cursor.updatedAt ||
+    (summary.updatedAt === cursor.updatedAt &&
+      summary.reviewId.localeCompare(cursor.reviewId) < 0)
+  );
+}
+
+function runListResponseFromSummaries(
+  summaries: ReviewRunSummary[],
+  limit: number,
+  hasNext = summaries.length > limit
+): ReviewRunListResponse {
+  const runs = summaries.slice(0, limit);
+  const last = runs.at(-1);
+  return {
+    runs,
+    ...(hasNext && last ? { nextCursor: encodeReviewRunListCursor(last) } : {}),
+  };
+}
+
+function repositoryMatchesFilter(
+  authorization: ReviewRunAuthorization | undefined,
+  filters: ReviewStoreListRepositoryFilter[] | undefined
+): boolean {
+  if (!filters || filters.length === 0) {
+    return true;
+  }
+  if (!authorization) {
+    return false;
+  }
+  return filters.some((filter) => {
+    const repository = authorization.repository;
+    if (repository.repositoryId === filter.repositoryId) {
+      return true;
+    }
+    return (
+      repository.installationId === filter.installationId &&
+      repository.owner.toLowerCase() === filter.owner.toLowerCase() &&
+      repository.name.toLowerCase() === filter.name.toLowerCase()
+    );
+  });
+}
+
 function dateFromMs(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
@@ -538,6 +830,22 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
     async get(reviewId) {
       const record = records.get(reviewId);
       return record ? cloneRecord(record) : undefined;
+    },
+    async list(options) {
+      const summaries = [...records.values()]
+        .filter((record) => {
+          if (options.status && record.status !== options.status) {
+            return false;
+          }
+          return repositoryMatchesFilter(
+            record.authorization,
+            options.repositories
+          );
+        })
+        .map((record) => buildReviewRunSummary(record))
+        .filter((summary) => isSummaryAfterCursor(summary, options.cursor))
+        .sort(compareRunSummariesForList);
+      return runListResponseFromSummaries(summaries, options.limit);
     },
     async reserve(record, options) {
       assertReviewRecordWithLease(record);
@@ -979,6 +1287,66 @@ function capacityRecordForRunRow(run: ReviewRunRow): RuntimeCapacityRecord {
   };
 }
 
+function reviewListRepositoryPredicate(
+  repositories: ReviewStoreListRepositoryFilter[] | undefined
+): SQL | undefined {
+  if (!repositories || repositories.length === 0) {
+    return undefined;
+  }
+  const predicates = repositories
+    .map((repository) =>
+      or(
+        eq(reviewRuns.githubRepositoryId, String(repository.repositoryId)),
+        and(
+          eq(
+            reviewRuns.githubInstallationId,
+            String(repository.installationId)
+          ),
+          eq(reviewRuns.githubOwner, repository.owner),
+          eq(reviewRuns.githubRepo, repository.name)
+        )
+      )
+    )
+    .filter((predicate): predicate is SQL => Boolean(predicate));
+  const first = predicates[0];
+  if (!first) {
+    return undefined;
+  }
+  return predicates.length === 1 && first ? first : or(...predicates);
+}
+
+function reviewListCursorPredicate(
+  cursor: ReviewRunListCursor | undefined
+): SQL | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+  const cursorDate = new Date(cursor.updatedAt);
+  return or(
+    lt(reviewRuns.updatedAt, cursorDate),
+    and(
+      eq(reviewRuns.updatedAt, cursorDate),
+      lt(reviewRuns.reviewId, cursor.reviewId)
+    )
+  );
+}
+
+function reviewListWherePredicate(
+  options: ReviewStoreListOptions
+): SQL | undefined {
+  const predicates = [
+    options.status ? eq(reviewRuns.status, options.status) : undefined,
+    reviewListRepositoryPredicate(options.repositories),
+    reviewListCursorPredicate(options.cursor),
+  ].filter((predicate): predicate is SQL => Boolean(predicate));
+  const first = predicates[0];
+  return predicates.length === 0
+    ? undefined
+    : predicates.length === 1 && first
+      ? first
+      : and(...predicates);
+}
+
 /**
  * Creates a Drizzle-backed durable store for PostgreSQL-compatible databases.
  *
@@ -1121,6 +1489,85 @@ export function createDrizzleReviewStore(
   return {
     get(reviewId) {
       return hydrate(reviewId);
+    },
+    async list(options) {
+      const rows = await db
+        .select({
+          reviewId: reviewRuns.reviewId,
+          runId: reviewRuns.runId,
+          status: reviewRuns.status,
+          requestSummary: reviewRuns.requestSummary,
+          authorization: reviewRuns.authorization,
+          error: reviewRuns.error,
+          detachedRunId: reviewRuns.detachedRunId,
+          workflowRunId: reviewRuns.workflowRunId,
+          sandboxId: reviewRuns.sandboxId,
+          cancelRequestedAt: reviewRuns.cancelRequestedAt,
+          completedAt: reviewRuns.completedAt,
+          createdAt: reviewRuns.createdAt,
+          updatedAt: reviewRuns.updatedAt,
+          requestModel: sql<string | null>`${reviewRuns.request}->>'model'`.as(
+            'request_model'
+          ),
+          findingCount: sql<
+            number | string | null
+          >`coalesce(jsonb_array_length(${reviewRuns.result}->'result'->'findings'), 0)`.as(
+            'finding_count'
+          ),
+          modelResolved: sql<
+            string | null
+          >`${reviewRuns.result}->'result'->'metadata'->>'modelResolved'`.as(
+            'model_resolved'
+          ),
+        })
+        .from(reviewRuns)
+        .where(reviewListWherePredicate(options) ?? sql`true`)
+        .orderBy(desc(reviewRuns.updatedAt), desc(reviewRuns.reviewId))
+        .limit(options.limit + 1);
+      const selectedRows = rows.slice(0, options.limit);
+      const reviewIds = selectedRows.map((row) => row.reviewId);
+      const artifactFormatsByReviewId = new Map<string, OutputFormat[]>();
+      const publicationCountsByReviewId = new Map<string, number>();
+
+      if (reviewIds.length > 0) {
+        const [artifacts, publications] = await Promise.all([
+          db
+            .select({
+              reviewId: reviewArtifacts.reviewId,
+              format: reviewArtifacts.format,
+            })
+            .from(reviewArtifacts)
+            .where(inArray(reviewArtifacts.reviewId, reviewIds)),
+          db
+            .select({ reviewId: reviewPublications.reviewId })
+            .from(reviewPublications)
+            .where(inArray(reviewPublications.reviewId, reviewIds)),
+        ]);
+        for (const artifact of artifacts) {
+          const formats =
+            artifactFormatsByReviewId.get(artifact.reviewId) ?? [];
+          formats.push(artifact.format);
+          artifactFormatsByReviewId.set(artifact.reviewId, formats);
+        }
+        for (const publication of publications) {
+          publicationCountsByReviewId.set(
+            publication.reviewId,
+            (publicationCountsByReviewId.get(publication.reviewId) ?? 0) + 1
+          );
+        }
+      }
+
+      return runListResponseFromSummaries(
+        selectedRows.map((row) =>
+          buildReviewRunSummaryForListRow(row, {
+            artifactFormats: artifactFormatsByReviewId.get(row.reviewId) ?? [],
+            publicationCount:
+              publicationCountsByReviewId.get(row.reviewId) ?? 0,
+          })
+        ),
+        options.limit,
+        rows.length > options.limit
+      );
     },
     async reserve(record, options) {
       assertReviewRecordWithLease(record);

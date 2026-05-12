@@ -80,12 +80,32 @@
       "file": "review-run-authorization.schema.json"
     },
     {
+      "name": "reviewRunListQuery",
+      "file": "review-run-list-query.schema.json"
+    },
+    {
+      "name": "reviewRunListResponse",
+      "file": "review-run-list-response.schema.json"
+    },
+    {
+      "name": "reviewRunRepositorySummary",
+      "file": "review-run-repository-summary.schema.json"
+    },
+    {
+      "name": "reviewRunRequestSummary",
+      "file": "review-run-request-summary.schema.json"
+    },
+    {
       "name": "reviewRunStatus",
       "file": "review-run-status.schema.json"
     },
     {
       "name": "reviewRunStoreRecord",
       "file": "review-run-store-record.schema.json"
+    },
+    {
+      "name": "reviewRunSummary",
+      "file": "review-run-summary.schema.json"
     },
     {
       "name": "reviewStartRequest",
@@ -98,6 +118,10 @@
     {
       "name": "reviewStatusResponse",
       "file": "review-status-response.schema.json"
+    },
+    {
+      "name": "reviewTargetType",
+      "file": "review-target-type.schema.json"
     },
     {
       "name": "sandboxAudit",

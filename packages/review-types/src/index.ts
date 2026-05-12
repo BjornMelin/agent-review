@@ -215,6 +215,16 @@ const PathFilterSchema = boundedString(
 });
 
 /**
+ * Lists review target variants accepted by request and summary contracts.
+ */
+export const ReviewTargetTypeSchema = z.enum([
+  'uncommittedChanges',
+  'baseBranch',
+  'commit',
+  'custom',
+]);
+
+/**
  * Validates the review target contract for working-tree, branch, commit, or
  * custom-instruction reviews.
  */
@@ -740,6 +750,98 @@ export const ReviewPublicationRecordSchema = z.strictObject({
 });
 
 /**
+ * Summarizes the repository context shown in run lists and operational views.
+ */
+export const ReviewRunRepositorySummarySchema = z.strictObject({
+  provider: z.literal('github'),
+  owner: GitHubOwnerSchema,
+  name: GitHubRepositoryNameSchema,
+  fullName: boundedString('GitHub repository full name', 140),
+  repositoryId: GitHubNumericIdSchema,
+  installationId: GitHubNumericIdSchema,
+  visibility: GitHubRepositoryVisibilitySchema,
+  pullRequestNumber: z.number().int().positive().optional(),
+  ref: SafeGitRefSchema.optional(),
+  commitSha: CommitObjectIdSchema.optional(),
+});
+
+/**
+ * Summarizes the execution request without exposing host-local paths.
+ */
+export const ReviewRunRequestSummarySchema = z.strictObject({
+  provider: ReviewProviderKindSchema,
+  executionMode: ExecutionModeSchema,
+  targetType: ReviewTargetTypeSchema,
+  outputFormats: OutputFormatListSchema,
+  model: boundedString(
+    'model',
+    DEFAULT_REVIEW_SECURITY_LIMITS.maxModelBytes
+  ).optional(),
+});
+
+/**
+ * Defines the compact run shape used by Review Room lists and status summaries.
+ */
+export const ReviewRunSummarySchema = z.strictObject({
+  reviewId: z.string().min(1),
+  status: ReviewRunStatusSchema,
+  request: ReviewRunRequestSummarySchema,
+  repository: ReviewRunRepositorySummarySchema.optional(),
+  error: z.string().min(1).optional(),
+  findingCount: z.number().int().nonnegative(),
+  artifactFormats: z.array(OutputFormatSchema),
+  publicationCount: z.number().int().nonnegative(),
+  modelResolved: z.string().min(1).optional(),
+  detachedRunId: z.string().min(1).optional(),
+  workflowRunId: z.string().min(1).optional(),
+  sandboxId: z.string().min(1).optional(),
+  cancelRequestedAt: z.number().int().nonnegative().optional(),
+  completedAt: z.number().int().nonnegative().optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+/**
+ * Defines query controls for the hosted review run list endpoint.
+ */
+export const ReviewRunListQuerySchema = z
+  .strictObject({
+    status: ReviewRunStatusSchema.optional(),
+    limit: z.number().int().positive().max(100).default(25),
+    cursor: z.string().min(1).optional(),
+    owner: GitHubOwnerSchema.optional(),
+    name: GitHubRepositoryNameSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    if ((value.owner === undefined) !== (value.name === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'owner and name must be provided together',
+        path: value.owner === undefined ? ['owner'] : ['name'],
+      });
+    }
+  });
+
+/**
+ * Defines the paginated hosted review run list response.
+ */
+export const ReviewRunListResponseSchema = z.strictObject({
+  runs: z.array(ReviewRunSummarySchema),
+  nextCursor: z.string().min(1).optional(),
+});
+
+/**
+ * Validates service-facing artifact metadata including format, content type, size, and creation time.
+ */
+export const ReviewArtifactMetadataSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  format: OutputFormatSchema,
+  contentType: z.string().min(1),
+  byteLength: z.number().int().nonnegative(),
+  createdAt: z.number().int().nonnegative(),
+});
+
+/**
  * Validates the review status response with timestamps and optional error or result.
  */
 export const ReviewStatusResponseSchema = z.strictObject({
@@ -747,7 +849,9 @@ export const ReviewStatusResponseSchema = z.strictObject({
   status: ReviewRunStatusSchema,
   error: z.string().min(1).optional(),
   result: ReviewResultSchema.optional(),
+  summary: ReviewRunSummarySchema.optional(),
   publications: z.array(ReviewPublicationRecordSchema).optional(),
+  artifacts: z.array(ReviewArtifactMetadataSchema).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -777,17 +881,6 @@ export const ReviewEventCursorSchema = z.strictObject({
   reviewId: z.string().min(1),
   afterEventId: z.string().min(1).optional(),
   limit: z.number().int().positive().max(500).default(100),
-});
-
-/**
- * Validates service-facing artifact metadata including format, content type, size, and creation time.
- */
-export const ReviewArtifactMetadataSchema = z.strictObject({
-  reviewId: z.string().min(1),
-  format: OutputFormatSchema,
-  contentType: z.string().min(1),
-  byteLength: z.number().int().nonnegative(),
-  createdAt: z.number().int().nonnegative(),
 });
 
 /**
@@ -945,6 +1038,7 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   updatedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),
   error: z.string().min(1).optional(),
+  detachedRunId: z.string().min(1).optional(),
   workflowRunId: z.string().min(1).optional(),
   sandboxId: z.string().min(1).optional(),
   lease: ReviewRunLeaseSchema.optional(),
@@ -980,6 +1074,10 @@ export const ReviewArtifactStoreRecordSchema = z.strictObject({
  * Review target selected for a run.
  */
 export type ReviewTarget = z.infer<typeof ReviewTargetSchema>;
+/**
+ * Review target discriminant used by compact run summaries.
+ */
+export type ReviewTargetType = z.infer<typeof ReviewTargetTypeSchema>;
 /**
  * Provider adapter identifier.
  */
@@ -1104,6 +1202,30 @@ export type ReviewPublicationStatus = z.infer<
 export type ReviewPublicationRecord = z.infer<
   typeof ReviewPublicationRecordSchema
 >;
+/**
+ * Repository context shown in run lists and operational views.
+ */
+export type ReviewRunRepositorySummary = z.infer<
+  typeof ReviewRunRepositorySummarySchema
+>;
+/**
+ * Request context shown in run lists and operational views.
+ */
+export type ReviewRunRequestSummary = z.infer<
+  typeof ReviewRunRequestSummarySchema
+>;
+/**
+ * Compact hosted review run row.
+ */
+export type ReviewRunSummary = z.infer<typeof ReviewRunSummarySchema>;
+/**
+ * Query controls accepted by the hosted review run list endpoint.
+ */
+export type ReviewRunListQuery = z.infer<typeof ReviewRunListQuerySchema>;
+/**
+ * Paginated hosted review run list response.
+ */
+export type ReviewRunListResponse = z.infer<typeof ReviewRunListResponseSchema>;
 /**
  * Response returned by the review publication endpoint.
  */
@@ -1678,6 +1800,7 @@ export function withReviewRequestSecurityDefaults(
 export type JsonSchemaSet = {
   outputFormat: unknown;
   reviewRunStatus: unknown;
+  reviewTargetType: unknown;
   reviewRequest: unknown;
   reviewRepositorySelection: unknown;
   reviewRunAuthorization: unknown;
@@ -1692,6 +1815,11 @@ export type JsonSchemaSet = {
   reviewStatusResponse: unknown;
   reviewCancelResponse: unknown;
   reviewPublicationRecord: unknown;
+  reviewRunRepositorySummary: unknown;
+  reviewRunRequestSummary: unknown;
+  reviewRunSummary: unknown;
+  reviewRunListQuery: unknown;
+  reviewRunListResponse: unknown;
   reviewPublishResponse: unknown;
   reviewEventCursor: unknown;
   reviewArtifactMetadata: unknown;
@@ -1792,6 +1920,7 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
   return {
     outputFormat: toDraft7JsonSchema(OutputFormatSchema),
     reviewRunStatus: toDraft7JsonSchema(ReviewRunStatusSchema),
+    reviewTargetType: toDraft7JsonSchema(ReviewTargetTypeSchema),
     reviewRequest: toDraft7JsonSchema(ReviewRequestSchema),
     reviewRepositorySelection: toDraft7JsonSchema(
       ReviewRepositorySelectionSchema
@@ -1808,6 +1937,13 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     reviewStatusResponse: toDraft7JsonSchema(ReviewStatusResponseSchema),
     reviewCancelResponse: toDraft7JsonSchema(ReviewCancelResponseSchema),
     reviewPublicationRecord: toDraft7JsonSchema(ReviewPublicationRecordSchema),
+    reviewRunRepositorySummary: toDraft7JsonSchema(
+      ReviewRunRepositorySummarySchema
+    ),
+    reviewRunRequestSummary: toDraft7JsonSchema(ReviewRunRequestSummarySchema),
+    reviewRunSummary: toDraft7JsonSchema(ReviewRunSummarySchema),
+    reviewRunListQuery: toDraft7JsonSchema(ReviewRunListQuerySchema),
+    reviewRunListResponse: toDraft7JsonSchema(ReviewRunListResponseSchema),
     reviewPublishResponse: toDraft7JsonSchema(ReviewPublishResponseSchema),
     reviewEventCursor: toDraft7JsonSchema(ReviewEventCursorSchema),
     reviewArtifactMetadata: toDraft7JsonSchema(ReviewArtifactMetadataSchema),
