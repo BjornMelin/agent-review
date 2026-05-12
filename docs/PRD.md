@@ -70,7 +70,11 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Implemented Rust service rewrites, native primary CLI rewrites, Ratatui TUIs,
   and Tauri desktop applications. The Ratatui console is accepted only as a
   design-gated expansion track in
-  [ADR-0007](./architecture/adr/0007-ratatui-review-console.md).
+  [ADR-0007](./architecture/adr/0007-ratatui-review-console.md). Tauri desktop
+  remains deferred by
+  [ADR-0008](./architecture/adr/0008-tauri-desktop-expansion-gate.md) unless
+  web, CLI, and Ratatui evidence proves desktop-only value and a release owner
+  accepts capabilities, IPC, updater, signing, and support obligations.
 - Customer billing, tenant administration, and external self-serve onboarding
 
 ## Primary Users
@@ -105,3 +109,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
   [ADR-0004](./architecture/adr/0004-typescript-control-plane-and-rust-helper-boundary.md):
   generated contracts, conformance tests, benchmark gates, and no permanent
   dual canonical paths.
+- Desktop application work must follow
+  [ADR-0008](./architecture/adr/0008-tauri-desktop-expansion-gate.md): no Tauri
+  implementation without a new approval issue, generated contracts, least
+  privilege capabilities, token-storage controls, signed updater policy, and
+  platform support ownership.
