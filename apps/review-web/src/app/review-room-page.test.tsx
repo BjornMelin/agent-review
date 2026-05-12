@@ -79,4 +79,49 @@ describe('ReviewRoomPage', () => {
     expect(getReviewRunsMock).toHaveBeenCalledWith({ limit: 25 });
     expect(getReviewStatusMock).toHaveBeenCalledTimes(1);
   });
+
+  it('starts the latest status request from the run-list promise chain', async () => {
+    const runsResult = {
+      ok: true,
+      serviceUrl: 'http://localhost:3042',
+      data: {
+        runs: [
+          {
+            reviewId: 'review-latest',
+            status: 'completed',
+            request: {
+              provider: 'codexDelegate',
+              executionMode: 'localTrusted',
+              targetType: 'uncommittedChanges',
+              outputFormats: ['json'],
+            },
+            findingCount: 0,
+            artifactFormats: ['json'],
+            publicationCount: 0,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      } satisfies ReviewRunListResponse,
+    } satisfies Awaited<ReturnType<typeof getReviewRuns>>;
+    const statusResult = {
+      ok: true,
+      serviceUrl: 'http://localhost:3042',
+      data: {
+        reviewId: 'review-latest',
+        status: 'completed',
+        createdAt: 1,
+        updatedAt: 2,
+      } satisfies ReviewStatusResponse,
+    } satisfies Awaited<ReturnType<typeof getReviewStatus>>;
+
+    getReviewRunsMock.mockResolvedValue(runsResult);
+    getReviewStatusMock.mockResolvedValue(statusResult);
+
+    await ReviewRoomPage({});
+
+    expect(getReviewRunsMock).toHaveBeenCalledWith({ limit: 25 });
+    expect(getReviewStatusMock).toHaveBeenCalledWith('review-latest');
+    expect(getReviewStatusMock).toHaveBeenCalledTimes(1);
+  });
 });

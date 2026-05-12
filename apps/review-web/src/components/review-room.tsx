@@ -67,13 +67,22 @@ function formatProviderUsage(usage: ProviderUsage | undefined): string {
     return 'unknown';
   }
   const tokenParts = [
-    usage.inputTokens === undefined ? undefined : `${usage.inputTokens} in`,
-    usage.outputTokens === undefined ? undefined : `${usage.outputTokens} out`,
-    usage.totalTokens === undefined ? undefined : `${usage.totalTokens} total`,
+    usage.inputTokens === undefined
+      ? undefined
+      : `${usage.inputTokens}\u00a0in`,
+    usage.outputTokens === undefined
+      ? undefined
+      : `${usage.outputTokens}\u00a0out`,
+    usage.totalTokens === undefined
+      ? undefined
+      : `${usage.totalTokens}\u00a0total`,
   ].filter((part): part is string => Boolean(part));
   const costPart =
     usage.costUsd === undefined ? undefined : `$${usage.costUsd.toFixed(6)}`;
-  return [...tokenParts, costPart].filter(Boolean).join(' / ') || 'reported';
+  return (
+    [...tokenParts, costPart].filter(Boolean).join('\u00a0/\u00a0') ||
+    'reported'
+  );
 }
 
 function formatProviderFallback(
@@ -93,19 +102,19 @@ function formatDuration(ms: number | undefined): string {
     return 'pending';
   }
   if (ms < 1000) {
-    return `${ms}ms`;
+    return `${ms}\u00a0ms`;
   }
   const seconds = ms / 1000;
   if (seconds < 10) {
-    return `${seconds.toFixed(1)}s`;
+    return `${seconds.toFixed(1)}\u00a0s`;
   }
   const roundedSeconds = Math.round(seconds);
   if (roundedSeconds < 60) {
-    return `${roundedSeconds}s`;
+    return `${roundedSeconds}\u00a0s`;
   }
   const minutes = Math.floor(roundedSeconds / 60);
   const remainingSeconds = roundedSeconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
+  return `${minutes}\u00a0m\u00a0${remainingSeconds}\u00a0s`;
 }
 
 function formatOptionalDuration(
@@ -119,7 +128,7 @@ function formatSandboxCommands(metrics: ReviewRunMetrics | undefined): string {
   if (!metrics?.sandbox) {
     return 'none';
   }
-  return `${metrics.sandbox.commandCount} / ${formatDuration(
+  return `${metrics.sandbox.commandCount}\u00a0/\u00a0${formatDuration(
     metrics.sandbox.commandDurationMs
   )}`;
 }
@@ -465,13 +474,13 @@ function DetailBody({
                   [
                     'Provider Latency',
                     providerTelemetry
-                      ? `${providerTelemetry.totalLatencyMs}ms`
+                      ? `${providerTelemetry.totalLatencyMs}\u00a0ms`
                       : 'pending',
                   ],
                   [
                     'Provider Timeout',
                     providerTelemetry
-                      ? `${providerTelemetry.timeoutMs}ms`
+                      ? `${providerTelemetry.timeoutMs}\u00a0ms`
                       : 'pending',
                   ],
                   ['Usage', formatProviderUsage(providerTelemetry?.usage)],
@@ -484,7 +493,7 @@ function DetailBody({
                     <dt className="text-xs uppercase text-[var(--muted-foreground)]">
                       {label}
                     </dt>
-                    <dd className="mt-1 break-words font-mono text-xs">
+                    <dd className="mt-1 break-words font-mono text-xs tabular-nums">
                       {value}
                     </dd>
                   </div>

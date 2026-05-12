@@ -45,15 +45,15 @@ export function formatRelativeTime(value: number, now = Date.now()): string {
 
 export function formatBytes(value: number): string {
   if (value < 1024) {
-    return `${value} B`;
+    return `${value}\u00a0B`;
   }
   const units = ['KB', 'MB', 'GB'] as const;
   let amount = value / 1024;
   for (const unit of units) {
     if (amount < 1024 || unit === 'GB') {
-      return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${unit}`;
+      return `${amount.toFixed(amount >= 10 ? 0 : 1)}\u00a0${unit}`;
     }
     amount /= 1024;
   }
-  return `${value} B`;
+  return `${value}\u00a0B`;
 }

@@ -239,17 +239,17 @@ describe('ReviewRoom', () => {
     expect(screen.getByText('gateway')).toBeTruthy();
     expect(screen.getByText('openai')).toBeTruthy();
     expect(screen.getByText('not used')).toBeTruthy();
-    expect(screen.getByText('1200ms')).toBeTruthy();
-    expect(screen.getByText('120000ms')).toBeTruthy();
-    expect(screen.getByText('2m 0s')).toBeTruthy();
-    expect(screen.getByText('250ms')).toBeTruthy();
-    expect(screen.getByText('1m 1s')).toBeTruthy();
-    expect(screen.getByText('2.0 KB')).toBeTruthy();
-    expect(screen.getByText('2 / 1.5s')).toBeTruthy();
-    expect(screen.getByText('4.0 KB')).toBeTruthy();
-    expect(
-      screen.getByText('1200 in / 320 out / 1520 total / $0.003400')
-    ).toBeTruthy();
+    expect(document.body.textContent).toContain('1200\u00a0ms');
+    expect(document.body.textContent).toContain('120000\u00a0ms');
+    expect(document.body.textContent).toContain('2\u00a0m\u00a00\u00a0s');
+    expect(document.body.textContent).toContain('250\u00a0ms');
+    expect(document.body.textContent).toContain('1\u00a0m\u00a01\u00a0s');
+    expect(document.body.textContent).toContain('2.0\u00a0KB');
+    expect(document.body.textContent).toContain('2\u00a0/\u00a01.5\u00a0s');
+    expect(document.body.textContent).toContain('4.0\u00a0KB');
+    expect(document.body.textContent).toContain(
+      '1200\u00a0in\u00a0/\u00a0320\u00a0out\u00a0/\u00a01520\u00a0total\u00a0/\u00a0$0.003400'
+    );
     expect(screen.getByText('zdrEnforced')).toBeTruthy();
   });
 
