@@ -12,8 +12,10 @@ import {
   parseRawModelOutput,
   ReviewArtifactMetadataSchema,
   ReviewEventCursorSchema,
+  ReviewRepositorySelectionSchema,
   ReviewRequestSchema,
   ReviewResultSchema,
+  ReviewRunAuthorizationSchema,
   ReviewRunStatusSchema,
   ReviewStartRequestSchema,
   ReviewStatusResponseSchema,
@@ -56,6 +58,19 @@ describe('review-types schemas', () => {
 
   it('applies stable service dto defaults', () => {
     expect(ReviewStartRequestSchema.parse({ request }).delivery).toBe('inline');
+    expect(
+      ReviewStartRequestSchema.parse({
+        request,
+        repository: {
+          owner: 'octo-org',
+          name: 'agent.review',
+        },
+      }).repository
+    ).toEqual({
+      provider: 'github',
+      owner: 'octo-org',
+      name: 'agent.review',
+    });
     expect(ReviewEventCursorSchema.parse({ reviewId: 'review-1' })).toEqual({
       reviewId: 'review-1',
       limit: 100,
@@ -255,6 +270,87 @@ describe('review-types schemas', () => {
       'sk-abcdefghijklmnopqrstuvwxyz'
     );
     expect(sanitized.findings[0]?.body).toContain('[REDACTED_SECRET]');
+    expect(
+      redactSensitiveText(
+        'REVIEW_SERVICE_TOKEN=rat_tokenid_abcdefghijklmnopqrstuvwxyz'
+      ).text
+    ).toContain('[REDACTED_SECRET]');
+  });
+
+  it('validates hosted repository authorization metadata', () => {
+    expect(
+      ReviewRepositorySelectionSchema.parse({
+        owner: 'octo-org',
+        name: 'review-agent',
+        installationId: 123,
+        pullRequestNumber: 42,
+      })
+    ).toMatchObject({
+      provider: 'github',
+      owner: 'octo-org',
+      name: 'review-agent',
+    });
+
+    expect(() =>
+      ReviewRepositorySelectionSchema.parse({
+        owner: '-bad',
+        name: 'review-agent',
+      })
+    ).toThrow(/GitHub owner/);
+    expect(() =>
+      ReviewRepositorySelectionSchema.parse({
+        owner: 'octo-org',
+        name: 'review-agent.git',
+      })
+    ).toThrow(/\.git suffix/);
+    expect(() =>
+      ReviewRepositorySelectionSchema.parse({
+        owner: 'octo-org',
+        name: 'review-agent',
+        pullRequestNumber: 42,
+        ref: 'refs/heads/main',
+      })
+    ).toThrow(/at most one/);
+
+    const authorization = ReviewRunAuthorizationSchema.parse({
+      principal: {
+        type: 'serviceToken',
+        tokenId: 'token-1',
+        tokenPrefix: 'rat_token-1',
+        name: 'CI',
+      },
+      repository: {
+        provider: 'github',
+        repositoryId: 99,
+        installationId: 123,
+        owner: 'octo-org',
+        name: 'review-agent',
+        fullName: 'octo-org/review-agent',
+        visibility: 'private',
+        permissions: { metadata: 'read', contents: 'read' },
+        commitSha: 'abcdef1',
+      },
+      scopes: ['review:start', 'review:read'],
+      actor: 'service-token:token-1',
+      requestHash: 'sha256:abc',
+      authorizedAt: 1_000,
+    });
+    expect(authorization.repository.fullName).toBe('octo-org/review-agent');
+    expect(() =>
+      ReviewRunAuthorizationSchema.parse({
+        ...authorization,
+        scopes: ['review:read', 'review:read'],
+      })
+    ).toThrow(/duplicates/);
+    expect(() =>
+      ReviewRunAuthorizationSchema.parse({
+        ...authorization,
+        repository: {
+          ...authorization.repository,
+          ref: 'refs/heads/main',
+        },
+      })
+    ).toThrow(/at most one/);
   });
 
   it('centralizes run status and artifact format policy', () => {
@@ -440,6 +536,44 @@ describe('review-types schemas', () => {
     expect(schemas.reviewResult).toBeTruthy();
     expect(schemas.reviewStartRequest).toBeTruthy();
     expect(schemas.reviewRunStoreRecord).toBeTruthy();
+    expect(
+      (
+        schemas.reviewRepositorySelection as {
+          properties: { name: { pattern: string } };
+        }
+      ).properties.name.pattern
+    ).toContain('?!.*\\.git$');
+    expect(
+      (
+        schemas.reviewRunAuthorization as {
+          properties: { scopes: { uniqueItems?: boolean } };
+        }
+      ).properties.scopes.uniqueItems
+    ).toBe(true);
+    expect(
+      (
+        schemas.reviewRepositorySelection as {
+          not: { anyOf: Array<{ required: string[] }> };
+        }
+      ).not.anyOf
+    ).toEqual(
+      expect.arrayContaining([
+        { required: ['pullRequestNumber', 'ref'] },
+        { required: ['pullRequestNumber', 'commitSha'] },
+        { required: ['ref', 'commitSha'] },
+      ])
+    );
+    expect(
+      (
+        schemas.reviewRunAuthorization as {
+          properties: {
+            repository: { not: { anyOf: Array<{ required: string[] }> } };
+          };
+        }
+      ).properties.repository.not.anyOf
+    ).toEqual(
+      expect.arrayContaining([{ required: ['pullRequestNumber', 'ref'] }])
+    );
   });
 
   it('keeps generated json schema artifacts in sync', async () => {

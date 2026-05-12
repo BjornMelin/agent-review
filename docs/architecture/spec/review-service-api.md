@@ -12,7 +12,11 @@ The app factory owns all route registration and accepts injected providers,
 worker client, optional bridge, store adapter, clock/UUID functions, logger,
 auth policy, config, and inline runner. The package entrypoint `src/index.ts`
 re-exports the factory, while `src/server.ts` constructs production
-dependencies and calls `serve()`.
+dependencies and calls `serve()`. Production startup is fail-closed for auth:
+`src/server.ts` defaults `REVIEW_SERVICE_AUTH_MODE` to `required`, requires a
+configured auth store and `REVIEW_SERVICE_TOKEN_PEPPER`, and rejects
+`REVIEW_SERVICE_AUTH_MODE=disabled` in production. Non-production local
+development can opt into disabled auth explicitly.
 
 The service store uses the async `ReviewStoreAdapter` boundary exported from
 `apps/review-service/src/storage/index.ts`. Production startup selects a
@@ -27,6 +31,7 @@ Drizzle schema and migration ownership lives in `apps/review-service`:
 - `src/storage/schema.ts`
 - `drizzle/0000_initial_review_storage.sql`
 - `drizzle/0001_review_runtime_control.sql`
+- `drizzle/0002_github_authz.sql`
 - `drizzle.config.ts`
 
 Run migrations from the service package with:
@@ -45,6 +50,40 @@ Defined by `ReviewRunStatusSchema` in `@review-agent/review-types`.
 - `failed`
 - `cancelled`
 
+## Authentication and Repository Authorization
+
+Hosted service routes use bearer authentication before any `/v1/*` route work
+begins. Missing or invalid bearer tokens return `401` with
+`WWW-Authenticate: Bearer`. A token that is valid but lacks the required
+operation scope returns `403`. Unknown review IDs and review IDs owned by a
+different repository return `404` so run identifiers are not an authorization
+boundary.
+
+Supported auth sources:
+
+- Scoped service tokens for CI and automation. Tokens use the
+  `rat_<tokenId>_<secret>` shape; only an HMAC-SHA256 verifier hash is stored,
+  keyed by token ID and protected by `REVIEW_SERVICE_TOKEN_PEPPER`.
+- GitHub user access tokens verified through GitHub App installation
+  repositories. The service revalidates the GitHub user and repository
+  permission state before binding a run to a repository.
+
+Every authenticated run persists an authorization snapshot on `review_runs`:
+principal, GitHub installation, repository ID, owner/name, visibility,
+effective scopes, actor, and request hash. Status, events, artifacts, and
+cancel all authorize against the stored snapshot before syncing Workflow state,
+attaching SSE listeners, returning artifacts, or mutating cancellation state.
+
+Authn/authz decisions are written to `auth_audit_events` with safe metadata only:
+principal, token ID/prefix, repository, operation, result, reason, status,
+review ID, and request hash. Raw bearer tokens are never stored.
+
+GitHub integration follows GitHub App and OAuth guidance:
+
+- https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-github-apps
+- https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
+- https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps
+
 ## `POST /v1/review/start`
 
 Starts a review.
@@ -60,11 +99,20 @@ Starts a review.
     "executionMode": "localTrusted",
     "outputFormats": ["json", "markdown"]
   },
+  "repository": {
+    "provider": "github",
+    "owner": "octo-org",
+    "name": "agent-review",
+    "installationId": 123456,
+    "repositoryId": 987654
+  },
   "delivery": "inline"
 }
 ```
 
 - `request`: required `ReviewRequest`
+- `repository`: required when hosted auth is enabled unless the authenticated
+  token is bound to exactly one repository
 - `delivery`: optional `inline|detached` (default `inline`)
 
 Detached mode is active when `delivery=detached` or `request.detached=true`.
@@ -97,11 +145,20 @@ defaults this to the service process cwd and accepts a comma-separated override
 through `REVIEW_SERVICE_ALLOWED_CWD_ROOTS`. Requests outside configured roots
 are rejected before runtime reservation or worker dispatch.
 
+When hosted auth is enabled, start requests must also resolve under an
+authorized repository checkout. `hostedRepositoryRoots` is configured with
+`REVIEW_SERVICE_HOSTED_REPOSITORY_ROOTS` and defaults to `allowedCwdRoots`; the
+effective `cwd` must be below `<hostedRepositoryRoot>/<owner>/<repo>` for the
+repository granted by the bearer token. A valid token for one repository cannot
+start a run from another checkout path.
+
 ### Responses
 
 - `200`: inline run finished; response includes `result` summary payload
 - `202`: detached accepted; response includes `detachedRunId`
 - `400`: request parse/validation error
+- `401`: missing or invalid bearer token
+- `403`: authenticated token lacks the requested repository or operation scope
 - `413`: request body exceeds the configured byte limit
 - `429`: runtime queue, global concurrency, or per-scope active-run limit reached
 - `502`: worker or storage startup error
@@ -169,6 +226,8 @@ Returns review status and result summary when available.
 - `updatedAt`
 
 Returns `404` when review ID is unknown.
+When auth is enabled, `404` is also returned for review IDs owned by a
+repository outside the authenticated principal's access boundary.
 The response body follows `ReviewStatusResponseSchema`.
 
 ## `GET /v1/review/:reviewId/events`
@@ -199,8 +258,8 @@ runtime lease while cancellation is pending. The worker also aborts the active
 in-process Workflow step when that step is running in the same worker process;
 the Workflow cancellation record remains the durable cross-process authority.
 The service only transitions the durable record to `cancelled` after Workflow
-reports `cancelled`. Terminal, unknown, inline-only, duplicate, or lease-expired
-requests return `409` with `cancelled: false`.
+reports `cancelled`. Unknown review IDs return `404`. Terminal, inline-only,
+duplicate, or lease-expired requests return `409` with `cancelled: false`.
 
 ### Responses
 
@@ -244,7 +303,9 @@ Returns:
   AI SDK `generateText` receives `abortSignal`, the Codex delegate forwards the
   signal into the Rust process-group runner, and Vercel Sandbox command
   execution receives a linked signal.
-- Authentication defaults to allow-all through an injected auth policy hook.
+- Authentication defaults to fail-closed in `createReviewServiceApp()` and
+  `src/server.ts`; local allow-all requires explicit `authMode: "disabled"` or
+  non-production `REVIEW_SERVICE_AUTH_MODE=disabled`.
 - `remoteSandbox` execution mode must be requested with detached delivery. Inline
   `remoteSandbox` requests return `400` with
   `executionMode "remoteSandbox" requires detached delivery`.

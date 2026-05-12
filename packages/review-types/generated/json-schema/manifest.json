@@ -56,12 +56,20 @@
       "file": "review-finding.schema.json"
     },
     {
+      "name": "reviewRepositorySelection",
+      "file": "review-repository-selection.schema.json"
+    },
+    {
       "name": "reviewRequest",
       "file": "review-request.schema.json"
     },
     {
       "name": "reviewResult",
       "file": "review-result.schema.json"
+    },
+    {
+      "name": "reviewRunAuthorization",
+      "file": "review-run-authorization.schema.json"
     },
     {
       "name": "reviewRunStatus",

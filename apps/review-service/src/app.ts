@@ -24,6 +24,7 @@ import {
   ReviewEventCursorSchema,
   type ReviewProvider,
   type ReviewRequest,
+  type ReviewRunAuthorization,
   type ReviewSecurityLimits,
   ReviewStartRequestSchema,
   type ReviewStartResponse,
@@ -39,20 +40,45 @@ import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import {
+  AuthHttpError,
+  authHttpErrorResponse,
+  authorizeRepositoryForRequest,
+  isAuthHttpError,
+  type ReviewAuthenticatedRequest,
+  type ReviewServiceAuthOperation,
+  type ReviewServiceAuthPolicy,
+  repositorySelectionFromAuthorization,
+  reviewRequestHash,
+} from './auth.js';
+import {
   createInMemoryReviewStore,
+  type ReviewAuthStoreAdapter,
   type ReviewRecord,
   type ReviewStoreAdapter,
 } from './storage/index.js';
 
 /**
+ * Re-exports hosted authentication context and auth policy types.
+ */
+export type {
+  ReviewAuthenticatedRequest,
+  ReviewServiceAuthPolicy,
+} from './auth.js';
+/**
  * Re-exports review store records and adapters for service consumers and tests.
  */
-export type { ReviewRecord, ReviewStoreAdapter } from './storage/index.js';
+export type {
+  ReviewAuthStoreAdapter,
+  ReviewRecord,
+  ReviewStoreAdapter,
+} from './storage/index.js';
 /**
  * Re-exports service store factories used by the production server and tests.
  */
 export {
+  createInMemoryReviewAuthStore,
   createInMemoryReviewStore,
+  createReviewAuthStoreFromEnv,
   createReviewStoreFromEnv,
 } from './storage/index.js';
 
@@ -82,17 +108,16 @@ export type ReviewServiceLogger = {
 };
 
 /**
- * Defines the request authorization hook used before service routes execute.
+ * Controls whether hosted API routes require an authenticated principal.
  */
-export type ReviewServiceAuthPolicy = (
-  context: Context
-) => Response | null | Promise<Response | null>;
+export type ReviewServiceAuthMode = 'required' | 'disabled';
 
 /**
  * Defines tunable service limits that do not change the route contract.
  */
 export type ReviewServiceConfig = {
   allowedCwdRoots: string[];
+  hostedRepositoryRoots: string[];
   maxRequestBodyBytes: number;
   maxRecordAgeMs: number;
   maxRecordEvents: number;
@@ -102,6 +127,7 @@ export type ReviewServiceConfig = {
   runtimeLeaseTtlMs: number;
   recordCleanupIntervalMs: number | false;
   eventStreamPollIntervalMs: number;
+  githubStreamAuthorizationTtlMs: number;
   remoteSandboxInlineError: string;
   reviewLimits: ReviewSecurityLimits;
 };
@@ -124,9 +150,11 @@ export type ReviewServiceDependencies = {
   worker: ReviewServiceWorker;
   bridge?: MirrorWriteBridge;
   store?: ReviewStoreAdapter;
+  authStore?: ReviewAuthStoreAdapter;
   nowMs?: () => number;
   uuid?: () => string;
   logger?: ReviewServiceLogger;
+  authMode?: ReviewServiceAuthMode;
   authPolicy?: ReviewServiceAuthPolicy;
   config?: ReviewServiceConfigInput;
   runner?: ReviewServiceRunner;
@@ -134,6 +162,7 @@ export type ReviewServiceDependencies = {
 
 const DEFAULT_CONFIG: ReviewServiceConfig = {
   allowedCwdRoots: [process.cwd()],
+  hostedRepositoryRoots: [process.cwd()],
   maxRequestBodyBytes: 256 * 1024,
   maxRecordAgeMs: 60 * 60 * 1000,
   maxRecordEvents: 200,
@@ -143,6 +172,7 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
   runtimeLeaseTtlMs: 10 * 60 * 1000,
   recordCleanupIntervalMs: 60_000,
   eventStreamPollIntervalMs: 15_000,
+  githubStreamAuthorizationTtlMs: 60_000,
   remoteSandboxInlineError:
     'executionMode "remoteSandbox" requires detached delivery',
   reviewLimits: DEFAULT_REVIEW_SECURITY_LIMITS,
@@ -175,10 +205,17 @@ class ReviewRequestPolicyError extends Error {
   }
 }
 
+class AuthAuditWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthAuditWriteError';
+  }
+}
+
 function jsonError(
   context: Context,
   message: string,
-  status: 400 | 404 | 409 | 413 | 429 | 502,
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 429 | 502,
   headers: Record<string, string> = {}
 ): Response {
   const response: ReviewErrorResponse = { error: message };
@@ -187,6 +224,12 @@ function jsonError(
     output.headers.set(key, value);
   }
   return output;
+}
+
+function authRequiredResponse(context: Context): Response {
+  return jsonError(context, 'authentication required', 401, {
+    'WWW-Authenticate': 'Bearer',
+  });
 }
 
 async function parseJsonBody<T>(
@@ -246,6 +289,45 @@ function prepareReviewRequestForService(
   }
 }
 
+function assertCwdMatchesAuthorizedRepository(
+  request: ReviewRequest,
+  repository: ReviewRunAuthorization['repository'],
+  config: ReviewServiceConfig
+): void {
+  assertRepositoryPathSegment(repository.owner, 'owner');
+  assertRepositoryPathSegment(repository.name, 'name');
+  const canonicalCwd = canonicalizePath(request.cwd);
+  const expectedRoots = config.hostedRepositoryRoots.map((root) =>
+    canonicalizePath(resolve(root, repository.owner, repository.name))
+  );
+  const allowed = expectedRoots.some((root) =>
+    pathContains(root, canonicalCwd)
+  );
+  if (!allowed) {
+    throw new ReviewRequestPolicyError(
+      'cwd must resolve under the authorized repository checkout root'
+    );
+  }
+}
+
+function assertRepositoryPathSegment(
+  value: string,
+  field: 'owner' | 'name'
+): void {
+  if (
+    value.length === 0 ||
+    value === '.' ||
+    value === '..' ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    isAbsolute(value)
+  ) {
+    throw new ReviewRequestPolicyError(
+      `repository ${field} must be a single safe path segment`
+    );
+  }
+}
+
 function logError(
   logger: ReviewServiceLogger,
   message: string,
@@ -257,12 +339,14 @@ function logError(
 function createReviewRecord(
   request: ReviewRequest,
   reviewId: string,
-  nowMs: number
+  nowMs: number,
+  authorization?: ReviewRunAuthorization
 ): ReviewRecord {
   return {
     reviewId,
     status: 'queued',
     request,
+    ...(authorization ? { authorization } : {}),
     createdAt: nowMs,
     updatedAt: nowMs,
     events: [],
@@ -297,6 +381,44 @@ function buildStatusResponse(record: ReviewRecord): ReviewStatusResponse {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
+}
+
+const REVIEW_AUTH_CONTEXT_KEY = 'reviewAuthContext';
+
+function setReviewAuthContext(
+  context: Context,
+  authContext: ReviewAuthenticatedRequest
+): void {
+  context.set(REVIEW_AUTH_CONTEXT_KEY, authContext);
+}
+
+function getReviewAuthContext(
+  context: Context
+): ReviewAuthenticatedRequest | undefined {
+  return context.get(REVIEW_AUTH_CONTEXT_KEY) as
+    | ReviewAuthenticatedRequest
+    | undefined;
+}
+
+function actorForAuth(auth: ReviewAuthenticatedRequest): string {
+  return auth.principal.type === 'githubUser'
+    ? `github:${auth.principal.login}`
+    : `service-token:${auth.principal.tokenId}`;
+}
+
+function scopeForOperation(
+  operation: ReviewServiceAuthOperation
+): ReviewRunAuthorization['scopes'][number] {
+  switch (operation) {
+    case 'review:start':
+      return 'review:start';
+    case 'review:read':
+      return 'review:read';
+    case 'review:cancel':
+      return 'review:cancel';
+    case 'review:publish':
+      return 'review:publish';
+  }
 }
 
 function parseEventCursor(
@@ -335,6 +457,7 @@ function selectReplayEvents(
  *
  * @param dependencies - The providers, worker, store, clock, auth, and runner used by the app.
  * @returns A Hono app that can be tested with app.request or served by a runtime entrypoint.
+ * @throws Error - When an unexpected dependency failure escapes route construction or request handling.
  */
 export function createReviewServiceApp(
   dependencies: ReviewServiceDependencies
@@ -351,10 +474,377 @@ export function createReviewServiceApp(
   const nowMs = dependencies.nowMs ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const logger = dependencies.logger ?? console;
-  const authPolicy = dependencies.authPolicy ?? (() => null);
+  const authMode = dependencies.authMode ?? 'required';
+  const authPolicy = dependencies.authPolicy;
+  const authStore = dependencies.authStore;
+  if (authMode !== 'disabled' && authPolicy && !authStore) {
+    throw new Error(
+      'authStore is required when hosted auth is enabled so appendAuthAudit can persist authorization decisions'
+    );
+  }
   const runner = dependencies.runner ?? runReview;
   const app = new Hono();
   const liveListeners = new Map<string, Set<ReviewLifecycleListener>>();
+
+  async function appendAuthAudit(input: {
+    operation: ReviewServiceAuthOperation;
+    result: 'allowed' | 'denied';
+    reason: string;
+    status: number;
+    auth?: ReviewAuthenticatedRequest;
+    authorization?: ReviewRunAuthorization;
+    reviewId?: string;
+    requestId?: string;
+  }): Promise<void> {
+    if (!authStore) {
+      return;
+    }
+    try {
+      await authStore.appendAuthAuditEvent({
+        auditEventId: uuid(),
+        eventType: 'authz',
+        operation: input.operation,
+        result: input.result,
+        reason: input.reason,
+        status: input.status,
+        ...(input.auth ? { principal: input.auth.principal } : {}),
+        ...(input.auth?.tokenId ? { tokenId: input.auth.tokenId } : {}),
+        ...(input.auth?.tokenPrefix
+          ? { tokenPrefix: input.auth.tokenPrefix }
+          : {}),
+        ...(input.authorization
+          ? { repository: input.authorization.repository }
+          : {}),
+        ...(input.reviewId ? { reviewId: input.reviewId } : {}),
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        createdAt: nowMs(),
+      });
+    } catch (error) {
+      logError(logger, '[review-service] auth audit write failed', error);
+      throw new AuthAuditWriteError('authorization audit unavailable');
+    }
+  }
+
+  async function appendAuthAuditOrUnavailable(
+    context: Context,
+    input: Parameters<typeof appendAuthAudit>[0]
+  ): Promise<Response | null> {
+    try {
+      await appendAuthAudit(input);
+      return null;
+    } catch (error) {
+      if (error instanceof AuthAuditWriteError) {
+        return jsonError(context, 'authorization unavailable', 502);
+      }
+      throw error;
+    }
+  }
+
+  async function authorizeStartRequest(
+    context: Context,
+    parsed: ReturnType<typeof ReviewStartRequestSchema.parse>,
+    request: ReviewRequest
+  ): Promise<ReviewRunAuthorization | Response | undefined> {
+    const auth = getReviewAuthContext(context);
+    if (!auth) {
+      return undefined;
+    }
+    const soleRepository =
+      auth.repositories.length === 1 ? auth.repositories[0] : undefined;
+    const selection =
+      parsed.repository ??
+      (soleRepository
+        ? repositorySelectionFromAuthorization(soleRepository)
+        : undefined);
+    if (!selection) {
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation: 'review:start',
+        result: 'denied',
+        reason: 'repository_required',
+        status: 403,
+        auth,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return jsonError(context, 'repository authorization required', 403);
+    }
+
+    try {
+      const repository = await authorizeRepositoryForRequest(
+        auth,
+        selection,
+        'review:start'
+      );
+      try {
+        assertCwdMatchesAuthorizedRepository(request, repository, config);
+      } catch (error) {
+        const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+          operation: 'review:start',
+          result: 'denied',
+          reason: 'cwd_repository_mismatch',
+          status: 403,
+          auth,
+        });
+        if (auditUnavailable) {
+          return auditUnavailable;
+        }
+        return jsonError(context, redactErrorMessage(error), 403);
+      }
+      const authorization: ReviewRunAuthorization = {
+        principal: auth.principal,
+        repository,
+        scopes: auth.scopes,
+        actor: actorForAuth(auth),
+        requestHash: reviewRequestHash(request),
+        authorizedAt: nowMs(),
+      };
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation: 'review:start',
+        result: 'allowed',
+        reason: 'repository_scope_allowed',
+        status: 200,
+        auth,
+        authorization,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return authorization;
+    } catch (error) {
+      if (!isAuthHttpError(error)) {
+        const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+          operation: 'review:start',
+          result: 'denied',
+          reason: 'authorization_unavailable',
+          status: 502,
+          auth,
+        });
+        if (auditUnavailable) {
+          return auditUnavailable;
+        }
+        return jsonError(context, 'authorization unavailable', 502);
+      }
+      const status = isAuthHttpError(error) ? error.status : 403;
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation: 'review:start',
+        result: 'denied',
+        reason: isAuthHttpError(error) ? error.reason : 'authorization_error',
+        status,
+        auth,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return isAuthHttpError(error)
+        ? authHttpErrorResponse(error)
+        : jsonError(context, 'authorization denied', 403);
+    }
+  }
+
+  async function authorizeRecordAccess(
+    context: Context,
+    record: ReviewRecord,
+    operation: ReviewServiceAuthOperation,
+    options: {
+      auditAllowed?: boolean;
+      forceDynamicAuthorization?: boolean;
+    } = {}
+  ): Promise<Response | null> {
+    const auth = getReviewAuthContext(context);
+    if (!auth) {
+      return null;
+    }
+    if (!record.authorization) {
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation,
+        result: 'denied',
+        reason: 'run_has_no_authorization',
+        status: 404,
+        auth,
+        reviewId: record.reviewId,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return jsonError(context, 'review not found', 404);
+    }
+
+    try {
+      await authorizeRepositoryForRequest(
+        auth,
+        record.authorization.repository,
+        scopeForOperation(operation),
+        { forceDynamic: options.forceDynamicAuthorization ?? false }
+      );
+      if (options.auditAllowed === false) {
+        return null;
+      }
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation,
+        result: 'allowed',
+        reason: 'run_repository_scope_allowed',
+        status: 200,
+        auth,
+        authorization: record.authorization,
+        reviewId: record.reviewId,
+        requestId: record.authorization.requestHash,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return null;
+    } catch (error) {
+      if (!isAuthHttpError(error)) {
+        const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+          operation,
+          result: 'denied',
+          reason: 'authorization_unavailable',
+          status: 502,
+          auth,
+          authorization: record.authorization,
+          reviewId: record.reviewId,
+          requestId: record.authorization.requestHash,
+        });
+        if (auditUnavailable) {
+          return auditUnavailable;
+        }
+        return jsonError(context, 'authorization unavailable', 502);
+      }
+      const reason = error.reason;
+      const status =
+        error.status === 401
+          ? 401
+          : reason === 'scope_missing' || reason === 'github_permission_missing'
+            ? 403
+            : 404;
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation,
+        result: 'denied',
+        reason,
+        status,
+        auth,
+        authorization: record.authorization,
+        reviewId: record.reviewId,
+        requestId: record.authorization.requestHash,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      if (status === 401) {
+        return authHttpErrorResponse(error);
+      }
+      return jsonError(
+        context,
+        status === 403 ? 'authorization denied' : 'review not found',
+        status
+      );
+    }
+  }
+
+  async function revalidateServiceTokenForStream(
+    context: Context,
+    auth: ReviewAuthenticatedRequest,
+    record: ReviewRecord
+  ): Promise<Response | null> {
+    if (auth.principal.type !== 'serviceToken' || !authStore) {
+      return null;
+    }
+
+    let tokenRecord: Awaited<ReturnType<typeof authStore.getServiceToken>>;
+    try {
+      tokenRecord = await authStore.getServiceToken(auth.principal.tokenId);
+    } catch {
+      return jsonError(context, 'authorization unavailable', 502);
+    }
+
+    const denyStreamToken = async (reason: string): Promise<Response> => {
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation: 'review:read',
+        result: 'denied',
+        reason,
+        status: 401,
+        auth,
+        reviewId: record.reviewId,
+        ...(record.authorization
+          ? {
+              authorization: record.authorization,
+              requestId: record.authorization.requestHash,
+            }
+          : {}),
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return authHttpErrorResponse(new AuthHttpError(401, reason));
+    };
+
+    if (!tokenRecord) {
+      return denyStreamToken('service_token_unknown');
+    }
+    if (auth.tokenHash && tokenRecord.tokenHash !== auth.tokenHash) {
+      return denyStreamToken('service_token_invalid');
+    }
+    if (tokenRecord.revokedAt !== undefined) {
+      return denyStreamToken('service_token_revoked');
+    }
+    if (
+      tokenRecord.expiresAt !== undefined &&
+      tokenRecord.expiresAt <= nowMs()
+    ) {
+      return denyStreamToken('service_token_expired');
+    }
+
+    auth.scopes = tokenRecord.scopes;
+    auth.repositories = [tokenRecord.repository];
+    auth.tokenId = tokenRecord.tokenId;
+    auth.tokenPrefix = tokenRecord.tokenPrefix;
+    auth.tokenHash = tokenRecord.tokenHash;
+    auth.principal = {
+      type: 'serviceToken',
+      tokenId: tokenRecord.tokenId,
+      tokenPrefix: tokenRecord.tokenPrefix,
+      name: tokenRecord.name,
+    };
+    return null;
+  }
+
+  async function revalidateStreamAccess(
+    context: Context,
+    record: ReviewRecord,
+    options: { lastGitHubDynamicAuthorizationAt?: number } = {}
+  ): Promise<Response | null> {
+    const auth = getReviewAuthContext(context);
+    if (!auth) {
+      return null;
+    }
+    const tokenDenied = await revalidateServiceTokenForStream(
+      context,
+      auth,
+      record
+    );
+    if (tokenDenied) {
+      return tokenDenied;
+    }
+    const shouldForceDynamicAuthorization =
+      auth.principal.type === 'githubUser' &&
+      (options.lastGitHubDynamicAuthorizationAt === undefined ||
+        nowMs() - options.lastGitHubDynamicAuthorizationAt >=
+          config.githubStreamAuthorizationTtlMs);
+    const accessDenied = await authorizeRecordAccess(
+      context,
+      record,
+      'review:read',
+      {
+        auditAllowed: false,
+        forceDynamicAuthorization: shouldForceDynamicAuthorization,
+      }
+    );
+    if (!accessDenied && shouldForceDynamicAuthorization) {
+      options.lastGitHubDynamicAuthorizationAt = nowMs();
+    }
+    return accessDenied;
+  }
 
   function getLiveListeners(reviewId: string): Set<ReviewLifecycleListener> {
     let listeners = liveListeners.get(reviewId);
@@ -816,8 +1306,28 @@ export function createReviewServiceApp(
     }
   }
 
+  async function authenticateRequestContext(
+    context: Context
+  ): Promise<Response | null> {
+    if (authMode === 'disabled') {
+      return null;
+    }
+    if (!authPolicy) {
+      return authRequiredResponse(context);
+    }
+    const authResult = await authPolicy(context);
+    if (authResult instanceof Response) {
+      return authResult;
+    }
+    if (!authResult) {
+      return authRequiredResponse(context);
+    }
+    setReviewAuthContext(context, authResult);
+    return null;
+  }
+
   app.use('/v1/*', async (context, next) => {
-    const denied = await authPolicy(context);
+    const denied = await authenticateRequestContext(context);
     if (denied) {
       return denied;
     }
@@ -848,6 +1358,14 @@ export function createReviewServiceApp(
       try {
         const { delivery } = parsed;
         const request = prepareReviewRequestForService(parsed.request, config);
+        const authorization = await authorizeStartRequest(
+          context,
+          parsed,
+          request
+        );
+        if (authorization instanceof Response) {
+          return authorization;
+        }
         if (
           request.executionMode === 'remoteSandbox' &&
           delivery !== 'detached' &&
@@ -870,7 +1388,8 @@ export function createReviewServiceApp(
         const record = createReviewRecord(
           redactReviewRequest(request),
           reviewId,
-          nowMs()
+          nowMs(),
+          authorization
         );
         attachRuntimeLease(record, runtimeScopeKeyForRequest(request));
         assertRuntimeLeaseAttached(record);
@@ -924,7 +1443,6 @@ export function createReviewServiceApp(
           if (isTerminalReviewRunStatus(record.status)) {
             setTerminalRetention(record);
           }
-          await store.set(record, { reason: 'detached started' });
           await emit(record, {
             type: 'enteredReviewMode',
             review: 'review requested',
@@ -932,6 +1450,7 @@ export function createReviewServiceApp(
           if (isTerminalReviewRunStatus(record.status)) {
             await emitDetachedTerminalEvents(record);
           }
+          await store.set(record, { reason: 'detached started' });
           const response: ReviewStartResponse = {
             reviewId,
             status: record.status,
@@ -974,6 +1493,10 @@ export function createReviewServiceApp(
     if (record instanceof Response) {
       return record;
     }
+    const denied = await authorizeRecordAccess(context, record, 'review:read');
+    if (denied) {
+      return denied;
+    }
 
     try {
       await syncDetachedRecord(record);
@@ -995,6 +1518,10 @@ export function createReviewServiceApp(
     );
     if (record instanceof Response) {
       return record;
+    }
+    const denied = await authorizeRecordAccess(context, record, 'review:read');
+    if (denied) {
+      return denied;
     }
 
     let cursor: ReviewEventCursor;
@@ -1021,26 +1548,10 @@ export function createReviewServiceApp(
       let cleanedUp = false;
       const deliveredEventIds = new Set<string>();
       let writeQueue = Promise.resolve();
-
-      const writeQueuedSse = (
-        frame: Parameters<typeof stream.writeSSE>[0]
-      ): Promise<void> => {
-        writeQueue = writeQueue.then(() => stream.writeSSE(frame));
-        return writeQueue;
-      };
-
-      const send = async (event: LifecycleEvent) => {
-        if (deliveredEventIds.has(event.meta.eventId)) {
-          return writeQueue;
-        }
-        deliveredEventIds.add(event.meta.eventId);
-        return writeQueuedSse({
-          event: event.type,
-          data: JSON.stringify(event),
-          id: event.meta.eventId,
-          retry: 1000,
-        });
-      };
+      const streamAuthState: { lastGitHubDynamicAuthorizationAt?: number } = {};
+      if (getReviewAuthContext(context)?.principal.type === 'githubUser') {
+        streamAuthState.lastGitHubDynamicAuthorizationAt = nowMs();
+      }
 
       const cleanup = () => {
         if (cleanedUp) {
@@ -1049,6 +1560,58 @@ export function createReviewServiceApp(
         cleanedUp = true;
         streaming = false;
         removeLiveListener(record.reviewId, send);
+        void stream.close();
+      };
+
+      const enqueueSseOperation = (
+        operation: () => Promise<void>
+      ): Promise<void> => {
+        const queued = writeQueue.then(async () => {
+          if (!streaming) {
+            return;
+          }
+          await operation();
+        });
+        writeQueue = queued.catch((error) => {
+          logError(logger, '[review-service] events stream error', error);
+          cleanup();
+        });
+        return writeQueue;
+      };
+
+      const writeQueuedSse = (
+        frame: Parameters<typeof stream.writeSSE>[0]
+      ): Promise<void> => {
+        return enqueueSseOperation(() => stream.writeSSE(frame));
+      };
+
+      const send: ReviewLifecycleListener = (event) => {
+        return enqueueSseOperation(async () => {
+          if (deliveredEventIds.has(event.meta.eventId)) {
+            return;
+          }
+          const latestRecord = await store.get(record.reviewId);
+          if (!latestRecord) {
+            cleanup();
+            return;
+          }
+          const accessDenied = await revalidateStreamAccess(
+            context,
+            latestRecord,
+            streamAuthState
+          );
+          if (accessDenied) {
+            cleanup();
+            return;
+          }
+          deliveredEventIds.add(event.meta.eventId);
+          await stream.writeSSE({
+            event: event.type,
+            data: JSON.stringify(event),
+            id: event.meta.eventId,
+            retry: 1000,
+          });
+        });
       };
 
       getLiveListeners(record.reviewId).add(send);
@@ -1080,6 +1643,15 @@ export function createReviewServiceApp(
             cleanup();
             break;
           }
+          const accessDenied = await revalidateStreamAccess(
+            context,
+            latestRecord,
+            streamAuthState
+          );
+          if (accessDenied) {
+            cleanup();
+            break;
+          }
           await syncDetachedRecord(latestRecord);
           await failExpiredRuntimeLease(latestRecord);
           if (!streaming) {
@@ -1107,6 +1679,10 @@ export function createReviewServiceApp(
     );
     if (record instanceof Response) {
       return record;
+    }
+    const denied = await authorizeRecordAccess(context, record, 'review:read');
+    if (denied) {
+      return denied;
     }
 
     try {
@@ -1154,6 +1730,14 @@ export function createReviewServiceApp(
     );
     if (record instanceof Response) {
       return record;
+    }
+    const denied = await authorizeRecordAccess(
+      context,
+      record,
+      'review:cancel'
+    );
+    if (denied) {
+      return denied;
     }
 
     if (record.detachedRunId) {

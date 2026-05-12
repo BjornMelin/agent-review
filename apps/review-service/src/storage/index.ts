@@ -4,7 +4,11 @@ import {
   ARTIFACT_CONTENT_TYPES,
   type LifecycleEvent,
   type OutputFormat,
+  type ReviewAuthPrincipal,
+  type ReviewAuthScope,
+  type ReviewRepositoryAuthorization,
   type ReviewRequest,
+  type ReviewRunAuthorization,
   type ReviewRunLease,
   type ReviewRunStatus,
 } from '@review-agent/review-types';
@@ -17,10 +21,16 @@ import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import pg, { type PoolConfig } from 'pg';
 import * as schema from './schema.js';
 import {
+  authAuditEvents,
+  githubInstallations,
+  githubRepositories,
+  githubRepositoryPermissions,
+  githubUsers,
   reviewArtifacts,
   reviewEvents,
   reviewRuns,
   reviewStatusTransitions,
+  serviceTokens,
 } from './schema.js';
 
 type ReviewStorageSchema = typeof schema;
@@ -30,6 +40,8 @@ type ReviewStorageDatabase =
 type ReviewRunRow = typeof reviewRuns.$inferSelect;
 type ReviewEventRow = typeof reviewEvents.$inferSelect;
 type ReviewArtifactRow = typeof reviewArtifacts.$inferSelect;
+type ServiceTokenRow = typeof serviceTokens.$inferSelect;
+type AuthAuditEventRow = typeof authAuditEvents.$inferSelect;
 type CleanupCandidate = {
   reviewId: string;
   status: ReviewRunStatus;
@@ -54,6 +66,7 @@ export type ReviewRecord = {
   reviewId: string;
   status: ReviewRunStatus;
   request: ReviewRequest;
+  authorization?: ReviewRunAuthorization;
   createdAt: number;
   updatedAt: number;
   result?: ReviewRunResult;
@@ -69,6 +82,106 @@ export type ReviewRecord = {
 };
 
 type ReviewRecordWithLease = ReviewRecord & { lease: ReviewRunLease };
+
+/**
+ * Stores a hashed automation token and the repository/scope boundary it grants.
+ */
+export type ServiceTokenRecord = {
+  tokenId: string;
+  tokenPrefix: string;
+  tokenHash: string;
+  name: string;
+  scopes: ReviewAuthScope[];
+  repository: ReviewRepositoryAuthorization;
+  createdBy?: ReviewAuthPrincipal;
+  expiresAt?: number;
+  revokedAt?: number;
+  lastUsedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Stores a GitHub user identity available for repository authorization.
+ */
+export type GitHubUserRecord = {
+  githubUserId: string;
+  login: string;
+  name?: string;
+  avatarUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Stores a GitHub App installation permission snapshot.
+ */
+export type GitHubInstallationRecord = {
+  installationId: string;
+  accountLogin: string;
+  accountType: string;
+  permissions: Record<string, string>;
+  repositorySelection: string;
+  suspendedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Stores a repository reachable through a GitHub App installation.
+ */
+export type GitHubRepositoryRecord = ReviewRepositoryAuthorization & {
+  createdAt: number;
+  updatedAt: number;
+  deletedAt?: number;
+};
+
+/**
+ * Stores a user-specific repository permission snapshot.
+ */
+export type GitHubRepositoryPermissionRecord = {
+  githubUserId: string;
+  repositoryId: string;
+  permission: 'read' | 'write' | 'admin';
+  updatedAt: number;
+};
+
+/**
+ * Stores security audit rows for authn/authz decisions.
+ */
+export type AuthAuditEventRecord = {
+  auditEventId: string;
+  eventType: 'authn' | 'authz' | 'token';
+  operation: string;
+  result: 'allowed' | 'denied';
+  reason: string;
+  status: number;
+  principal?: ReviewAuthPrincipal;
+  tokenId?: string;
+  tokenPrefix?: string;
+  repository?: ReviewRepositoryAuthorization;
+  reviewId?: string;
+  requestId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+};
+
+/**
+ * Defines durable auth storage for GitHub identity, scoped tokens, and audit rows.
+ */
+export type ReviewAuthStoreAdapter = {
+  getServiceToken(tokenId: string): Promise<ServiceTokenRecord | undefined>;
+  setServiceToken(record: ServiceTokenRecord): Promise<void>;
+  touchServiceToken(tokenId: string, lastUsedAt: number): Promise<void>;
+  upsertGitHubUser(record: GitHubUserRecord): Promise<void>;
+  upsertGitHubInstallation(record: GitHubInstallationRecord): Promise<void>;
+  upsertGitHubRepository(record: GitHubRepositoryRecord): Promise<void>;
+  upsertGitHubRepositoryPermission(
+    record: GitHubRepositoryPermissionRecord
+  ): Promise<void>;
+  appendAuthAuditEvent(record: AuthAuditEventRecord): Promise<void>;
+  listAuthAuditEvents(): Promise<AuthAuditEventRecord[]>;
+};
 
 /**
  * Carries optional audit context for store write operations.
@@ -188,6 +301,9 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
     reviewId: record.reviewId,
     status: record.status,
     request: structuredClone(record.request),
+    ...(record.authorization
+      ? { authorization: structuredClone(record.authorization) }
+      : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     events: record.events.map(cloneLifecycleEvent),
@@ -320,18 +436,39 @@ function artifactRowsFor(
   );
 }
 
+function authPrincipalId(principal: ReviewAuthPrincipal): string {
+  return principal.type === 'githubUser'
+    ? String(principal.githubUserId)
+    : principal.tokenId;
+}
+
 function runInsertFor(record: ReviewRecord): typeof reviewRuns.$inferInsert {
+  const authorization = record.authorization;
   return {
     reviewId: record.reviewId,
     runId: record.detachedRunId ?? record.reviewId,
     status: record.status,
     request: record.request,
+    authorization: authorization ?? null,
     requestSummary: buildRequestSummary(record.request),
     result: record.result ? serializeReviewRunResult(record.result) : null,
     error: record.error ?? null,
     detachedRunId: record.detachedRunId ?? null,
     workflowRunId: record.workflowRunId ?? record.detachedRunId ?? null,
     sandboxId: record.sandboxId ?? null,
+    authActorType: authorization?.principal.type ?? null,
+    authActorId: authorization
+      ? authPrincipalId(authorization.principal)
+      : null,
+    githubInstallationId: authorization
+      ? String(authorization.repository.installationId)
+      : null,
+    githubRepositoryId: authorization
+      ? String(authorization.repository.repositoryId)
+      : null,
+    githubOwner: authorization?.repository.owner ?? null,
+    githubRepo: authorization?.repository.name ?? null,
+    requestHash: authorization?.requestHash ?? null,
     leaseOwner: record.lease?.owner ?? null,
     leaseScopeKey: record.lease?.scopeKey ?? null,
     leaseAcquiredAt: dateFromMs(record.lease?.acquiredAt),
@@ -467,6 +604,78 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
   };
 }
 
+function cloneServiceTokenRecord(
+  record: ServiceTokenRecord
+): ServiceTokenRecord {
+  return structuredClone(record);
+}
+
+function cloneAuthAuditEventRecord(
+  record: AuthAuditEventRecord
+): AuthAuditEventRecord {
+  return structuredClone(record);
+}
+
+/**
+ * Creates an in-memory auth store for local tests and no-database development.
+ *
+ * @returns A copy-on-read auth store with the same async contract as Postgres.
+ */
+export function createInMemoryReviewAuthStore(): ReviewAuthStoreAdapter {
+  const tokens = new Map<string, ServiceTokenRecord>();
+  const users = new Map<string, GitHubUserRecord>();
+  const installations = new Map<string, GitHubInstallationRecord>();
+  const repositories = new Map<string, GitHubRepositoryRecord>();
+  const permissions = new Map<string, GitHubRepositoryPermissionRecord>();
+  const auditEvents: AuthAuditEventRecord[] = [];
+
+  return {
+    async getServiceToken(tokenId) {
+      const record = tokens.get(tokenId);
+      return record ? cloneServiceTokenRecord(record) : undefined;
+    },
+    async setServiceToken(record) {
+      tokens.set(record.tokenId, cloneServiceTokenRecord(record));
+    },
+    async touchServiceToken(tokenId, lastUsedAt) {
+      const record = tokens.get(tokenId);
+      if (!record) {
+        return;
+      }
+      const touchedAt = Math.max(
+        record.lastUsedAt ?? Number.NEGATIVE_INFINITY,
+        lastUsedAt
+      );
+      tokens.set(tokenId, {
+        ...record,
+        lastUsedAt: touchedAt,
+        updatedAt: Math.max(record.updatedAt, touchedAt),
+      });
+    },
+    async upsertGitHubUser(record) {
+      users.set(record.githubUserId, structuredClone(record));
+    },
+    async upsertGitHubInstallation(record) {
+      installations.set(record.installationId, structuredClone(record));
+    },
+    async upsertGitHubRepository(record) {
+      repositories.set(String(record.repositoryId), structuredClone(record));
+    },
+    async upsertGitHubRepositoryPermission(record) {
+      permissions.set(
+        `${record.githubUserId}:${record.repositoryId}`,
+        structuredClone(record)
+      );
+    },
+    async appendAuthAuditEvent(record) {
+      auditEvents.push(cloneAuthAuditEventRecord(record));
+    },
+    async listAuthAuditEvents() {
+      return auditEvents.map(cloneAuthAuditEventRecord);
+    },
+  };
+}
+
 function buildRecord(
   run: ReviewRunRow,
   events: ReviewEventRow[],
@@ -483,6 +692,7 @@ function buildRecord(
     reviewId: run.reviewId,
     status: run.status,
     request: run.request,
+    ...(run.authorization ? { authorization: run.authorization } : {}),
     createdAt: run.createdAt.getTime(),
     updatedAt: run.updatedAt.getTime(),
     events: events.map((row) => row.event),
@@ -543,12 +753,20 @@ function rowUpdateFor(
     runId: insert.runId,
     status: insert.status,
     request: insert.request,
+    authorization: insert.authorization,
     requestSummary: insert.requestSummary,
     result: insert.result,
     error: insert.error,
     detachedRunId: insert.detachedRunId,
     workflowRunId: insert.workflowRunId,
     sandboxId: insert.sandboxId,
+    authActorType: insert.authActorType,
+    authActorId: insert.authActorId,
+    githubInstallationId: insert.githubInstallationId,
+    githubRepositoryId: insert.githubRepositoryId,
+    githubOwner: insert.githubOwner,
+    githubRepo: insert.githubRepo,
+    requestHash: insert.requestHash,
     leaseOwner: insert.leaseOwner,
     leaseScopeKey: insert.leaseScopeKey,
     leaseAcquiredAt: insert.leaseAcquiredAt,
@@ -1027,6 +1245,264 @@ export function createDrizzleReviewStore(
   };
 }
 
+function serviceTokenRecordFromRow(row: ServiceTokenRow): ServiceTokenRecord {
+  const expiresAt = msFromDate(row.expiresAt);
+  const revokedAt = msFromDate(row.revokedAt);
+  const lastUsedAt = msFromDate(row.lastUsedAt);
+  return {
+    tokenId: row.tokenId,
+    tokenPrefix: row.tokenPrefix,
+    tokenHash: row.tokenHash,
+    name: row.name,
+    scopes: row.scopes,
+    repository: row.repository,
+    ...(row.createdBy ? { createdBy: row.createdBy } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(revokedAt !== undefined ? { revokedAt } : {}),
+    ...(lastUsedAt !== undefined ? { lastUsedAt } : {}),
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+  };
+}
+
+function authAuditEventRecordFromRow(
+  row: AuthAuditEventRow
+): AuthAuditEventRecord {
+  return {
+    auditEventId: row.auditEventId,
+    eventType: row.eventType as AuthAuditEventRecord['eventType'],
+    operation: row.operation,
+    result: row.result as AuthAuditEventRecord['result'],
+    reason: row.reason,
+    status: row.status,
+    ...(row.principal ? { principal: row.principal } : {}),
+    ...(row.tokenId ? { tokenId: row.tokenId } : {}),
+    ...(row.tokenPrefix ? { tokenPrefix: row.tokenPrefix } : {}),
+    ...(row.repository ? { repository: row.repository } : {}),
+    ...(row.reviewId ? { reviewId: row.reviewId } : {}),
+    ...(row.requestId ? { requestId: row.requestId } : {}),
+    ...(row.metadata ? { metadata: row.metadata } : {}),
+    createdAt: row.createdAt.getTime(),
+  };
+}
+
+function githubUserValues(
+  record: GitHubUserRecord
+): typeof githubUsers.$inferInsert {
+  return {
+    githubUserId: record.githubUserId,
+    login: record.login,
+    name: record.name ?? null,
+    avatarUrl: record.avatarUrl ?? null,
+    createdAt: new Date(record.createdAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
+
+function githubInstallationValues(
+  record: GitHubInstallationRecord
+): typeof githubInstallations.$inferInsert {
+  return {
+    installationId: record.installationId,
+    accountLogin: record.accountLogin,
+    accountType: record.accountType,
+    permissions: record.permissions,
+    repositorySelection: record.repositorySelection,
+    suspendedAt: dateFromMs(record.suspendedAt),
+    createdAt: new Date(record.createdAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
+
+function githubRepositoryValues(
+  record: GitHubRepositoryRecord
+): typeof githubRepositories.$inferInsert {
+  return {
+    repositoryId: String(record.repositoryId),
+    installationId: String(record.installationId),
+    owner: record.owner,
+    name: record.name,
+    fullName: record.fullName,
+    visibility: record.visibility,
+    permissions: record.permissions,
+    deletedAt: dateFromMs(record.deletedAt),
+    createdAt: new Date(record.createdAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
+
+function serviceTokenValues(
+  record: ServiceTokenRecord
+): typeof serviceTokens.$inferInsert {
+  return {
+    tokenId: record.tokenId,
+    tokenPrefix: record.tokenPrefix,
+    tokenHash: record.tokenHash,
+    name: record.name,
+    scopes: record.scopes,
+    repository: record.repository,
+    createdBy: record.createdBy ?? null,
+    expiresAt: dateFromMs(record.expiresAt),
+    revokedAt: dateFromMs(record.revokedAt),
+    lastUsedAt: dateFromMs(record.lastUsedAt),
+    createdAt: new Date(record.createdAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
+
+function authAuditEventValues(
+  record: AuthAuditEventRecord
+): typeof authAuditEvents.$inferInsert {
+  return {
+    auditEventId: record.auditEventId,
+    eventType: record.eventType,
+    operation: record.operation,
+    result: record.result,
+    reason: record.reason,
+    status: record.status,
+    principal: record.principal ?? null,
+    tokenId: record.tokenId ?? null,
+    tokenPrefix: record.tokenPrefix ?? null,
+    repository: record.repository ?? null,
+    reviewId: record.reviewId ?? null,
+    requestId: record.requestId ?? null,
+    metadata: record.metadata ?? null,
+    createdAt: new Date(record.createdAt),
+  };
+}
+
+/**
+ * Creates a Drizzle-backed auth store for PostgreSQL-compatible databases.
+ *
+ * @param db - Drizzle PostgreSQL database connected with the review storage schema.
+ * @returns A durable auth store for GitHub identity, service tokens, and audit rows.
+ */
+export function createDrizzleReviewAuthStore(
+  db: ReviewStorageDatabase
+): ReviewAuthStoreAdapter {
+  return {
+    async getServiceToken(tokenId) {
+      const [row] = await db
+        .select()
+        .from(serviceTokens)
+        .where(eq(serviceTokens.tokenId, tokenId));
+      return row ? serviceTokenRecordFromRow(row) : undefined;
+    },
+    async setServiceToken(record) {
+      const values = serviceTokenValues(record);
+      await db
+        .insert(serviceTokens)
+        .values(values)
+        .onConflictDoUpdate({
+          target: serviceTokens.tokenId,
+          set: {
+            tokenPrefix: values.tokenPrefix,
+            tokenHash: values.tokenHash,
+            name: values.name,
+            scopes: values.scopes,
+            repository: values.repository,
+            createdBy: values.createdBy,
+            expiresAt: values.expiresAt,
+            revokedAt: values.revokedAt,
+            lastUsedAt: values.lastUsedAt,
+            updatedAt: values.updatedAt,
+          },
+        });
+    },
+    async touchServiceToken(tokenId, lastUsedAt) {
+      const touchedAt = new Date(lastUsedAt);
+      await db
+        .update(serviceTokens)
+        .set({
+          lastUsedAt: sql`GREATEST(COALESCE(${serviceTokens.lastUsedAt}, ${touchedAt}), ${touchedAt})`,
+          updatedAt: sql`GREATEST(${serviceTokens.updatedAt}, ${touchedAt})`,
+        })
+        .where(eq(serviceTokens.tokenId, tokenId));
+    },
+    async upsertGitHubUser(record) {
+      const values = githubUserValues(record);
+      await db
+        .insert(githubUsers)
+        .values(values)
+        .onConflictDoUpdate({
+          target: githubUsers.githubUserId,
+          set: {
+            login: values.login,
+            name: values.name,
+            avatarUrl: values.avatarUrl,
+            updatedAt: values.updatedAt,
+          },
+        });
+    },
+    async upsertGitHubInstallation(record) {
+      const values = githubInstallationValues(record);
+      await db
+        .insert(githubInstallations)
+        .values(values)
+        .onConflictDoUpdate({
+          target: githubInstallations.installationId,
+          set: {
+            accountLogin: values.accountLogin,
+            accountType: values.accountType,
+            permissions: values.permissions,
+            repositorySelection: values.repositorySelection,
+            suspendedAt: values.suspendedAt,
+            updatedAt: values.updatedAt,
+          },
+        });
+    },
+    async upsertGitHubRepository(record) {
+      const values = githubRepositoryValues(record);
+      await db
+        .insert(githubRepositories)
+        .values(values)
+        .onConflictDoUpdate({
+          target: githubRepositories.repositoryId,
+          set: {
+            installationId: values.installationId,
+            owner: values.owner,
+            name: values.name,
+            fullName: values.fullName,
+            visibility: values.visibility,
+            permissions: values.permissions,
+            deletedAt: values.deletedAt,
+            updatedAt: values.updatedAt,
+          },
+        });
+    },
+    async upsertGitHubRepositoryPermission(record) {
+      await db
+        .insert(githubRepositoryPermissions)
+        .values({
+          githubUserId: record.githubUserId,
+          repositoryId: record.repositoryId,
+          permission: record.permission,
+          updatedAt: new Date(record.updatedAt),
+        })
+        .onConflictDoUpdate({
+          target: [
+            githubRepositoryPermissions.githubUserId,
+            githubRepositoryPermissions.repositoryId,
+          ],
+          set: {
+            permission: record.permission,
+            updatedAt: new Date(record.updatedAt),
+          },
+        });
+    },
+    async appendAuthAuditEvent(record) {
+      await db.insert(authAuditEvents).values(authAuditEventValues(record));
+    },
+    async listAuthAuditEvents() {
+      const rows = await db
+        .select()
+        .from(authAuditEvents)
+        .orderBy(asc(authAuditEvents.createdAt));
+      return rows.map(authAuditEventRecordFromRow);
+    },
+  };
+}
+
 /**
  * Creates a durable review store from a node-postgres pool or connection string.
  *
@@ -1046,6 +1522,34 @@ export function createPostgresReviewStore(
   const db = drizzleNodePostgres(pool, { schema });
   return {
     ...createDrizzleReviewStore(db),
+    close() {
+      return pool.end();
+    },
+  };
+}
+
+/**
+ * Creates a durable auth store from a node-postgres pool or connection string.
+ *
+ * @param config - PostgreSQL connection string or pool configuration.
+ * @returns A closable auth store backed by Drizzle and node-postgres.
+ */
+export function createPostgresReviewAuthStore(
+  config: string | PoolConfig
+): ReviewAuthStoreAdapter & { close(): Promise<void> } {
+  const pool =
+    typeof config === 'string'
+      ? new pg.Pool({ connectionString: config })
+      : new pg.Pool(config);
+  pool.on('error', (error) => {
+    console.error(
+      '[review-service] PostgreSQL auth pool idle client error',
+      error
+    );
+  });
+  const db = drizzleNodePostgres(pool, { schema });
+  return {
+    ...createDrizzleReviewAuthStore(db),
     close() {
       return pool.end();
     },
@@ -1078,6 +1582,32 @@ export function createReviewStoreFromEnv(
     return createInMemoryReviewStore();
   }
   return createPostgresReviewStore(databaseUrl);
+}
+
+/**
+ * Creates the configured auth store from process environment variables.
+ *
+ * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
+ * @param options - Runtime fallback policy.
+ * @returns A Postgres auth store when configured, otherwise an in-memory store.
+ * @throws Error - When no database URL is configured and in-memory fallback is disallowed.
+ */
+export function createReviewAuthStoreFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { allowInMemoryFallback?: boolean } = {}
+): ReviewAuthStoreAdapter {
+  const databaseUrl = env.DATABASE_URL ?? env.POSTGRES_URL;
+  if (!databaseUrl) {
+    const allowInMemoryFallback =
+      options.allowInMemoryFallback ?? env.NODE_ENV !== 'production';
+    if (!allowInMemoryFallback) {
+      throw new Error(
+        'DATABASE_URL or POSTGRES_URL is required for review-service auth storage in production'
+      );
+    }
+    return createInMemoryReviewAuthStore();
+  }
+  return createPostgresReviewAuthStore(databaseUrl);
 }
 
 /**

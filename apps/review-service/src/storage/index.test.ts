@@ -12,13 +12,18 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { describe, expect, it } from 'vitest';
 import {
+  type AuthAuditEventRecord,
+  createDrizzleReviewAuthStore,
   createDrizzleReviewStore,
+  createInMemoryReviewAuthStore,
   createInMemoryReviewStore,
+  createReviewAuthStoreFromEnv,
   createReviewStoreFromEnv,
   deleteReviewsById,
   listArtifactMetadata,
   listStatusTransitions,
   type ReviewRecord,
+  type ServiceTokenRecord,
 } from './index.js';
 import * as schema from './schema.js';
 import { reviewEvents, reviewRuns } from './schema.js';
@@ -43,6 +48,7 @@ async function readStorageMigrationSql(): Promise<string> {
   return [
     await readInitialMigrationSql(),
     await readRuntimeControlMigrationSql(),
+    await readGitHubAuthzMigrationSql(),
   ].join('\n');
 }
 
@@ -59,6 +65,15 @@ async function readRuntimeControlMigrationSql(): Promise<string> {
   return readFile(
     fileURLToPath(
       new URL('../../drizzle/0001_review_runtime_control.sql', import.meta.url)
+    ),
+    'utf8'
+  );
+}
+
+async function readGitHubAuthzMigrationSql(): Promise<string> {
+  return readFile(
+    fileURLToPath(
+      new URL('../../drizzle/0002_github_authz.sql', import.meta.url)
     ),
     'utf8'
   );
@@ -168,6 +183,64 @@ function createRecord(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
   };
 }
 
+function createAuthorization(): NonNullable<ReviewRecord['authorization']> {
+  return {
+    principal: {
+      type: 'serviceToken',
+      tokenId: 'token-1',
+      tokenPrefix: 'rat_token-1',
+      name: 'CI',
+    },
+    repository: {
+      provider: 'github',
+      repositoryId: 42,
+      installationId: 7,
+      owner: 'octo-org',
+      name: 'agent-review',
+      fullName: 'octo-org/agent-review',
+      visibility: 'private',
+      permissions: { metadata: 'read', contents: 'read' },
+      pullRequestNumber: 24,
+      commitSha: 'abcdef1',
+    },
+    scopes: ['review:start', 'review:read', 'review:cancel'],
+    actor: 'service-token:token-1',
+    requestHash: 'sha256:request',
+    authorizedAt: BASE_TIME_MS,
+  };
+}
+
+function createServiceTokenRecord(): ServiceTokenRecord {
+  return {
+    tokenId: 'token-1',
+    tokenPrefix: 'rat_token-1',
+    tokenHash: 'hash',
+    name: 'CI',
+    scopes: ['review:start', 'review:read'],
+    repository: createAuthorization().repository,
+    createdAt: BASE_TIME_MS,
+    updatedAt: BASE_TIME_MS,
+  };
+}
+
+function createAuditEvent(): AuthAuditEventRecord {
+  return {
+    auditEventId: 'audit-1',
+    eventType: 'authz',
+    operation: 'review:start',
+    result: 'allowed',
+    reason: 'repository_scope_allowed',
+    status: 200,
+    principal: createAuthorization().principal,
+    tokenId: 'token-1',
+    tokenPrefix: 'rat_token-1',
+    repository: createAuthorization().repository,
+    reviewId: 'review-1',
+    requestId: 'sha256:request',
+    createdAt: BASE_TIME_MS,
+  };
+}
+
 type LeasedReviewRecord = ReviewRecord & {
   lease: NonNullable<ReviewRecord['lease']>;
 };
@@ -210,6 +283,90 @@ describe('review storage', () => {
       );
       expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
         'event-1',
+      ]);
+    });
+  });
+
+  it('round-trips run authorization ownership fields', async () => {
+    await withTestStore(async ({ db, store }) => {
+      const authorization = createAuthorization();
+      await store.set(
+        createRecord({
+          authorization,
+        }),
+        { reason: 'authorized run' }
+      );
+
+      const actual = await store.get('review-1');
+      expect(actual?.authorization).toEqual(authorization);
+      const [row] = await db
+        .select()
+        .from(reviewRuns)
+        .where(eq(reviewRuns.reviewId, 'review-1'));
+      expect(row).toMatchObject({
+        authActorType: 'serviceToken',
+        authActorId: 'token-1',
+        githubInstallationId: '7',
+        githubRepositoryId: '42',
+        githubOwner: 'octo-org',
+        githubRepo: 'agent-review',
+        requestHash: 'sha256:request',
+      });
+    });
+  });
+
+  it('stores scoped service tokens and append-only auth audit events', async () => {
+    const memory = createInMemoryReviewAuthStore();
+    await memory.setServiceToken(createServiceTokenRecord());
+    await memory.appendAuthAuditEvent(createAuditEvent());
+    await expect(memory.getServiceToken('token-1')).resolves.toMatchObject({
+      tokenPrefix: 'rat_token-1',
+      repository: { fullName: 'octo-org/agent-review' },
+    });
+    await expect(memory.listAuthAuditEvents()).resolves.toHaveLength(1);
+
+    await withTestStore(async ({ db }) => {
+      const authStore = createDrizzleReviewAuthStore(db);
+      await authStore.upsertGitHubUser({
+        githubUserId: '100',
+        login: 'octocat',
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS,
+      });
+      await authStore.upsertGitHubInstallation({
+        installationId: '7',
+        accountLogin: 'octo-org',
+        accountType: 'Organization',
+        permissions: { metadata: 'read' },
+        repositorySelection: 'selected',
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS,
+      });
+      await authStore.upsertGitHubRepository({
+        ...createAuthorization().repository,
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS,
+      });
+      await authStore.upsertGitHubRepositoryPermission({
+        githubUserId: '100',
+        repositoryId: '42',
+        permission: 'write',
+        updatedAt: BASE_TIME_MS,
+      });
+      await authStore.setServiceToken(createServiceTokenRecord());
+      await authStore.touchServiceToken('token-1', BASE_TIME_MS + 1_000);
+      await authStore.touchServiceToken('token-1', BASE_TIME_MS - 1_000);
+      await authStore.appendAuthAuditEvent(createAuditEvent());
+
+      await expect(authStore.getServiceToken('token-1')).resolves.toMatchObject(
+        {
+          tokenHash: 'hash',
+          lastUsedAt: BASE_TIME_MS + 1_000,
+          updatedAt: BASE_TIME_MS + 1_000,
+        }
+      );
+      await expect(authStore.listAuthAuditEvents()).resolves.toEqual([
+        createAuditEvent(),
       ]);
     });
   });
@@ -1154,6 +1311,24 @@ describe('review storage', () => {
     ).toBeDefined();
   });
 
+  it('requires durable auth storage in production unless fallback is explicit', () => {
+    expect(() =>
+      createReviewAuthStoreFromEnv({
+        NODE_ENV: 'production',
+        REVIEW_SERVICE_STORAGE: 'memory',
+      })
+    ).toThrow(/DATABASE_URL or POSTGRES_URL/);
+    expect(
+      createReviewAuthStoreFromEnv(
+        {
+          NODE_ENV: 'production',
+          REVIEW_SERVICE_STORAGE: 'memory',
+        },
+        { allowInMemoryFallback: true }
+      )
+    ).toBeDefined();
+  });
+
   it('upgrades existing initial-schema databases with runtime control columns', async () => {
     const client = new PGlite();
     await client.waitReady;
@@ -1182,6 +1357,7 @@ describe('review storage', () => {
         `
       );
       await client.exec(await readRuntimeControlMigrationSql());
+      await client.exec(await readGitHubAuthzMigrationSql());
       const db = drizzle(client, { schema });
       const store = createDrizzleReviewStore(db);
 
@@ -1222,12 +1398,15 @@ describe('review storage', () => {
       ),
     });
 
-    expect(migrations).toHaveLength(2);
+    expect(migrations).toHaveLength(3);
     expect(migrations[0]?.sql.join('\n').trim()).toBe(
       (await readInitialMigrationSql()).trim()
     );
     expect(migrations[1]?.sql.join('\n').trim()).toBe(
       (await readRuntimeControlMigrationSql()).trim()
+    );
+    expect(migrations[2]?.sql.join('\n').trim()).toBe(
+      (await readGitHubAuthzMigrationSql()).trim()
     );
   });
 });

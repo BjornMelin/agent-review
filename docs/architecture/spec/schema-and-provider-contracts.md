@@ -225,8 +225,12 @@ Drizzle/Postgres schema in `apps/review-service/src/storage/schema.ts` for
 queryable persistence:
 
 - `ReviewRunStoreRecordSchema`: run metadata keyed by `reviewId` and `runId`
-  with status, request, timestamps, optional workflow/sandbox IDs, and optional
-  terminal error.
+  with status, request, optional authorization snapshot, timestamps, optional
+  workflow/sandbox IDs, and optional terminal error.
+- `ReviewRepositorySelectionSchema`: GitHub repository selected by a hosted
+  start request.
+- `ReviewRunAuthorizationSchema`: persisted principal, GitHub installation,
+  repository, scopes, actor, request hash, and authorization timestamp.
 - `ReviewEventStoreRecordSchema`: lifecycle event persistence with review ID,
   event ID, sequence number, event payload, and creation timestamp.
 - `ReviewArtifactStoreRecordSchema`: artifact metadata with format, content
@@ -248,8 +252,20 @@ The initial service database migration creates:
   byte length, and current artifact content.
 - `review_status_transitions`: append-only status transition audit rows.
 
-Endpoint payloads continue to be shaped by `review-types`; database rows are an
-implementation detail behind `ReviewStoreAdapter`.
+The GitHub authorization migration adds:
+
+- `review_runs.authorization` and denormalized actor/repository/request-hash
+  columns for object-level route authorization.
+- `github_users`, `github_installations`, `github_repositories`, and
+  `github_repository_permissions` for GitHub identity and repository permission
+  snapshots.
+- `service_tokens` for HMAC-hashed, repository-scoped automation tokens.
+- `auth_audit_events` for append-only authn/authz/token-use audit rows.
+
+Endpoint payloads continue to be shaped by `review-types`. Run, event,
+artifact, and status-transition rows are implementation details behind
+`ReviewStoreAdapter`; GitHub identity, scoped service token, and auth audit rows
+are implementation details behind `ReviewAuthStoreAdapter`.
 
 ## Provider Interface Contract
 

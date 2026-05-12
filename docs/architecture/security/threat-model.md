@@ -11,19 +11,20 @@ service processes private repository paths, prompts, artifacts, provider output,
 GitHub write operations, durable workflow state, or sandbox commands.
 
 This is a design and acceptance-gate document. It does not itself implement
-authentication, authorization, sandbox execution, GitHub publishing, or web UI
-controls. Service durable storage is implemented separately under
-[ADR-0005](../adr/0005-durable-review-storage.md); identity-bound ownership and
-security audit fields remain gated by the later auth, enforcement, and
-observability issues mapped below.
+sandbox execution, GitHub publishing, or web UI controls. Service durable
+storage is implemented separately under
+[ADR-0005](../adr/0005-durable-review-storage.md), and hosted API
+authentication/authorization now persists identity-bound run ownership and
+append-only auth audit rows for route enforcement.
 
 ## Source Evidence
 
 Repository evidence:
 
 - Service routes are registered in `apps/review-service/src/app.ts`.
-- Service auth currently defaults to allow-all unless an injected auth policy
-  denies the request.
+- Service startup through `src/server.ts` defaults to fail-closed `/v1/*` auth
+  unless a scoped auth policy is configured; non-production local development
+  can explicitly opt into disabled auth.
 - `remoteSandbox` is accepted only for detached service requests and is executed
   through `review-worker`; inline service requests and git-backed remote
   sandbox targets are rejected until sandbox source binding exists.
@@ -170,7 +171,8 @@ Required controls:
   installation, repo owner/name, repo visibility, commit/ref, request hash, and
   created-by actor.
 - #15 provides the base durable run record and retention/event/artifact metadata;
-  #23, #24, and #30 add the identity, authorization, and security-audit fields.
+  #23 hardens request and redaction boundaries, while #24 adds identity,
+  repository authorization, scoped service-token, and auth audit fields.
 - Read/cancel/artifact/event endpoints authorize against stored run ownership,
   not only token validity.
 - Review IDs remain unguessable, but secrecy of IDs is not the authorization
@@ -195,6 +197,10 @@ Required controls:
 - The service enforces a configured `allowedCwdRoots` allowlist before runtime
   reservation or worker dispatch; production startup defaults to the service
   cwd unless `REVIEW_SERVICE_ALLOWED_CWD_ROOTS` provides explicit roots.
+- Authenticated hosted starts must also resolve under
+  `<REVIEW_SERVICE_HOSTED_REPOSITORY_ROOTS>/<owner>/<repo>` for the GitHub
+  repository authorized by the bearer token; production deployments should point
+  this setting at the managed checkout parent directory.
 - Path filters are evaluated relative to the repository root after
   normalization; absolute paths, `..` escapes, symlink escapes, and generated
   secrets paths are rejected.
@@ -512,12 +518,9 @@ Future issues must preserve these gates:
 
 ## Explicit Non-Goals for This Issue
 
-- No authentication or authorization implementation.
-- No identity-bound durable ownership, permission, or security audit-field
-  implementation.
 - No provider-token execution inside Vercel Sandbox.
 - No git-backed remote sandbox target execution before sandbox source binding.
-- No GitHub App auth or publish implementation.
+- No GitHub Checks, SARIF upload, or PR-comment publish implementation.
 - No web UI implementation.
 - No change to local-trusted CLI behavior.
 
@@ -526,8 +529,8 @@ Future issues must preserve these gates:
 - GitHub identity and scoped service tokens are the production auth model.
 - Postgres/Drizzle is the durable queryable service store for run, event, and
   artifact metadata.
-- Identity-bound durable ownership and security audit rows must be added before
-  hosted production authorization is accepted.
+- GitHub publish and Review Room mutations must authorize against the stored run
+  repository snapshot added by #24.
 - Workflow is orchestration and replay infrastructure, not the queryable
   security ledger.
 - Convex metadata mirroring remains optional and non-authoritative unless a

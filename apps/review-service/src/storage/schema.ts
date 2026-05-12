@@ -1,7 +1,11 @@
 import type {
   LifecycleEvent,
   OutputFormat,
+  ReviewAuthPrincipal,
+  ReviewAuthScope,
+  ReviewRepositoryAuthorization,
   ReviewRequest,
+  ReviewRunAuthorization,
   ReviewRunStatus,
 } from '@review-agent/review-types';
 import { isNotNull, relations } from 'drizzle-orm';
@@ -41,6 +45,7 @@ export const reviewRuns = pgTable(
     runId: text('run_id').notNull(),
     status: reviewRunStatusEnum('status').$type<ReviewRunStatus>().notNull(),
     request: jsonb('request').$type<ReviewRequest>().notNull(),
+    authorization: jsonb('authorization').$type<ReviewRunAuthorization>(),
     requestSummary: jsonb('request_summary')
       .$type<{
         provider: ReviewRequest['provider'];
@@ -54,6 +59,13 @@ export const reviewRuns = pgTable(
     detachedRunId: text('detached_run_id'),
     workflowRunId: text('workflow_run_id'),
     sandboxId: text('sandbox_id'),
+    authActorType: text('auth_actor_type'),
+    authActorId: text('auth_actor_id'),
+    githubInstallationId: text('github_installation_id'),
+    githubRepositoryId: text('github_repository_id'),
+    githubOwner: text('github_owner'),
+    githubRepo: text('github_repo'),
+    requestHash: text('request_hash'),
     leaseOwner: text('lease_owner'),
     leaseScopeKey: text('lease_scope_key'),
     leaseAcquiredAt: timestamp('lease_acquired_at', {
@@ -100,6 +112,15 @@ export const reviewRuns = pgTable(
     index('review_runs_lease_scope_key_idx').on(table.leaseScopeKey),
     index('review_runs_updated_at_idx').on(table.updatedAt),
     index('review_runs_retention_expires_at_idx').on(table.retentionExpiresAt),
+    index('review_runs_github_repo_idx').on(
+      table.githubInstallationId,
+      table.githubRepositoryId
+    ),
+    index('review_runs_auth_actor_idx').on(
+      table.authActorType,
+      table.authActorId
+    ),
+    index('review_runs_request_hash_idx').on(table.requestHash),
     uniqueIndex('review_runs_detached_run_id_idx')
       .on(table.detachedRunId)
       .where(isNotNull(table.detachedRunId)),
@@ -185,6 +206,177 @@ export const reviewStatusTransitions = pgTable(
       table.reviewId,
       table.createdAt
     ),
+  ]
+);
+
+/** Stores GitHub user identities that have authorized the service. */
+export const githubUsers = pgTable('github_users', {
+  githubUserId: text('github_user_id').primaryKey(),
+  login: text('login').notNull(),
+  name: text('name'),
+  avatarUrl: text('avatar_url'),
+  createdAt: timestamp('created_at', {
+    mode: 'date',
+    withTimezone: true,
+  }).notNull(),
+  updatedAt: timestamp('updated_at', {
+    mode: 'date',
+    withTimezone: true,
+  }).notNull(),
+});
+
+/** Stores GitHub App installations available to the service. */
+export const githubInstallations = pgTable('github_installations', {
+  installationId: text('installation_id').primaryKey(),
+  accountLogin: text('account_login').notNull(),
+  accountType: text('account_type').notNull(),
+  permissions: jsonb('permissions').$type<Record<string, string>>().notNull(),
+  repositorySelection: text('repository_selection').notNull(),
+  suspendedAt: timestamp('suspended_at', {
+    mode: 'date',
+    withTimezone: true,
+  }),
+  createdAt: timestamp('created_at', {
+    mode: 'date',
+    withTimezone: true,
+  }).notNull(),
+  updatedAt: timestamp('updated_at', {
+    mode: 'date',
+    withTimezone: true,
+  }).notNull(),
+});
+
+/** Stores repositories reachable through GitHub App installations. */
+export const githubRepositories = pgTable(
+  'github_repositories',
+  {
+    repositoryId: text('repository_id').primaryKey(),
+    installationId: text('installation_id')
+      .notNull()
+      .references(() => githubInstallations.installationId, {
+        onDelete: 'cascade',
+      }),
+    owner: text('owner').notNull(),
+    name: text('name').notNull(),
+    fullName: text('full_name').notNull(),
+    visibility: text('visibility').notNull(),
+    permissions: jsonb('permissions')
+      .$type<ReviewRepositoryAuthorization['permissions']>()
+      .notNull(),
+    deletedAt: timestamp('deleted_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    createdAt: timestamp('created_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    updatedAt: timestamp('updated_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('github_repositories_owner_name_idx').on(
+      table.owner,
+      table.name
+    ),
+    index('github_repositories_installation_idx').on(table.installationId),
+  ]
+);
+
+/** Stores user-specific repository permission snapshots. */
+export const githubRepositoryPermissions = pgTable(
+  'github_repository_permissions',
+  {
+    githubUserId: text('github_user_id')
+      .notNull()
+      .references(() => githubUsers.githubUserId, { onDelete: 'cascade' }),
+    repositoryId: text('repository_id')
+      .notNull()
+      .references(() => githubRepositories.repositoryId, {
+        onDelete: 'cascade',
+      }),
+    permission: text('permission').notNull(),
+    updatedAt: timestamp('updated_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.githubUserId, table.repositoryId],
+      name: 'github_repository_permissions_user_repo_pk',
+    }),
+  ]
+);
+
+/** Stores hashed scoped service tokens for CI and automation clients. */
+export const serviceTokens = pgTable(
+  'service_tokens',
+  {
+    tokenId: text('token_id').primaryKey(),
+    tokenPrefix: text('token_prefix').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    name: text('name').notNull(),
+    scopes: jsonb('scopes').$type<ReviewAuthScope[]>().notNull(),
+    repository: jsonb('repository')
+      .$type<ReviewRepositoryAuthorization>()
+      .notNull(),
+    createdBy: jsonb('created_by').$type<ReviewAuthPrincipal>(),
+    expiresAt: timestamp('expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    revokedAt: timestamp('revoked_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    lastUsedAt: timestamp('last_used_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    createdAt: timestamp('created_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    updatedAt: timestamp('updated_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('service_tokens_prefix_idx').on(table.tokenPrefix),
+    index('service_tokens_revoked_at_idx').on(table.revokedAt),
+  ]
+);
+
+/** Stores append-only security audit events for authn/authz decisions. */
+export const authAuditEvents = pgTable(
+  'auth_audit_events',
+  {
+    auditEventId: text('audit_event_id').primaryKey(),
+    eventType: text('event_type').notNull(),
+    operation: text('operation').notNull(),
+    result: text('result').notNull(),
+    reason: text('reason').notNull(),
+    status: integer('status').notNull(),
+    principal: jsonb('principal').$type<ReviewAuthPrincipal>(),
+    tokenId: text('token_id'),
+    tokenPrefix: text('token_prefix'),
+    repository: jsonb('repository').$type<ReviewRepositoryAuthorization>(),
+    reviewId: text('review_id'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    index('auth_audit_events_created_at_idx').on(table.createdAt),
+    index('auth_audit_events_review_id_idx').on(table.reviewId),
+    index('auth_audit_events_token_id_idx').on(table.tokenId),
   ]
 );
 
