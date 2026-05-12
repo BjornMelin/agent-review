@@ -579,6 +579,28 @@ async function readNextSseEvent(
   throw new Error('SSE stream ended before an event was available');
 }
 
+async function readSseEventsUntilClose(
+  session: SseReaderSession
+): Promise<ParsedSseEvent[]> {
+  const events = session.queuedEvents.splice(0);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const { done, value } = await withTimeout(
+      session.reader.read(),
+      'timed out waiting for SSE stream close'
+    );
+    if (done) {
+      return events;
+    }
+    session.buffer += session.decoder.decode(value, { stream: true });
+    const blocks = session.buffer.split('\n\n');
+    session.buffer = blocks.pop() ?? '';
+    events.push(...blocks.filter(Boolean).map(parseSseEventBlock));
+  }
+
+  throw new Error('SSE stream did not close');
+}
+
 describe('createReviewServiceApp', () => {
   it('requires bearer authentication by default at the app boundary', async () => {
     const worker = createWorker();
@@ -2332,6 +2354,421 @@ describe('createReviewServiceApp', () => {
         }),
       ])
     );
+  });
+
+  it('stops open SSE streams after scoped service tokens are revoked', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const authorization = createAuthorization({
+      principal: {
+        type: 'serviceToken',
+        tokenId: 'stream-token',
+        tokenPrefix: 'rat_stream-token',
+        name: 'CI',
+      },
+      actor: 'service-token:stream-token',
+    });
+    const streamCredential = createServiceTokenCredential({
+      name: 'Stream CI',
+      scopes: authorization.scopes,
+      repository: authorization.repository,
+      pepper: 'test-pepper',
+      tokenId: 'stream-token',
+      nowMs: 1_000,
+    });
+    const triggerCredential = createServiceTokenCredential({
+      name: 'Trigger CI',
+      scopes: authorization.scopes,
+      repository: authorization.repository,
+      pepper: 'test-pepper',
+      tokenId: 'trigger-token',
+      nowMs: 1_000,
+    });
+    await authStore.setServiceToken(streamCredential.record);
+    await authStore.setServiceToken(triggerCredential.record);
+    const store = createStore();
+    const worker = createWorker();
+    worker.runs.set(
+      'detached-run-1',
+      createDetachedRun({ runId: 'detached-run-1' })
+    );
+    store.records.set(
+      'review-stream-auth',
+      createReviewRecord({
+        reviewId: 'review-stream-auth',
+        status: 'running',
+        authorization,
+        detachedRunId: 'detached-run-1',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+      }),
+      authStore,
+      config: {
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const response = await app.request('/v1/review/review-stream-auth/events', {
+      headers: { authorization: `Bearer ${streamCredential.token}` },
+    });
+    const session = createSseReaderSession(response);
+
+    try {
+      const tokenRecord = await authStore.getServiceToken('stream-token');
+      expect(tokenRecord).toBeDefined();
+      if (!tokenRecord) {
+        throw new Error('stream token missing from auth store');
+      }
+      await authStore.setServiceToken({
+        ...tokenRecord,
+        revokedAt: 2_000,
+        updatedAt: 2_000,
+      });
+      const run = worker.runs.get('detached-run-1');
+      expect(run).toBeDefined();
+      if (!run) {
+        throw new Error('detached run missing from worker');
+      }
+      run.status = 'failed';
+      run.error = 'post-revocation failure';
+      run.completedAt = 2_100;
+
+      const trigger = await app.request('/v1/review/review-stream-auth', {
+        headers: { authorization: `Bearer ${triggerCredential.token}` },
+      });
+      expect(trigger.status).toBe(200);
+      expect(await trigger.json()).toMatchObject({
+        reviewId: 'review-stream-auth',
+        status: 'failed',
+      });
+
+      await expect(readSseEventsUntilClose(session)).resolves.toEqual([]);
+      await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: 'authz',
+            result: 'denied',
+            reason: 'service_token_revoked',
+            status: 401,
+            tokenId: 'stream-token',
+          }),
+        ])
+      );
+    } finally {
+      await session.reader.cancel().catch(() => undefined);
+    }
+  });
+
+  it('stops open SSE streams after scoped service token secrets are rotated', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const authorization = createAuthorization({
+      principal: {
+        type: 'serviceToken',
+        tokenId: 'stream-token',
+        tokenPrefix: 'rat_stream-token',
+        name: 'CI',
+      },
+      actor: 'service-token:stream-token',
+    });
+    const streamCredential = createServiceTokenCredential({
+      name: 'Stream CI',
+      scopes: authorization.scopes,
+      repository: authorization.repository,
+      pepper: 'test-pepper',
+      tokenId: 'stream-token',
+      secret: 'old_stream_secret_abcdefghijklmnopqrstuvwxyz',
+      nowMs: 1_000,
+    });
+    const rotatedCredential = createServiceTokenCredential({
+      name: 'Stream CI',
+      scopes: authorization.scopes,
+      repository: authorization.repository,
+      pepper: 'test-pepper',
+      tokenId: 'stream-token',
+      secret: 'new_stream_secret_abcdefghijklmnopqrstuvwxyz',
+      nowMs: 2_000,
+    });
+    const triggerCredential = createServiceTokenCredential({
+      name: 'Trigger CI',
+      scopes: authorization.scopes,
+      repository: authorization.repository,
+      pepper: 'test-pepper',
+      tokenId: 'trigger-token',
+      nowMs: 1_000,
+    });
+    await authStore.setServiceToken(streamCredential.record);
+    await authStore.setServiceToken(triggerCredential.record);
+    const store = createStore();
+    const worker = createWorker();
+    worker.runs.set(
+      'detached-run-1',
+      createDetachedRun({ runId: 'detached-run-1' })
+    );
+    store.records.set(
+      'review-stream-rotated',
+      createReviewRecord({
+        reviewId: 'review-stream-rotated',
+        status: 'running',
+        authorization,
+        detachedRunId: 'detached-run-1',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+      }),
+      authStore,
+      config: {
+        eventStreamPollIntervalMs: 50,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-stream-rotated/events',
+      {
+        headers: { authorization: `Bearer ${streamCredential.token}` },
+      }
+    );
+    const session = createSseReaderSession(response);
+
+    try {
+      await authStore.setServiceToken(rotatedCredential.record);
+      const run = worker.runs.get('detached-run-1');
+      expect(run).toBeDefined();
+      if (!run) {
+        throw new Error('detached run missing from worker');
+      }
+      run.status = 'failed';
+      run.error = 'post-rotation failure';
+      run.completedAt = 2_100;
+
+      const trigger = await app.request('/v1/review/review-stream-rotated', {
+        headers: { authorization: `Bearer ${triggerCredential.token}` },
+      });
+      expect(trigger.status).toBe(200);
+      expect(await trigger.json()).toMatchObject({
+        reviewId: 'review-stream-rotated',
+        status: 'failed',
+      });
+
+      await expect(readSseEventsUntilClose(session)).resolves.toEqual([]);
+      await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: 'authz',
+            result: 'denied',
+            reason: 'service_token_invalid',
+            status: 401,
+            tokenId: 'stream-token',
+          }),
+        ])
+      );
+    } finally {
+      await session.reader.cancel().catch(() => undefined);
+    }
+  });
+
+  it('streams live SSE events while scoped service tokens remain authorized', async () => {
+    const authorization = createAuthorization();
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization,
+    });
+    const store = createStore();
+    const worker = createWorker();
+    worker.runs.set(
+      'detached-run-1',
+      createDetachedRun({ runId: 'detached-run-1' })
+    );
+    store.records.set(
+      'review-stream-authorized',
+      createReviewRecord({
+        reviewId: 'review-stream-authorized',
+        status: 'running',
+        authorization,
+        detachedRunId: 'detached-run-1',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authPolicy,
+      authStore,
+      config: {
+        eventStreamPollIntervalMs: 1_000,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-stream-authorized/events',
+      {
+        headers: { authorization: `Bearer ${token}` },
+      }
+    );
+    const session = createSseReaderSession(response);
+
+    try {
+      const run = worker.runs.get('detached-run-1');
+      expect(run).toBeDefined();
+      if (!run) {
+        throw new Error('detached run missing from worker');
+      }
+      run.status = 'failed';
+      run.error = 'authorized failure';
+      run.completedAt = 2_100;
+
+      const trigger = await app.request('/v1/review/review-stream-authorized', {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(trigger.status).toBe(200);
+      await expect(readNextSseEvent(session)).resolves.toMatchObject({
+        event: 'failed',
+        data: {
+          type: 'failed',
+          message: 'authorized failure',
+        },
+      });
+    } finally {
+      await session.reader.cancel().catch(() => undefined);
+    }
+  });
+
+  it('stops GitHub user SSE streams when repository access is revoked', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const authStore = createInMemoryReviewAuthStore();
+    const repository = createAuthorization().repository;
+    const githubPrincipal = {
+      type: 'githubUser' as const,
+      githubUserId: 101,
+      login: 'octocat',
+    };
+    const triggerCredential = createServiceTokenCredential({
+      name: 'Trigger CI',
+      scopes: ['review:read'],
+      repository,
+      pepper: 'test-pepper',
+      tokenId: 'github-trigger-token',
+      nowMs: 1_000,
+    });
+    await authStore.setServiceToken(triggerCredential.record);
+    let allowRepository = true;
+    const authorizeUserToken = vi.fn(
+      async (
+        _token: string,
+        _selection: ReviewRepositorySelection,
+        scope: ReviewAuthScope
+      ) => {
+        if (!allowRepository) {
+          throw Object.assign(new Error('repository access revoked'), {
+            status: 404,
+          });
+        }
+        const scopes: ReviewAuthScope[] =
+          scope === 'review:read'
+            ? ['review:read']
+            : ['review:start', 'review:read'];
+        return {
+          principal: githubPrincipal,
+          repository,
+          scopes,
+        };
+      }
+    );
+    worker.runs.set(
+      'detached-run-1',
+      createDetachedRun({ runId: 'detached-run-1' })
+    );
+    store.records.set(
+      'review-github-stream',
+      createReviewRecord({
+        reviewId: 'review-github-stream',
+        status: 'running',
+        authorization: createAuthorization({
+          principal: githubPrincipal,
+          actor: 'github:octocat',
+          scopes: ['review:start', 'review:read'],
+        }),
+        detachedRunId: 'detached-run-1',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken: vi.fn(async () => githubPrincipal),
+          authorizeUserToken,
+        },
+      }),
+      config: {
+        eventStreamPollIntervalMs: 50,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-github-stream/events',
+      {
+        headers: { authorization: 'Bearer github-user-token' },
+      }
+    );
+    const session = createSseReaderSession(response);
+
+    try {
+      allowRepository = false;
+      const run = worker.runs.get('detached-run-1');
+      expect(run).toBeDefined();
+      if (!run) {
+        throw new Error('detached run missing from worker');
+      }
+      run.status = 'failed';
+      run.error = 'post-revocation GitHub failure';
+      run.completedAt = 2_100;
+
+      const trigger = await app.request('/v1/review/review-github-stream', {
+        headers: { authorization: `Bearer ${triggerCredential.token}` },
+      });
+      expect(trigger.status).toBe(200);
+      expect(await trigger.json()).toMatchObject({
+        reviewId: 'review-github-stream',
+        status: 'failed',
+      });
+
+      await expect(readSseEventsUntilClose(session)).resolves.toEqual([]);
+      expect(authorizeUserToken.mock.calls.map((call) => call[2])).toContain(
+        'review:read'
+      );
+      await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: 'authz',
+            result: 'denied',
+            reason: 'github_repository_not_accessible',
+            status: 404,
+            reviewId: 'review-github-stream',
+          }),
+        ])
+      );
+    } finally {
+      await session.reader.cancel().catch(() => undefined);
+    }
   });
 
   it('accepts service token secrets that contain URL-safe separators', async () => {

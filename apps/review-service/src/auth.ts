@@ -47,6 +47,7 @@ export type ReviewAuthenticatedRequest = {
   repositories: ReviewRepositoryAuthorization[];
   tokenId?: string;
   tokenPrefix?: string;
+  tokenHash?: string;
   authorizeRepository?: (
     selection: ReviewRepositorySelection,
     scope: ReviewAuthScope
@@ -393,6 +394,7 @@ export function createReviewServiceAuthPolicy(options: {
             repositories: [record.repository],
             tokenId: record.tokenId,
             tokenPrefix: record.tokenPrefix,
+            tokenHash: record.tokenHash,
           };
         } catch (error) {
           if (!(error instanceof AuthHttpError)) {
@@ -507,17 +509,21 @@ export function createReviewServiceAuthPolicy(options: {
  * @param auth - Authenticated request context.
  * @param selection - Requested repository or stored run repository.
  * @param scope - Required operation scope.
+ * @param options - Resolution behavior such as bypassing cached repository grants.
  * @returns Effective repository authorization.
  * @throws AuthHttpError when the principal lacks the requested scope or repository.
  */
 export async function authorizeRepositoryForRequest(
   auth: ReviewAuthenticatedRequest,
   selection: ReviewRepositorySelection | ReviewRepositoryAuthorization,
-  scope: ReviewAuthScope
+  scope: ReviewAuthScope,
+  options: { forceDynamic?: boolean } = {}
 ): Promise<ReviewRepositoryAuthorization> {
-  const local = auth.repositories.find((repository) =>
-    sameRepository(repository, selection)
-  );
+  const local = options.forceDynamic
+    ? undefined
+    : auth.repositories.find((repository) =>
+        sameRepository(repository, selection)
+      );
   if (local) {
     if (!scopeAllowed(scope, auth.scopes)) {
       throw new AuthHttpError(403, 'scope_missing');

@@ -40,6 +40,7 @@ import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import {
+  AuthHttpError,
   authHttpErrorResponse,
   authorizeRepositoryForRequest,
   isAuthHttpError,
@@ -434,6 +435,7 @@ function selectReplayEvents(
  *
  * @param dependencies - The providers, worker, store, clock, auth, and runner used by the app.
  * @returns A Hono app that can be tested with app.request or served by a runtime entrypoint.
+ * @throws Error - When an unexpected dependency failure escapes route construction or request handling.
  */
 export function createReviewServiceApp(
   dependencies: ReviewServiceDependencies
@@ -616,7 +618,11 @@ export function createReviewServiceApp(
   async function authorizeRecordAccess(
     context: Context,
     record: ReviewRecord,
-    operation: ReviewServiceAuthOperation
+    operation: ReviewServiceAuthOperation,
+    options: {
+      auditAllowed?: boolean;
+      forceDynamicAuthorization?: boolean;
+    } = {}
   ): Promise<Response | null> {
     const auth = getReviewAuthContext(context);
     if (!auth) {
@@ -641,8 +647,12 @@ export function createReviewServiceApp(
       await authorizeRepositoryForRequest(
         auth,
         record.authorization.repository,
-        scopeForOperation(operation)
+        scopeForOperation(operation),
+        { forceDynamic: options.forceDynamicAuthorization ?? false }
       );
+      if (options.auditAllowed === false) {
+        return null;
+      }
       const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
         operation,
         result: 'allowed',
@@ -703,6 +713,95 @@ export function createReviewServiceApp(
         status
       );
     }
+  }
+
+  async function revalidateServiceTokenForStream(
+    context: Context,
+    auth: ReviewAuthenticatedRequest,
+    record: ReviewRecord
+  ): Promise<Response | null> {
+    if (auth.principal.type !== 'serviceToken' || !authStore) {
+      return null;
+    }
+
+    let tokenRecord: Awaited<ReturnType<typeof authStore.getServiceToken>>;
+    try {
+      tokenRecord = await authStore.getServiceToken(auth.principal.tokenId);
+    } catch {
+      return jsonError(context, 'authorization unavailable', 502);
+    }
+
+    const denyStreamToken = async (reason: string): Promise<Response> => {
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation: 'review:read',
+        result: 'denied',
+        reason,
+        status: 401,
+        auth,
+        reviewId: record.reviewId,
+        ...(record.authorization
+          ? {
+              authorization: record.authorization,
+              requestId: record.authorization.requestHash,
+            }
+          : {}),
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return authHttpErrorResponse(new AuthHttpError(401, reason));
+    };
+
+    if (!tokenRecord) {
+      return denyStreamToken('service_token_unknown');
+    }
+    if (auth.tokenHash && tokenRecord.tokenHash !== auth.tokenHash) {
+      return denyStreamToken('service_token_invalid');
+    }
+    if (tokenRecord.revokedAt !== undefined) {
+      return denyStreamToken('service_token_revoked');
+    }
+    if (
+      tokenRecord.expiresAt !== undefined &&
+      tokenRecord.expiresAt <= Date.now()
+    ) {
+      return denyStreamToken('service_token_expired');
+    }
+
+    auth.scopes = tokenRecord.scopes;
+    auth.repositories = [tokenRecord.repository];
+    auth.tokenId = tokenRecord.tokenId;
+    auth.tokenPrefix = tokenRecord.tokenPrefix;
+    auth.tokenHash = tokenRecord.tokenHash;
+    auth.principal = {
+      type: 'serviceToken',
+      tokenId: tokenRecord.tokenId,
+      tokenPrefix: tokenRecord.tokenPrefix,
+      name: tokenRecord.name,
+    };
+    return null;
+  }
+
+  async function revalidateStreamAccess(
+    context: Context,
+    record: ReviewRecord
+  ): Promise<Response | null> {
+    const auth = getReviewAuthContext(context);
+    if (!auth) {
+      return null;
+    }
+    const tokenDenied = await revalidateServiceTokenForStream(
+      context,
+      auth,
+      record
+    );
+    if (tokenDenied) {
+      return tokenDenied;
+    }
+    return authorizeRecordAccess(context, record, 'review:read', {
+      auditAllowed: false,
+      forceDynamicAuthorization: auth.principal.type === 'githubUser',
+    });
   }
 
   function getLiveListeners(reviewId: string): Set<ReviewLifecycleListener> {
@@ -1165,10 +1264,11 @@ export function createReviewServiceApp(
     }
   }
 
-  app.use('/v1/*', async (context, next) => {
+  async function authenticateRequestContext(
+    context: Context
+  ): Promise<Response | null> {
     if (authMode === 'disabled') {
-      await next();
-      return;
+      return null;
     }
     if (!authPolicy) {
       return authRequiredResponse(context);
@@ -1180,8 +1280,14 @@ export function createReviewServiceApp(
     if (!authResult) {
       return authRequiredResponse(context);
     }
-    if (authResult) {
-      setReviewAuthContext(context, authResult);
+    setReviewAuthContext(context, authResult);
+    return null;
+  }
+
+  app.use('/v1/*', async (context, next) => {
+    const denied = await authenticateRequestContext(context);
+    if (denied) {
+      return denied;
     }
     await next();
   });
@@ -1401,26 +1507,6 @@ export function createReviewServiceApp(
       const deliveredEventIds = new Set<string>();
       let writeQueue = Promise.resolve();
 
-      const writeQueuedSse = (
-        frame: Parameters<typeof stream.writeSSE>[0]
-      ): Promise<void> => {
-        writeQueue = writeQueue.then(() => stream.writeSSE(frame));
-        return writeQueue;
-      };
-
-      const send = async (event: LifecycleEvent) => {
-        if (deliveredEventIds.has(event.meta.eventId)) {
-          return writeQueue;
-        }
-        deliveredEventIds.add(event.meta.eventId);
-        return writeQueuedSse({
-          event: event.type,
-          data: JSON.stringify(event),
-          id: event.meta.eventId,
-          retry: 1000,
-        });
-      };
-
       const cleanup = () => {
         if (cleanedUp) {
           return;
@@ -1428,6 +1514,57 @@ export function createReviewServiceApp(
         cleanedUp = true;
         streaming = false;
         removeLiveListener(record.reviewId, send);
+        void stream.close();
+      };
+
+      const enqueueSseOperation = (
+        operation: () => Promise<void>
+      ): Promise<void> => {
+        const queued = writeQueue.then(async () => {
+          if (!streaming) {
+            return;
+          }
+          await operation();
+        });
+        writeQueue = queued.catch((error) => {
+          logError(logger, '[review-service] events stream error', error);
+          cleanup();
+        });
+        return writeQueue;
+      };
+
+      const writeQueuedSse = (
+        frame: Parameters<typeof stream.writeSSE>[0]
+      ): Promise<void> => {
+        return enqueueSseOperation(() => stream.writeSSE(frame));
+      };
+
+      const send: ReviewLifecycleListener = (event) => {
+        return enqueueSseOperation(async () => {
+          if (deliveredEventIds.has(event.meta.eventId)) {
+            return;
+          }
+          const latestRecord = await store.get(record.reviewId);
+          if (!latestRecord) {
+            cleanup();
+            return;
+          }
+          const accessDenied = await revalidateStreamAccess(
+            context,
+            latestRecord
+          );
+          if (accessDenied) {
+            cleanup();
+            return;
+          }
+          deliveredEventIds.add(event.meta.eventId);
+          await stream.writeSSE({
+            event: event.type,
+            data: JSON.stringify(event),
+            id: event.meta.eventId,
+            retry: 1000,
+          });
+        });
       };
 
       getLiveListeners(record.reviewId).add(send);
@@ -1456,6 +1593,14 @@ export function createReviewServiceApp(
           }
           const latestRecord = await store.get(record.reviewId);
           if (!latestRecord) {
+            cleanup();
+            break;
+          }
+          const accessDenied = await revalidateStreamAccess(
+            context,
+            latestRecord
+          );
+          if (accessDenied) {
             cleanup();
             break;
           }
