@@ -317,7 +317,7 @@ function assertRepositoryPathSegment(
   if (
     value.length === 0 ||
     value === '.' ||
-    value.includes('..') ||
+    value === '..' ||
     value.includes('/') ||
     value.includes('\\') ||
     isAbsolute(value)

@@ -842,8 +842,23 @@ export function createGitHubAppInstallationTokenProvider(options: {
  */
 export function reviewRequestHash(input: unknown): string {
   return `sha256:${createHash('sha256')
-    .update(JSON.stringify(input))
+    .update(stableSerialize(input))
     .digest('hex')}`;
+}
+
+function stableSerialize(input: unknown): string {
+  return (
+    JSON.stringify(input, (_key, value: unknown) => {
+      if (value === null || Array.isArray(value) || typeof value !== 'object') {
+        return value;
+      }
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).sort(
+          ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)
+        )
+      );
+    }) ?? 'null'
+  );
 }
 
 /**

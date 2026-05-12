@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createGitHubUserTokenAuthorizer } from './auth.js';
+import { createGitHubUserTokenAuthorizer, reviewRequestHash } from './auth.js';
 
 describe('createGitHubUserTokenAuthorizer', () => {
   afterEach(() => {
@@ -66,5 +66,25 @@ describe('createGitHubUserTokenAuthorizer', () => {
     expect(() =>
       createGitHubUserTokenAuthorizer({ requestTimeoutMs: 0 })
     ).toThrow(/requestTimeoutMs/);
+  });
+
+  it('hashes semantically identical request objects with stable key order', () => {
+    const first = {
+      target: { instructions: 'review this fixture', type: 'custom' },
+      cwd: '/repo/octo-org/agent-review',
+      outputFormats: ['json'],
+      provider: 'codexDelegate',
+    };
+    const second = {
+      provider: 'codexDelegate',
+      outputFormats: ['json'],
+      cwd: '/repo/octo-org/agent-review',
+      target: { type: 'custom', instructions: 'review this fixture' },
+    };
+
+    expect(reviewRequestHash(first)).toBe(reviewRequestHash(second));
+    expect(reviewRequestHash({ refs: ['main', 'feature'] })).not.toBe(
+      reviewRequestHash({ refs: ['feature', 'main'] })
+    );
   });
 });
