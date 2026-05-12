@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "provider": {
+      "type": "string",
+      "enum": ["codexDelegate", "openaiCompatible"]
+    },
+    "executionMode": {
+      "type": "string",
+      "enum": ["localTrusted", "remoteSandbox"]
+    },
+    "targetType": {
+      "type": "string",
+      "enum": ["uncommittedChanges", "baseBranch", "commit", "custom"]
+    },
+    "outputFormats": {
+      "minItems": 1,
+      "maxItems": 3,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["sarif", "json", "markdown"]
+      }
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  },
+  "required": ["provider", "executionMode", "targetType", "outputFormats"],
+  "additionalProperties": false
+}

@@ -27,6 +27,8 @@ import {
   type ReviewPublishResponse,
   type ReviewRequest,
   type ReviewRunAuthorization,
+  type ReviewRunListQuery,
+  ReviewRunListQuerySchema,
   type ReviewSecurityLimits,
   ReviewStartRequestSchema,
   type ReviewStartResponse,
@@ -57,12 +59,16 @@ import {
   type ReviewPublicationService,
 } from './github-publication.js';
 import {
+  artifactMetadataForRecord,
+  buildReviewRunSummary,
   createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
+  decodeReviewRunListCursor,
   type ReviewAuthStoreAdapter,
   type ReviewPublicationStoreAdapter,
   type ReviewRecord,
   type ReviewStoreAdapter,
+  type ReviewStoreListRepositoryFilter,
 } from './storage/index.js';
 
 /**
@@ -386,6 +392,7 @@ function buildStatusResponse(
   record: ReviewRecord,
   publications: ReviewPublicationRecord[] = []
 ): ReviewStatusResponse {
+  const artifacts = artifactMetadataForRecord(record);
   return {
     reviewId: record.reviewId,
     status: record.status,
@@ -393,7 +400,12 @@ function buildStatusResponse(
     ...(record.result
       ? { result: redactReviewResult(record.result.result).result }
       : {}),
+    summary: buildReviewRunSummary(record, {
+      artifactFormats: artifacts.map((artifact) => artifact.format),
+      publicationCount: publications.length,
+    }),
     ...(publications.length > 0 ? { publications } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -450,6 +462,34 @@ function parseEventCursor(
       undefined,
     ...(limitRaw === undefined ? {} : { limit: Number(limitRaw) }),
   });
+}
+
+function parseRunListQuery(context: Context): {
+  query: ReviewRunListQuery;
+  cursor?: ReturnType<typeof decodeReviewRunListCursor>;
+} {
+  const limitRaw = context.req.query('limit');
+  const query = ReviewRunListQuerySchema.parse({
+    ...(context.req.query('status') === undefined
+      ? {}
+      : { status: context.req.query('status') }),
+    ...(limitRaw === undefined ? {} : { limit: Number(limitRaw) }),
+    ...(context.req.query('cursor') === undefined
+      ? {}
+      : { cursor: context.req.query('cursor') }),
+    ...(context.req.query('owner') === undefined
+      ? {}
+      : { owner: context.req.query('owner') }),
+    ...(context.req.query('name') === undefined
+      ? {}
+      : { name: context.req.query('name') }),
+  });
+  return {
+    query,
+    ...(query.cursor
+      ? { cursor: decodeReviewRunListCursor(query.cursor) }
+      : {}),
+  };
 }
 
 function selectReplayEvents(
@@ -759,6 +799,126 @@ export function createReviewServiceApp(
         status
       );
     }
+  }
+
+  async function authorizeRunListAccess(
+    context: Context,
+    query: ReviewRunListQuery
+  ): Promise<ReviewStoreListRepositoryFilter[] | Response | undefined> {
+    const auth = getReviewAuthContext(context);
+    if (!auth) {
+      return undefined;
+    }
+
+    const soleRepository =
+      auth.repositories.length === 1 ? auth.repositories[0] : undefined;
+    const selection =
+      query.owner && query.name
+        ? {
+            provider: 'github' as const,
+            owner: query.owner,
+            name: query.name,
+          }
+        : soleRepository
+          ? repositorySelectionFromAuthorization(soleRepository)
+          : undefined;
+
+    if (selection) {
+      try {
+        const repository = await authorizeRepositoryForRequest(
+          auth,
+          selection,
+          'review:read'
+        );
+        const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+          operation: 'review:read',
+          result: 'allowed',
+          reason: 'run_list_repository_scope_allowed',
+          status: 200,
+          auth,
+          authorization: {
+            principal: auth.principal,
+            repository,
+            scopes: auth.scopes,
+            actor: actorForAuth(auth),
+            requestHash: 'run-list',
+            authorizedAt: nowMs(),
+          },
+        });
+        if (auditUnavailable) {
+          return auditUnavailable;
+        }
+        return [repository];
+      } catch (error) {
+        if (!isAuthHttpError(error)) {
+          const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+            operation: 'review:read',
+            result: 'denied',
+            reason: 'authorization_unavailable',
+            status: 502,
+            auth,
+          });
+          if (auditUnavailable) {
+            return auditUnavailable;
+          }
+          return jsonError(context, 'authorization unavailable', 502);
+        }
+        const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+          operation: 'review:read',
+          result: 'denied',
+          reason: error.reason,
+          status: error.status,
+          auth,
+        });
+        if (auditUnavailable) {
+          return auditUnavailable;
+        }
+        return authHttpErrorResponse(error);
+      }
+    }
+
+    const readableRepositories: ReviewStoreListRepositoryFilter[] = [];
+    for (const repository of auth.repositories) {
+      try {
+        const authorized = await authorizeRepositoryForRequest(
+          auth,
+          repository,
+          'review:read'
+        );
+        readableRepositories.push(authorized);
+      } catch (error) {
+        if (!isAuthHttpError(error)) {
+          return jsonError(context, 'authorization unavailable', 502);
+        }
+        return authHttpErrorResponse(error);
+      }
+    }
+
+    if (readableRepositories.length === 0) {
+      const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+        operation: 'review:read',
+        result: 'denied',
+        reason: 'repository_required',
+        status: 403,
+        auth,
+      });
+      if (auditUnavailable) {
+        return auditUnavailable;
+      }
+      return jsonError(context, 'repository authorization required', 403);
+    }
+
+    const auditUnavailable = await appendAuthAuditOrUnavailable(context, {
+      operation: 'review:read',
+      result: 'allowed',
+      reason: 'run_list_repository_scope_allowed',
+      status: 200,
+      auth,
+    });
+    if (auditUnavailable) {
+      return auditUnavailable;
+    }
+    return readableRepositories;
   }
 
   async function revalidateServiceTokenForStream(
@@ -1501,6 +1661,33 @@ export function createReviewServiceApp(
       }
     }
   );
+
+  app.get('/v1/review', async (context) => {
+    let parsed: ReturnType<typeof parseRunListQuery>;
+    try {
+      parsed = parseRunListQuery(context);
+    } catch {
+      return jsonError(context, 'invalid review run list query', 400);
+    }
+
+    const repositories = await authorizeRunListAccess(context, parsed.query);
+    if (repositories instanceof Response) {
+      return repositories;
+    }
+
+    try {
+      const response = await store.list({
+        limit: parsed.query.limit,
+        ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
+        ...(parsed.query.status ? { status: parsed.query.status } : {}),
+        ...(repositories ? { repositories } : {}),
+      });
+      return context.json(response);
+    } catch (error) {
+      logError(logger, '[review-service] failed to list review runs', error);
+      return jsonError(context, 'failed to list review runs', 502);
+    }
+  });
 
   app.get('/v1/review/:reviewId', async (context) => {
     const record = await loadRecord(

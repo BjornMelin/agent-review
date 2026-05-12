@@ -363,6 +363,10 @@
       "type": "string",
       "minLength": 1
     },
+    "detachedRunId": {
+      "type": "string",
+      "minLength": 1
+    },
     "workflowRunId": {
       "type": "string",
       "minLength": 1

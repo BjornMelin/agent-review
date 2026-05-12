@@ -180,7 +180,15 @@ The review service uses `review-types` for request parsing and response DTOs.
 - `ReviewStartResponseSchema`: start response with `reviewId`, run `status`,
   optional `detachedRunId`, and optional `result`.
 - `ReviewStatusResponseSchema`: status response with timestamps, optional
-  `error`, optional `result`, and optional durable publication records.
+  `error`, optional `result`, optional compact run `summary`, optional artifact
+  metadata, and optional durable publication records.
+- `ReviewRunSummarySchema`: compact run summary for list/detail headers,
+  including target/provider/output-format metadata, finding count, optional
+  repository identity, model/workflow/sandbox identifiers, and timestamps.
+- `ReviewRunListQuerySchema`: bounded list query with optional status,
+  repository, and opaque cursor filters.
+- `ReviewRunListResponseSchema`: run-list page with newest-first summaries and
+  optional `nextCursor`.
 - `ReviewCancelResponseSchema`: cancel response with `reviewId`, run `status`,
   and optional `cancelled=false` for conflict responses.
 - `ReviewPublicationRecordSchema`: durable per-channel publication state for
@@ -230,9 +238,14 @@ queryable persistence:
 
 - `ReviewRunStoreRecordSchema`: run metadata keyed by `reviewId` and `runId`
   with status, request, optional authorization snapshot, timestamps, optional
-  workflow/sandbox IDs, and optional terminal error.
+  `detachedRunId`, workflow/sandbox IDs, optional terminal error, and optional
+  result.
 - `ReviewRepositorySelectionSchema`: GitHub repository selected by a hosted
   start request.
+- `ReviewRunRepositorySummarySchema`: normalized GitHub repository identity used
+  by compact run-list/detail summaries.
+- `ReviewRunRequestSummarySchema`: compact request metadata used by durable
+  list queries and Review Room headers without hydrating full request bodies.
 - `ReviewRunAuthorizationSchema`: persisted principal, GitHub installation,
   repository, scopes, actor, request hash, and authorization timestamp.
 - `ReviewEventStoreRecordSchema`: lifecycle event persistence with review ID,

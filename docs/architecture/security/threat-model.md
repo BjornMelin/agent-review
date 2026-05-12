@@ -131,7 +131,8 @@ External authority:
 - Optional Convex metadata mirror: current non-blocking mirror for selected
   review metadata and derived summaries; production use requires explicit
   redaction, retention, tenant scoping, and disable/enable policy.
-- Review Room user: future web UI user reading and triaging runs.
+- Review Room user: web UI user reading and triaging hosted runs through
+  server-side service access.
 - Malicious external attacker: probes unauthenticated or weakly authorized HTTP
   endpoints.
 - Malicious or compromised repo contributor: controls source code, filenames,
@@ -153,7 +154,7 @@ External authority:
 | TB-6 Service/worker to durable store | run/event/artifact metadata and audit records | tenant data mixing, stale retention, unbounded sensitive storage | tenant/repo/run partitioning, retention and deletion policy, audit log immutability for security events. |
 | TB-7 Service to GitHub APIs | GitHub App tokens, Checks, SARIF, PR comments | overbroad token use, publishing to wrong repo/commit, comment spam | installation-scoped tokens, commit/repo binding, idempotency keys, publish permission checks. |
 | TB-8 Local CLI to hosted service | `submit`, `run --detached`, `status`, `watch`, `artifact`, `cancel`, and `publish` | accidental private data upload, token leakage, false-success CI on truncated streams | explicit hosted-service commands, HTTPS for remote service URLs, shared DTO parsing, token source precedence, token redaction before stderr, nonterminal SSE close failures. |
-| TB-9 Review Room web UI | browser auth, run lists, artifact/finding views, cancel/publish/triage mutations | XSS, IDOR, CSRF, over-disclosure, stale authorization | server-side authorization, CSRF/origin/CORS policy, SameSite/session controls, CSP, escaped markdown/code rendering, no raw secret display. |
+| TB-9 Review Room web UI | internal service-token proxy shell, run lists, artifact/finding views, cancel/publish controls | XSS, IDOR, browser token exposure, unauthenticated same-origin visitors, CSRF-like mutation abuse, over-disclosure, stale authorization | fail-closed `REVIEW_WEB_ACCESS_TOKEN` gate in Next.js `proxy.ts` before any service-token-backed page or route, server-side authorization before storage queries, server-only bearer tokens, route-handler proxies for mutations/artifacts/SSE, escaped provider content, no raw secret display; browser-native session CSRF/CSP hardening lands with #28. |
 | TB-10 Service/core to optional metadata mirrors | Convex bridge writes and future external mirrors | derived private-code leakage, tenant mixing, unbounded third-party retention | disabled-by-default hosted posture unless explicitly configured with redaction, tenant scoping, retention, and audit. |
 
 ## Abuse Cases and Required Mitigations
@@ -267,7 +268,8 @@ Required controls:
   checked, severity bounded, and escaped for each rendering target.
 - GitHub publishing and Review Room rendering never execute provider-generated
   HTML/script and never trust provider-selected repository/commit identifiers.
-- Artifacts include model/provider provenance and request hash for audit.
+- Artifacts include model/provider provenance for audit. Request hashes remain
+  internal authorization, audit-log, and durable-storage metadata.
 
 Mapped issues: [#13](https://github.com/BjornMelin/agent-review/issues/13),
 [#23](https://github.com/BjornMelin/agent-review/issues/23),
@@ -379,7 +381,9 @@ Required controls:
   service events/errors/status responses, Codex delegate errors, completed
   run payloads, command-run telemetry, and Vercel Sandbox stdout/stderr/artifact
   handling.
-- Review Room and GitHub rendering escape Markdown/HTML and clearly mark
+- Review Room uses React escaping for findings and metadata, serves artifact
+  downloads through route handlers, and does not render provider Markdown as
+  executable HTML. GitHub rendering escapes Markdown/HTML and clearly marks
   provider-generated content as untrusted.
 
 Mapped issues: [#23](https://github.com/BjornMelin/agent-review/issues/23),
@@ -458,10 +462,9 @@ Mapped issues: [#15](https://github.com/BjornMelin/agent-review/issues/15),
 
 ### A14. Browser Mutation Forgery and Cross-Origin State Changes
 
-Future Review Room controls for start, cancel, triage, publish, and artifact
-actions are browser-authenticated mutations. A malicious site or stale browser
-session could trigger state changes if the service relies only on cookies or
-token presence.
+Review Room controls for cancel, publish, and artifact actions cross a browser
+to server boundary. A malicious site or stale browser session could trigger
+state changes if the service relies only on cookies or token presence.
 
 Required controls:
 
@@ -515,9 +518,12 @@ Future issues must preserve these gates:
   carry the shared `ReviewRequest.cwd` field, but that field is request context,
   not authority; the service must validate it against hosted repository roots
   and the authenticated repository before execution.
-- #27 and #28 Review Room must enforce server-side run authorization,
-  CSRF/origin/CORS/session-cookie protections for browser mutations, and safe
-  rendering before showing code, prompts, findings, comments, or artifacts.
+- #27 Review Room uses an internal server-side service-token proxy, fails closed
+  in production/preview without a coarse web access token, and must enforce
+  service-side run authorization before list/detail/artifact/mutation reads.
+  #28 adds browser-native identity/session protections, per-user repository
+  authorization, CSRF/origin/CORS controls, and CSP before Review Room becomes a
+  multi-user browser session surface.
 - #29 provider policy must add model budget classes, allowlists, fallback
   rules, diagnostics, and telemetry without letting prompts select providers.
 - #30 observability must record audit-quality security decisions without raw
@@ -540,8 +546,10 @@ Future issues must preserve these gates:
 
 - No provider-token execution inside Vercel Sandbox.
 - No git-backed remote sandbox target execution before sandbox source binding.
-- No Review Room web UI publication controls.
-- No web UI implementation.
+- No browser-native GitHub OAuth/session or per-user repository authorization
+  implementation in Review Room.
+- No review authoring UI beyond existing CLI/API start and submit paths.
+- No native desktop, TUI, or Tauri product surface.
 - No change to local-trusted CLI behavior.
 
 ## Open Assumptions for Later Issues

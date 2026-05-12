@@ -22,6 +22,7 @@ import {
   createReviewAuthStoreFromEnv,
   createReviewPublicationStoreFromEnv,
   createReviewStoreFromEnv,
+  decodeReviewRunListCursor,
   deleteReviewsById,
   listArtifactMetadata,
   listStatusTransitions,
@@ -1095,6 +1096,94 @@ describe('review storage', () => {
         .from(reviewRuns)
         .where(eq(reviewRuns.reviewId, 'review-1'));
       expect((run?.result as { artifacts?: unknown }).artifacts).toEqual({});
+    });
+  });
+
+  it('lists durable run summaries with pagination and repository filters', async () => {
+    await withTestStore(async ({ db, store }) => {
+      const request = createRequest();
+      const authorization = createAuthorization();
+      await store.set(
+        createRecord({
+          reviewId: 'review-old',
+          authorization,
+          request,
+          result: createReviewResult(request),
+          status: 'completed',
+          createdAt: BASE_TIME_MS,
+          updatedAt: BASE_TIME_MS + 1_000,
+        }),
+        { reason: 'completed' }
+      );
+      const openaiRequest: ReviewRequest = {
+        ...createRequest(),
+        provider: 'openaiCompatible',
+      };
+      await store.set(
+        createRecord({
+          reviewId: 'review-new',
+          authorization,
+          request: openaiRequest,
+          status: 'running',
+          detachedRunId: 'detached-new',
+          workflowRunId: 'workflow-new',
+          createdAt: BASE_TIME_MS + 2_000,
+          updatedAt: BASE_TIME_MS + 3_000,
+        }),
+        { reason: 'running' }
+      );
+      const publicationStore = createDrizzleReviewPublicationStore(db);
+      await publicationStore.upsert({
+        publicationId: 'publication-1',
+        reviewId: 'review-old',
+        channel: 'checkRun',
+        targetKey: 'check-run:abcdef1',
+        status: 'published',
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS,
+      });
+
+      const first = await store.list({ limit: 1 });
+
+      expect(first.runs).toMatchObject([
+        {
+          reviewId: 'review-new',
+          status: 'running',
+          request: {
+            provider: 'openaiCompatible',
+          },
+          detachedRunId: 'detached-new',
+          workflowRunId: 'workflow-new',
+        },
+      ]);
+      expect(first.nextCursor).toEqual(expect.any(String));
+      if (!first.nextCursor) {
+        throw new Error('expected durable list cursor');
+      }
+
+      const second = await store.list({
+        limit: 1,
+        cursor: decodeReviewRunListCursor(first.nextCursor),
+      });
+      expect(second.runs).toMatchObject([
+        {
+          reviewId: 'review-old',
+          status: 'completed',
+          artifactFormats: ['json', 'markdown'],
+          publicationCount: 1,
+          repository: {
+            owner: 'octo-org',
+            name: 'agent-review',
+          },
+        },
+      ]);
+
+      const filtered = await store.list({
+        limit: 10,
+        status: 'completed',
+        repositories: [authorization.repository],
+      });
+      expect(filtered.runs.map((run) => run.reviewId)).toEqual(['review-old']);
     });
   });
 

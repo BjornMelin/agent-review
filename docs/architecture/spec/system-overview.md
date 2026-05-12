@@ -8,7 +8,7 @@ The system performs automated review of code changes and returns prioritized fin
 
 ADR-0004 defines the language boundary for the roadmap: TypeScript remains the
 control plane for service, worker, providers, Vercel Workflow/Sandbox
-orchestration, shared Zod contracts, CLI, and the future Review Room. Rust is
+orchestration, shared Zod contracts, CLI, and Review Room. Rust is
 admissible only for helper crates that delete fragile implementation details and
 pass parity, benchmark, and generated-contract gates.
 
@@ -19,6 +19,11 @@ pass parity, benchmark, and generated-contract gates.
   events. The route layer is constructed through `createReviewServiceApp(deps)`
   so tests and future durable/auth integrations inject providers, worker, store,
   clock, UUID, logger, auth, and runner dependencies without binding a TCP port.
+- `apps/review-web`: Next.js Review Room for hosted run history, run detail,
+  lifecycle replay/live updates, findings, artifacts, provider metadata, and
+  publish/cancel controls. It performs service reads server-side and proxies
+  browser mutations/artifact/event requests through route handlers so bearer
+  tokens stay out of browser JavaScript.
 - `apps/review-worker`: detached execution adapter used by service.
 
 ### Core Packages
@@ -114,3 +119,5 @@ pass parity, benchmark, and generated-contract gates.
   - `failed`
   - `cancelled`
 - Service exposes event stream via SSE endpoint.
+- Review Room consumes run list/status/artifact APIs through server-side data
+  loading and streams lifecycle updates through a token-safe SSE proxy route.

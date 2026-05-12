@@ -5,6 +5,7 @@ allowBuilds:
   '@biomejs/biome': true
   cbor-extract: true
   esbuild: true
+  sharp: true
 overrides:
   '@esbuild-kit/core-utils>esbuild': 0.25.12
   devalue: 5.8.0

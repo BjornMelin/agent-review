@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "provider": {
+      "type": "string",
+      "const": "github"
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 39,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^(?!.*\\.git$)[A-Za-z0-9._-]+$"
+    },
+    "fullName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 140
+    },
+    "repositoryId": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "installationId": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "visibility": {
+      "type": "string",
+      "enum": ["public", "private", "internal"]
+    },
+    "pullRequestNumber": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "commitSha": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[0-9a-fA-F]{7,64}$"
+    }
+  },
+  "required": [
+    "provider",
+    "owner",
+    "name",
+    "fullName",
+    "repositoryId",
+    "installationId",
+    "visibility"
+  ],
+  "additionalProperties": false,
+  "not": {
+    "anyOf": [
+      {
+        "required": ["pullRequestNumber", "ref"]
+      },
+      {
+        "required": ["pullRequestNumber", "commitSha"]
+      },
+      {
+        "required": ["ref", "commitSha"]
+      }
+    ]
+  }
+}

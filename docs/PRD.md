@@ -15,13 +15,17 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Produce deterministic artifacts (`json`, `markdown`, `sarif`) for automation and human consumption.
 - Validate finding locations against changed diff lines to reduce false-positive locations.
 - Support detached execution for longer-running review tasks.
+- Provide an operational Review Room for hosted run visibility, triage, artifact
+  access, and controlled publish/cancel actions.
 - Preserve a TypeScript control plane while allowing narrowly gated Rust helpers
   that delete fragile implementation paths.
 
 ## In Scope (Current Implementation)
 
 - CLI command surface (`run`, `models`, `doctor`, `completion`)
-- HTTP review service with start/status/events/cancel/artifacts endpoints
+- HTTP review service with start/list/status/events/cancel/artifacts/publish
+  endpoints
+- Scoped service-token and GitHub-backed authorization on hosted HTTP endpoints
 - Detached worker integration with Workflow API and durable service state
 - Runtime leases, queue/concurrency backpressure, and cancellation propagation
   through provider, sandbox, and Rust command-runner boundaries
@@ -35,19 +39,23 @@ Engineering teams need repeatable, machine-readable code review output that can 
   filtering are owned by `packages/review-provider-registry`.
 - Detached remote sandbox execution for custom targets with deny-all policy
   runner, artifact extraction, and sandbox audit propagation
+- Next.js Review Room with dense hosted run list, detail, lifecycle timeline,
+  finding table, artifact links, provider/model metadata, and server-side
+  publish/cancel controls
 - Optional Convex metadata mirror writes
 
 ## Out of Scope (Current Implementation)
 
-- Authentication and authorization layer on HTTP endpoints
-- Authenticated multi-tenant isolation, billing, and customer-specific quota
-  products beyond the current service-level scope controls
+- Browser-native GitHub OAuth/session management for Review Room beyond the
+  current service-token deployment shell
+- Billing and customer-specific quota products beyond the current service-level
+  scope controls
 - Provider-specific retry classification beyond Workflow step retry defaults
 - Provider-token execution inside Vercel Sandbox before hosted auth/source
   binding is implemented
 - Git-backed remote sandbox target execution before sandbox source binding is
   implemented
-- UI frontend for review authoring or visualization
+- Review authoring flows beyond the existing CLI/API start and submit paths
 - Rust service rewrites, native primary CLI rewrites, Ratatui TUIs, and Tauri
   desktop applications
 
@@ -55,6 +63,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 
 - Developers running local/CI checks through CLI
 - Internal services orchestrating review via HTTP API
+- Review Room operators triaging hosted runs, artifacts, and publish/cancel
+  state
 - Platform engineers integrating review outputs into downstream tooling
 
 ## Success Criteria
@@ -63,6 +73,8 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Artifact generation is deterministic and available per requested output format.
 - Severity threshold mapping produces predictable process exit behavior.
 - Detached runs can be started, polled, and cancelled through service APIs.
+- Hosted run lists and run details can be loaded through Review Room without
+  exposing bearer tokens to the browser.
 - Cancellation responses only report terminal success after the runtime reports
   `cancelled`; capacity exhaustion returns retryable `429` errors instead of
   accepting unbounded work.

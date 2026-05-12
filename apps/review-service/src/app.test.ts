@@ -8,7 +8,10 @@ import type {
   ReviewRequest,
   ReviewResult,
   ReviewRunAuthorization,
+  ReviewRunListResponse,
+  ReviewRunSummary,
 } from '@review-agent/review-types';
+import { redactErrorMessage } from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -205,6 +208,66 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
   };
 }
 
+function createRunSummary(record: ReviewRecord): ReviewRunSummary {
+  const repository = record.authorization?.repository;
+  return {
+    reviewId: record.reviewId,
+    status: record.status,
+    request: {
+      provider: record.request.provider,
+      executionMode: record.request.executionMode,
+      targetType: record.request.target.type,
+      outputFormats: record.request.outputFormats,
+      ...(record.request.model ? { model: record.request.model } : {}),
+    },
+    ...(repository
+      ? {
+          repository: {
+            provider: repository.provider,
+            owner: repository.owner,
+            name: repository.name,
+            fullName: repository.fullName,
+            repositoryId: repository.repositoryId,
+            installationId: repository.installationId,
+            visibility: repository.visibility,
+            ...(repository.pullRequestNumber
+              ? { pullRequestNumber: repository.pullRequestNumber }
+              : {}),
+            ...(repository.ref ? { ref: repository.ref } : {}),
+            ...(repository.commitSha
+              ? { commitSha: repository.commitSha }
+              : {}),
+          },
+        }
+      : {}),
+    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
+    findingCount: record.result?.result.findings.length ?? 0,
+    artifactFormats: record.result
+      ? Object.keys(record.result.artifacts).filter(
+          (format): format is 'json' | 'markdown' | 'sarif' =>
+            format === 'json' || format === 'markdown' || format === 'sarif'
+        )
+      : [],
+    publicationCount: 0,
+    ...(record.result?.result.metadata.modelResolved
+      ? { modelResolved: record.result.result.metadata.modelResolved }
+      : {}),
+    ...(record.detachedRunId ? { detachedRunId: record.detachedRunId } : {}),
+    ...(record.workflowRunId ? { workflowRunId: record.workflowRunId } : {}),
+    ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
+    ...(record.cancelRequestedAt === undefined
+      ? {}
+      : { cancelRequestedAt: record.cancelRequestedAt }),
+    ...(record.status === 'completed' ||
+    record.status === 'failed' ||
+    record.status === 'cancelled'
+      ? { completedAt: record.updatedAt }
+      : {}),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
 function createDetachedRun(
   overrides: Partial<DetachedRunRecord> = {}
 ): DetachedRunRecord {
@@ -234,6 +297,56 @@ function createStore(
     async get(reviewId) {
       const record = records.get(reviewId);
       return record ? materialize(record) : undefined;
+    },
+    async list(options) {
+      const summaries = [...records.values()]
+        .filter((record) => !options.status || record.status === options.status)
+        .filter((record) => {
+          if (!options.repositories || options.repositories.length === 0) {
+            return true;
+          }
+          const repository = record.authorization?.repository;
+          if (!repository) {
+            return false;
+          }
+          return options.repositories.some(
+            (filter) =>
+              filter.repositoryId === repository.repositoryId ||
+              (filter.installationId === repository.installationId &&
+                filter.owner.toLowerCase() === repository.owner.toLowerCase() &&
+                filter.name.toLowerCase() === repository.name.toLowerCase())
+          );
+        })
+        .map((record) => createRunSummary(record))
+        .filter(
+          (summary) =>
+            !options.cursor ||
+            summary.updatedAt < options.cursor.updatedAt ||
+            (summary.updatedAt === options.cursor.updatedAt &&
+              summary.reviewId.localeCompare(options.cursor.reviewId) < 0)
+        )
+        .sort((left, right) => {
+          const updatedAtCompare = right.updatedAt - left.updatedAt;
+          return updatedAtCompare === 0
+            ? right.reviewId.localeCompare(left.reviewId)
+            : updatedAtCompare;
+        });
+      const runs = summaries.slice(0, options.limit);
+      const last = runs.at(-1);
+      return {
+        runs,
+        ...(summaries.length > options.limit && last
+          ? {
+              nextCursor: Buffer.from(
+                JSON.stringify({
+                  updatedAt: last.updatedAt,
+                  reviewId: last.reviewId,
+                }),
+                'utf8'
+              ).toString('base64url'),
+            }
+          : {}),
+      };
     },
     async reserve(record, options) {
       let queued = 0;
@@ -349,6 +462,7 @@ function createThrowingStore(error = new Error('db down')): ReviewStoreAdapter {
   };
   return {
     get: fail,
+    list: fail,
     reserve: fail,
     set: fail,
     appendEvent: fail,
@@ -676,6 +790,142 @@ describe('createReviewServiceApp', () => {
     expect(await missing.json()).toEqual({ error: 'review not found' });
   });
 
+  it('lists review runs newest first with compact summaries and cursors', async () => {
+    const store = createStore();
+    const request = createRequest({ model: 'gpt-test' });
+    store.records.set(
+      'review-old',
+      createReviewRecord({
+        reviewId: 'review-old',
+        request,
+        status: 'completed',
+        result: createReviewResult(request),
+        createdAt: 1_000,
+        updatedAt: 2_000,
+      })
+    );
+    store.records.set(
+      'review-new',
+      createReviewRecord({
+        reviewId: 'review-new',
+        request: createRequest({ provider: 'openaiCompatible' }),
+        status: 'running',
+        detachedRunId: 'detached-new',
+        workflowRunId: 'workflow-new',
+        error:
+          'provider failed with OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456',
+        createdAt: 3_000,
+        updatedAt: 4_000,
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const first = await app.request('/v1/review?limit=1');
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as ReviewRunListResponse;
+    expect(firstBody.runs).toMatchObject([
+      {
+        reviewId: 'review-new',
+        status: 'running',
+        request: {
+          provider: 'openaiCompatible',
+          executionMode: 'localTrusted',
+          targetType: 'custom',
+        },
+        detachedRunId: 'detached-new',
+        workflowRunId: 'workflow-new',
+        error: 'provider failed with OPENAI_API_KEY=[REDACTED_SECRET]',
+      },
+    ]);
+    expect(firstBody.nextCursor).toEqual(expect.any(String));
+    if (!firstBody.nextCursor) {
+      throw new Error('expected run list cursor');
+    }
+
+    const second = await app.request(
+      `/v1/review?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`
+    );
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({
+      runs: [
+        {
+          reviewId: 'review-old',
+          status: 'completed',
+          request: {
+            model: 'gpt-test',
+          },
+          artifactFormats: ['json', 'markdown'],
+          findingCount: 0,
+          modelResolved: 'test-model',
+        },
+      ],
+    });
+  });
+
+  it('filters review run lists to authenticated repository scope', async () => {
+    const store = createStore();
+    const authorized = createAuthorization();
+    const other = createAuthorization({
+      repository: {
+        ...authorized.repository,
+        repositoryId: 99,
+        owner: 'other-org',
+        name: 'other-repo',
+        fullName: 'other-org/other-repo',
+      },
+    });
+    store.records.set(
+      'review-visible',
+      createReviewRecord({
+        reviewId: 'review-visible',
+        authorization: authorized,
+        status: 'completed',
+      })
+    );
+    store.records.set(
+      'review-hidden',
+      createReviewRecord({
+        reviewId: 'review-hidden',
+        authorization: other,
+        status: 'completed',
+      })
+    );
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      scopes: ['review:read'],
+      authorization: authorized,
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authPolicy,
+      authStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runs: [
+        {
+          reviewId: 'review-visible',
+          repository: {
+            owner: 'octo-org',
+            name: 'agent-review',
+          },
+        },
+      ],
+    });
+  });
+
   it('persists queued detached state before dispatching workflow work', async () => {
     const store = createStore();
     let observedQueuedRecord: ReviewRecord | undefined;
@@ -926,6 +1176,25 @@ describe('createReviewServiceApp', () => {
     expect(await status.json()).toMatchObject({
       reviewId: 'review-detached',
       status: 'completed',
+      summary: {
+        reviewId: 'review-detached',
+        status: 'completed',
+        artifactFormats: ['json', 'markdown'],
+        findingCount: 0,
+        publicationCount: 0,
+      },
+      artifacts: [
+        {
+          reviewId: 'review-detached',
+          format: 'json',
+          contentType: 'application/json; charset=utf-8',
+        },
+        {
+          reviewId: 'review-detached',
+          format: 'markdown',
+          contentType: 'text/markdown; charset=utf-8',
+        },
+      ],
       result: {
         overallCorrectness: 'patch is correct',
       },
