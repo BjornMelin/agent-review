@@ -1,21 +1,19 @@
 import { NextResponse } from 'next/server';
-import { authorizeReviewRoomRequest } from '@/lib/review-room-access';
+import { resolveReviewRoomAccessConfig } from '@/lib/review-room-access';
 import { resolveReviewWebConfig } from '@/lib/review-service';
-import { reviewRoomAccessHeaders } from '@/lib/route-security';
 
-export function GET(request: Request): NextResponse {
-  const access = authorizeReviewRoomRequest(request.headers);
-  if (!access.ok) {
-    return NextResponse.json(
-      { error: access.error },
-      { headers: reviewRoomAccessHeaders(access), status: access.status }
-    );
-  }
-  const config = resolveReviewWebConfig();
+/**
+ * Returns non-secret Review Room readiness signals for preview smoke checks.
+ *
+ * @returns JSON health payload with configuration booleans.
+ */
+export function GET(): NextResponse {
+  const service = resolveReviewWebConfig();
+  const access = resolveReviewRoomAccessConfig();
   return NextResponse.json({
     ok: true,
-    serviceUrl: config.serviceUrl,
-    tokenConfigured: Boolean(config.token),
-    tokenSource: config.tokenSource ?? null,
+    accessTokenConfigured: Boolean(access.accessToken),
+    productionRuntime: access.productionRuntime,
+    serviceTokenConfigured: Boolean(service.token),
   });
 }

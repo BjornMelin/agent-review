@@ -11,6 +11,7 @@ This directory contains canonical product and architecture documentation for the
 ## Release Docs
 
 - [One-Issue-One-PR Release Playbook](./release/one-issue-one-pr-playbook.md)
+- [CI Hardening Runbook](./release/ci-hardening.md)
 - [Dependency Modernization Ledger](./release/dependency-modernization-2026-05.md)
 
 ## Deployment Docs
