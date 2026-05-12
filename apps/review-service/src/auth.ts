@@ -30,6 +30,8 @@ import type {
 export const REVIEW_SERVICE_TOKEN_PREFIX = 'rat';
 
 const DEFAULT_GITHUB_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_GITHUB_API_BASE_URL = 'https://api.github.com';
+const DEFAULT_GITHUB_API_VERSION = '2026-03-10';
 
 /**
  * Lists hosted review operations that can be authorized by scopes.
@@ -248,6 +250,12 @@ function sameRepository(
   return (
     left.owner.toLowerCase() === right.owner.toLowerCase() &&
     left.name.toLowerCase() === right.name.toLowerCase()
+  );
+}
+
+function isPublicGitHubApiBaseUrl(baseUrl: string): boolean {
+  return (
+    baseUrl.replace(/\/+$/, '').toLowerCase() === DEFAULT_GITHUB_API_BASE_URL
   );
 }
 
@@ -657,11 +665,17 @@ export function createGitHubUserTokenAuthorizer(
   if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
     throw new Error('requestTimeoutMs must be a positive finite number');
   }
+  const baseUrl = options.baseUrl ?? DEFAULT_GITHUB_API_BASE_URL;
+  const apiVersion =
+    options.apiVersion ??
+    (isPublicGitHubApiBaseUrl(baseUrl)
+      ? DEFAULT_GITHUB_API_VERSION
+      : undefined);
   const request = octokitRequest.defaults({
-    baseUrl: options.baseUrl ?? 'https://api.github.com',
+    baseUrl,
     headers: {
       accept: 'application/vnd.github+json',
-      'x-github-api-version': options.apiVersion ?? '2026-03-10',
+      ...(apiVersion ? { 'x-github-api-version': apiVersion } : {}),
     },
   });
   const createRequestSignal = (): AbortSignal =>
@@ -754,14 +768,16 @@ export function createGitHubUserTokenAuthorizer(
                 }>;
               }
             ).repositories;
-            const repository = pageRepositories.find(
-              (candidate) =>
-                (selection.repositoryId === undefined ||
-                  candidate.id === selection.repositoryId) &&
+            const repository = pageRepositories.find((candidate) => {
+              if (selection.repositoryId !== undefined) {
+                return candidate.id === selection.repositoryId;
+              }
+              return (
                 candidate.owner.login.toLowerCase() ===
                   selection.owner.toLowerCase() &&
                 candidate.name.toLowerCase() === selection.name.toLowerCase()
-            );
+              );
+            });
             if (repository) {
               const scopes = permissionScopes(repository.permissions ?? {});
               if (!scopeAllowed(scope, scopes)) {
