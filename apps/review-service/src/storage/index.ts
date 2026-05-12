@@ -15,6 +15,7 @@ import {
   type ReviewRunListResponse,
   type ReviewRunStatus,
   type ReviewRunSummary,
+  redactErrorMessage,
 } from '@review-agent/review-types';
 import type { SQL } from 'drizzle-orm';
 import { and, asc, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
@@ -546,7 +547,7 @@ export function buildReviewRunSummary(
     ...(record.authorization
       ? { repository: repositorySummaryFor(record.authorization) }
       : {}),
-    ...(record.error ? { error: record.error } : {}),
+    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
     findingCount: record.result?.result.findings.length ?? 0,
     artifactFormats,
     publicationCount: options.publicationCount ?? 0,
@@ -589,7 +590,7 @@ function buildReviewRunSummaryForListRow(
     ...(run.authorization
       ? { repository: repositorySummaryFor(run.authorization) }
       : {}),
-    ...(run.error ? { error: run.error } : {}),
+    ...(run.error ? { error: redactErrorMessage(run.error) } : {}),
     findingCount: Number.isFinite(findingCount) ? findingCount : 0,
     artifactFormats: options.artifactFormats ?? [],
     publicationCount: options.publicationCount ?? 0,

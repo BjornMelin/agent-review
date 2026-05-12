@@ -5,18 +5,7 @@ export type MutationGuardResult =
   | { ok: false; error: string; status: 400 | 403 };
 
 function expectedOrigin(request: Request): string | undefined {
-  const forwardedHost =
-    request.headers.get('x-forwarded-host') ?? request.headers.get('host');
-  const host = forwardedHost?.split(',')[0]?.trim();
-  if (!host) {
-    return undefined;
-  }
-  const requestUrl = new URL(request.url);
-  const forwardedProto = request.headers
-    .get('x-forwarded-proto')
-    ?.split(',')[0];
-  const proto = forwardedProto?.trim() || requestUrl.protocol.replace(/:$/, '');
-  return `${proto}://${host}`;
+  return new URL(request.url).origin;
 }
 
 export function validateReviewRoomMutation(

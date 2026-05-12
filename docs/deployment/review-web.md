@@ -16,9 +16,10 @@ hosted-service client, not a second review engine.
 - Browser mutation route handlers require same-origin requests plus a
   route-specific `x-review-room-action` header before proxying the server-side
   service token.
-- Production and Vercel preview runtimes fail closed unless
-  `REVIEW_WEB_ACCESS_TOKEN` is configured. Page loads and all API proxy routes
-  check this access gate before any service-token-backed call.
+- Production and Vercel preview runtimes fail closed in `src/proxy.ts` unless
+  `REVIEW_WEB_ACCESS_TOKEN` is configured. Page loads receive a real `401`
+  Basic-auth challenge when credentials are required, and API proxy routes
+  receive JSON errors before any service-token-backed call.
 
 ## Environment Variables
 

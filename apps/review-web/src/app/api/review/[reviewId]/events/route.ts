@@ -18,11 +18,13 @@ export async function GET(
   }
   const { reviewId } = await context.params;
   const url = new URL(request.url);
+  const lastEventId = request.headers.get('last-event-id');
   const upstream = createServiceRequest(
     `/v1/review/${encodeURIComponent(reviewId)}/events${url.search}`,
     {
       headers: {
         accept: 'text/event-stream',
+        ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
       },
     }
   );

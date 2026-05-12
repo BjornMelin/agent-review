@@ -13,7 +13,6 @@ describe('validateReviewRoomMutation', () => {
     expect(
       validateReviewRoomMutation(
         request({
-          host: 'localhost:3000',
           origin: 'http://localhost:3000',
           'x-review-room-action': 'cancel',
         }),
@@ -26,7 +25,6 @@ describe('validateReviewRoomMutation', () => {
     expect(
       validateReviewRoomMutation(
         request({
-          host: 'localhost:3000',
           origin: 'https://attacker.example',
           'x-review-room-action': 'cancel',
         }),
@@ -43,7 +41,6 @@ describe('validateReviewRoomMutation', () => {
     expect(
       validateReviewRoomMutation(
         request({
-          host: 'localhost:3000',
           origin: 'http://localhost:3000',
           'x-review-room-action': 'publish',
         }),
@@ -52,6 +49,27 @@ describe('validateReviewRoomMutation', () => {
     ).toEqual({
       ok: false,
       error: 'review room mutation header required',
+      status: 403,
+    });
+  });
+
+  it('rejects forwarded-host spoofing for mutation requests', () => {
+    expect(
+      validateReviewRoomMutation(
+        request(
+          {
+            origin: 'https://attacker.example',
+            'x-forwarded-host': 'attacker.example',
+            'x-forwarded-proto': 'https',
+            'x-review-room-action': 'cancel',
+          },
+          'https://review.example/api/review/review_1/cancel'
+        ),
+        'cancel'
+      )
+    ).toEqual({
+      ok: false,
+      error: 'cross-origin mutation request denied',
       status: 403,
     });
   });

@@ -11,6 +11,7 @@ import type {
   ReviewRunListResponse,
   ReviewRunSummary,
 } from '@review-agent/review-types';
+import { redactErrorMessage } from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -239,7 +240,7 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
           },
         }
       : {}),
-    ...(record.error ? { error: record.error } : {}),
+    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
     findingCount: record.result?.result.findings.length ?? 0,
     artifactFormats: record.result
       ? Object.keys(record.result.artifacts).filter(
@@ -811,6 +812,8 @@ describe('createReviewServiceApp', () => {
         status: 'running',
         detachedRunId: 'detached-new',
         workflowRunId: 'workflow-new',
+        error:
+          'provider failed with OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456',
         createdAt: 3_000,
         updatedAt: 4_000,
       })
@@ -836,6 +839,7 @@ describe('createReviewServiceApp', () => {
         },
         detachedRunId: 'detached-new',
         workflowRunId: 'workflow-new',
+        error: 'provider failed with OPENAI_API_KEY=[REDACTED_SECRET]',
       },
     ]);
     expect(firstBody.nextCursor).toEqual(expect.any(String));
