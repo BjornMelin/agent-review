@@ -550,9 +550,12 @@ Future issues must preserve these gates:
   preview validation, and security-relevant environment configuration.
 - #32 docs must keep this threat model, runtime specs, ADRs, and runbooks in
   sync with implemented behavior.
-- #33 Ratatui TUI must remain a hosted-service client that uses generated
-  contracts, scoped tokens, and server-side authorization; it must not embed a
-  second local review engine or bypass hosted publish/cancel controls.
+- #33 Ratatui TUI is accepted only as the design-gated native review console in
+  [ADR-0007](../adr/0007-ratatui-review-console.md) and
+  [Native Review Console](../spec/native-review-console.md). It must remain a
+  hosted-service client that uses generated contracts, scoped tokens, and
+  server-side authorization; it must not embed a second local review engine or
+  bypass hosted publish/cancel controls.
 - #34 Tauri/desktop ADR must not bypass hosted authz, token storage, or IPC
   capability restrictions if desktop distribution is later approved.
 - #35 launch signoff must dogfood authentication, authorization, redaction,
@@ -567,7 +570,8 @@ Future issues must preserve these gates:
 - No browser-native GitHub OAuth/session or per-user repository authorization
   implementation in Review Room.
 - No review authoring UI beyond existing CLI/API start and submit paths.
-- No native desktop, TUI, or Tauri product surface.
+- No implemented native desktop, TUI, or Tauri product surface in the current
+  hosted launch. Ratatui and Tauri work remains design-gated expansion work.
 - No change to local-trusted CLI behavior.
 
 ## Open Assumptions for Later Issues
