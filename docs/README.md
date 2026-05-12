@@ -16,10 +16,12 @@ This directory contains canonical product and architecture documentation for the
 
 ## Deployment Docs
 
+- [Review Service Deployment](./deployment/review-service.md)
 - [Review Room Deployment](./deployment/review-web.md)
 
 ## Operations Docs
 
+- [Operator Runbooks](./operations/operator-runbooks.md)
 - [Observability Runbook](./operations/observability.md)
 
 ## Architecture Specifications
@@ -57,3 +59,7 @@ Implementation contracts are defined in code and mirrored here:
 - Review Room web surface: `apps/review-web/src/app` and shared service client:
   `apps/review-web/src/lib/review-service.ts`
 - Detached execution: `apps/review-worker/src/index.ts`
+- CI and preview deployment gates: `.github/workflows/ci.yml`,
+  `.github/workflows/vercel-preview.yml`, and `scripts/*`
+- Operator procedures: `docs/operations/operator-runbooks.md` and
+  `docs/operations/observability.md`

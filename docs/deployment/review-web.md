@@ -65,15 +65,21 @@ the service. Production service startup rejects disabled auth.
   domain policy are finalized.
 - Do not expose the review service token to client components, edge config, log
   drains, or public runtime configuration.
+- Keep `/api/health` public. It returns only non-secret readiness booleans and
+  lets the secret-free preview smoke workflow prove deployment configuration
+  without sending repository secrets to PR preview deployments.
+- Treat authenticated preview dogfood as a trusted manual lane. If deployment
+  protection blocks the preview before Review Room can serve `/api/health`, use
+  Vercel's automation bypass only from trusted operator environments.
 
 ## Security Posture
 
-Issue #27 ships an internal service-token deployment shell: a trusted
-deployment reads authorized runs server-side and proxies browser actions only
-after a coarse Review Room access gate passes. It does not implement a
+Review Room currently ships as an internal service-token deployment shell: a
+trusted deployment reads authorized runs server-side and proxies browser actions
+only after a coarse Review Room access gate passes. It does not implement a
 browser-native GitHub login/session model or per-user repository authorization.
-That session model, CSRF/origin/CORS hardening, and CSP rollout are tracked by
-the follow-up Review Room auth issue.
+That session model and CSP rollout remain follow-up hardening before Review Room
+becomes a multi-user browser session surface.
 
 The review service remains the authorization authority. Review Room must not
 filter unauthorized runs in the browser; route handlers and server components

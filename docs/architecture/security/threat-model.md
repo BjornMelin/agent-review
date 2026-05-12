@@ -246,8 +246,11 @@ Required controls:
   file count and file-size budgets before reading untracked file contents.
 - Provider routing has per-model input/output/timeout budget policy, retry
   ceilings, and cost telemetry.
-- SSE, status polling, artifact reads, and cancellation endpoints have rate
-  limits.
+- SSE, status polling, artifact reads, and cancellation endpoints require
+  deployment-edge rate limits until app-level rate-limit middleware is added.
+  The app already enforces request-size limits, schema/security budgets,
+  queue/running/per-scope backpressure, and provider/model budgets before
+  provider invocation.
 
 Mapped issues: [#22](https://github.com/BjornMelin/agent-review/issues/22),
 [#23](https://github.com/BjornMelin/agent-review/issues/23),
@@ -580,4 +583,7 @@ Future issues must preserve these gates:
   later issue explicitly promotes or replaces it.
 - Private code and prompts remain sensitive even when only derived summaries or
   findings are persisted.
-- Hosted service production deployment is blocked until #23 and #24 close.
+- Hosted service launch signoff remains blocked on final release validation:
+  deployment-edge rate limits for repeated read/cancel endpoints, Review Room
+  production deployment evidence, CI/security gates, and final dogfood tracked
+  by the release checklist and issue #35.
