@@ -2250,6 +2250,7 @@ describe('createReviewServiceApp', () => {
     const app = createTestReviewServiceApp({
       providers: createProviders(),
       worker,
+      authStore: createInMemoryReviewAuthStore(),
       authPolicy: () =>
         Response.json({ error: 'unauthorized' }, { status: 401 }),
       config: { recordCleanupIntervalMs: false },
@@ -2267,6 +2268,17 @@ describe('createReviewServiceApp', () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: 'unauthorized' });
     expect(worker.started).toEqual([]);
+  });
+
+  it('requires an auth store when hosted auth policy is enabled', () => {
+    expect(() =>
+      createTestReviewServiceApp({
+        providers: createProviders(),
+        worker: createWorker(),
+        authPolicy: () => null,
+        config: { recordCleanupIntervalMs: false },
+      })
+    ).toThrow(/authStore is required/);
   });
 
   it('requires bearer auth when service token policy is enabled', async () => {
@@ -2650,6 +2662,7 @@ describe('createReviewServiceApp', () => {
     const store = createStore();
     const authStore = createInMemoryReviewAuthStore();
     const repository = createAuthorization().repository;
+    let now = 1_000;
     const githubPrincipal = {
       type: 'githubUser' as const,
       githubUserId: 101,
@@ -2717,8 +2730,10 @@ describe('createReviewServiceApp', () => {
           authorizeUserToken,
         },
       }),
+      nowMs: () => now,
       config: {
         eventStreamPollIntervalMs: 50,
+        githubStreamAuthorizationTtlMs: 25,
         recordCleanupIntervalMs: false,
       },
     });
@@ -2733,6 +2748,7 @@ describe('createReviewServiceApp', () => {
 
     try {
       allowRepository = false;
+      now = 1_100;
       const run = worker.runs.get('detached-run-1');
       expect(run).toBeDefined();
       if (!run) {
@@ -2766,6 +2782,91 @@ describe('createReviewServiceApp', () => {
           }),
         ])
       );
+    } finally {
+      await session.reader.cancel().catch(() => undefined);
+    }
+  });
+
+  it('throttles GitHub SSE dynamic authorization within the stream TTL', async () => {
+    const worker = createWorker();
+    const store = createStore();
+    const authStore = createInMemoryReviewAuthStore();
+    const repository = createAuthorization().repository;
+    let now = 1_000;
+    const githubPrincipal = {
+      type: 'githubUser' as const,
+      githubUserId: 101,
+      login: 'octocat',
+    };
+    const authorizeUserToken = vi.fn(
+      async (
+        _token: string,
+        _selection: ReviewRepositorySelection,
+        _scope: ReviewAuthScope
+      ) => ({
+        principal: githubPrincipal,
+        repository,
+        scopes: ['review:start', 'review:read'] as ReviewAuthScope[],
+      })
+    );
+    worker.runs.set(
+      'detached-run-1',
+      createDetachedRun({ runId: 'detached-run-1' })
+    );
+    store.records.set(
+      'review-github-stream-throttle',
+      createReviewRecord({
+        reviewId: 'review-github-stream-throttle',
+        status: 'running',
+        authorization: createAuthorization({
+          principal: githubPrincipal,
+          actor: 'github:octocat',
+          scopes: ['review:start', 'review:read'],
+        }),
+        detachedRunId: 'detached-run-1',
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker,
+      store,
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken: vi.fn(async () => githubPrincipal),
+          authorizeUserToken,
+        },
+      }),
+      nowMs: () => now,
+      config: {
+        eventStreamPollIntervalMs: 10,
+        githubStreamAuthorizationTtlMs: 100,
+        recordCleanupIntervalMs: false,
+      },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-github-stream-throttle/events',
+      {
+        headers: { authorization: 'Bearer github-user-token' },
+      }
+    );
+    const session = createSseReaderSession(response);
+
+    try {
+      expect(authorizeUserToken).toHaveBeenCalledTimes(1);
+      await expect(readNextSseEvent(session)).resolves.toMatchObject({
+        event: 'keepalive',
+      });
+      expect(authorizeUserToken).toHaveBeenCalledTimes(1);
+
+      now = 1_150;
+      await expect(readNextSseEvent(session)).resolves.toMatchObject({
+        event: 'keepalive',
+      });
+      expect(authorizeUserToken).toHaveBeenCalledTimes(2);
     } finally {
       await session.reader.cancel().catch(() => undefined);
     }

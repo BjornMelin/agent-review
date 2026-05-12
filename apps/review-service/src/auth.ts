@@ -29,6 +29,8 @@ import type {
  */
 export const REVIEW_SERVICE_TOKEN_PREFIX = 'rat';
 
+const DEFAULT_GITHUB_REQUEST_TIMEOUT_MS = 10_000;
+
 /**
  * Lists hosted review operations that can be authorized by scopes.
  */
@@ -638,18 +640,35 @@ function repositoryAuthorizationFromGitHub(
 /**
  * Creates a GitHub user-token repository authorizer using GitHub REST APIs.
  *
- * @param options - Optional GitHub API URL and API version.
+ * @param options - Optional GitHub API URL, API version, and per-request timeout.
  * @returns A verifier that revalidates identity and repository permissions.
+ * @throws AuthHttpError - When the returned authorizer denies repository access or required scope.
+ * @throws Error - When invalid options, GitHub API failures, or transport failures escape authorization.
  */
 export function createGitHubUserTokenAuthorizer(
-  options: { baseUrl?: string; apiVersion?: string } = {}
+  options: {
+    baseUrl?: string;
+    apiVersion?: string;
+    requestTimeoutMs?: number;
+  } = {}
 ): GitHubUserTokenAuthorizer {
+  const requestTimeoutMs =
+    options.requestTimeoutMs ?? DEFAULT_GITHUB_REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+    throw new Error('requestTimeoutMs must be a positive finite number');
+  }
   const request = octokitRequest.defaults({
     baseUrl: options.baseUrl ?? 'https://api.github.com',
     headers: {
       accept: 'application/vnd.github+json',
       'x-github-api-version': options.apiVersion ?? '2026-03-10',
     },
+  });
+  const withTimeout = <TOptions extends Record<string, unknown>>(
+    requestOptions?: TOptions
+  ): TOptions & { request: { signal: AbortSignal } } => ({
+    ...(requestOptions ?? ({} as TOptions)),
+    request: { signal: AbortSignal.timeout(requestTimeoutMs) },
   });
 
   async function authenticateUserToken(
@@ -658,7 +677,7 @@ export function createGitHubUserTokenAuthorizer(
     const authRequest = request.defaults({
       headers: { authorization: `Bearer ${token}` },
     });
-    const user = await authRequest('GET /user');
+    const user = await authRequest('GET /user', withTimeout());
     const userData = user.data as { id: number; login: string };
     return {
       type: 'githubUser',
@@ -682,10 +701,10 @@ export function createGitHubUserTokenAuthorizer(
               for (let page = 1; ; page += 1) {
                 const installations = await authRequest(
                   'GET /user/installations',
-                  {
+                  withTimeout({
                     per_page: 100,
                     page,
-                  }
+                  })
                 );
                 const pageInstallations = (
                   installations.data as {
@@ -711,11 +730,11 @@ export function createGitHubUserTokenAuthorizer(
           for (let page = 1; ; page += 1) {
             const repositories = await authRequest(
               'GET /user/installations/{installation_id}/repositories',
-              {
+              withTimeout({
                 installation_id: installationId,
                 per_page: 100,
                 page,
-              }
+              })
             );
             const pageRepositories = (
               repositories.data as {

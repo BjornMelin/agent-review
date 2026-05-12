@@ -127,6 +127,7 @@ export type ReviewServiceConfig = {
   runtimeLeaseTtlMs: number;
   recordCleanupIntervalMs: number | false;
   eventStreamPollIntervalMs: number;
+  githubStreamAuthorizationTtlMs: number;
   remoteSandboxInlineError: string;
   reviewLimits: ReviewSecurityLimits;
 };
@@ -171,6 +172,7 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
   runtimeLeaseTtlMs: 10 * 60 * 1000,
   recordCleanupIntervalMs: 60_000,
   eventStreamPollIntervalMs: 15_000,
+  githubStreamAuthorizationTtlMs: 60_000,
   remoteSandboxInlineError:
     'executionMode "remoteSandbox" requires detached delivery',
   reviewLimits: DEFAULT_REVIEW_SECURITY_LIMITS,
@@ -455,6 +457,11 @@ export function createReviewServiceApp(
   const authMode = dependencies.authMode ?? 'required';
   const authPolicy = dependencies.authPolicy;
   const authStore = dependencies.authStore;
+  if (authMode !== 'disabled' && authPolicy && !authStore) {
+    throw new Error(
+      'authStore is required when hosted auth is enabled so appendAuthAudit can persist authorization decisions'
+    );
+  }
   const runner = dependencies.runner ?? runReview;
   const app = new Hono();
   const liveListeners = new Map<string, Set<ReviewLifecycleListener>>();
@@ -784,7 +791,8 @@ export function createReviewServiceApp(
 
   async function revalidateStreamAccess(
     context: Context,
-    record: ReviewRecord
+    record: ReviewRecord,
+    options: { lastGitHubDynamicAuthorizationAt?: number } = {}
   ): Promise<Response | null> {
     const auth = getReviewAuthContext(context);
     if (!auth) {
@@ -798,10 +806,24 @@ export function createReviewServiceApp(
     if (tokenDenied) {
       return tokenDenied;
     }
-    return authorizeRecordAccess(context, record, 'review:read', {
-      auditAllowed: false,
-      forceDynamicAuthorization: auth.principal.type === 'githubUser',
-    });
+    const shouldForceDynamicAuthorization =
+      auth.principal.type === 'githubUser' &&
+      (options.lastGitHubDynamicAuthorizationAt === undefined ||
+        nowMs() - options.lastGitHubDynamicAuthorizationAt >=
+          config.githubStreamAuthorizationTtlMs);
+    const accessDenied = await authorizeRecordAccess(
+      context,
+      record,
+      'review:read',
+      {
+        auditAllowed: false,
+        forceDynamicAuthorization: shouldForceDynamicAuthorization,
+      }
+    );
+    if (!accessDenied && shouldForceDynamicAuthorization) {
+      options.lastGitHubDynamicAuthorizationAt = nowMs();
+    }
+    return accessDenied;
   }
 
   function getLiveListeners(reviewId: string): Set<ReviewLifecycleListener> {
@@ -1506,6 +1528,10 @@ export function createReviewServiceApp(
       let cleanedUp = false;
       const deliveredEventIds = new Set<string>();
       let writeQueue = Promise.resolve();
+      const streamAuthState: { lastGitHubDynamicAuthorizationAt?: number } = {};
+      if (getReviewAuthContext(context)?.principal.type === 'githubUser') {
+        streamAuthState.lastGitHubDynamicAuthorizationAt = nowMs();
+      }
 
       const cleanup = () => {
         if (cleanedUp) {
@@ -1551,7 +1577,8 @@ export function createReviewServiceApp(
           }
           const accessDenied = await revalidateStreamAccess(
             context,
-            latestRecord
+            latestRecord,
+            streamAuthState
           );
           if (accessDenied) {
             cleanup();
@@ -1598,7 +1625,8 @@ export function createReviewServiceApp(
           }
           const accessDenied = await revalidateStreamAccess(
             context,
-            latestRecord
+            latestRecord,
+            streamAuthState
           );
           if (accessDenied) {
             cleanup();
