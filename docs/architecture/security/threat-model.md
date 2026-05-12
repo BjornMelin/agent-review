@@ -11,11 +11,13 @@ service processes private repository paths, prompts, artifacts, provider output,
 GitHub write operations, durable workflow state, or sandbox commands.
 
 This is a design and acceptance-gate document. It does not itself implement
-sandbox execution, GitHub publishing, or web UI controls. Service durable
+sandbox execution or web UI controls. Service durable
 storage is implemented separately under
 [ADR-0005](../adr/0005-durable-review-storage.md), and hosted API
 authentication/authorization now persists identity-bound run ownership and
-append-only auth audit rows for route enforcement.
+append-only auth audit rows for route enforcement. GitHub publication is
+implemented through the explicit `review:publish` route, durable publication
+records, installation-scoped tokens, and idempotent outbound writes.
 
 ## Source Evidence
 
@@ -42,6 +44,12 @@ Repository evidence:
 - Service durable storage is selected from `DATABASE_URL` or `POSTGRES_URL` in
   `apps/review-service/src/server.ts` and implemented by
   `apps/review-service/src/storage`.
+- GitHub publication is implemented in
+  `apps/review-service/src/github-publication.ts`, exposed by
+  `POST /v1/review/:reviewId/publish` in `apps/review-service/src/app.ts`, and
+  persisted in `review_publications`.
+- SARIF publication is rendered by `packages/review-reporters/src/index.ts`
+  using repository-relative locations.
 
 External authority:
 
@@ -64,6 +72,14 @@ External authority:
 - GitHub pull request review comment APIs expose inline comment bodies, paths,
   line positions, commit IDs, and reply/update/delete operations:
   https://docs.github.com/en/rest/pulls/comments
+- GitHub Check Runs require GitHub App `checks:write` and support create/update
+  operations bound to a head SHA: https://docs.github.com/en/rest/checks/runs
+- GitHub code scanning SARIF uploads require commit/ref binding and a gzipped,
+  base64-encoded SARIF payload:
+  https://docs.github.com/en/rest/code-scanning/code-scanning#upload-an-analysis-as-sarif-data
+- GitHub SARIF support documents repository-relative artifact locations and
+  code-scanning ingestion constraints:
+  https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support-for-code-scanning
 
 ## Security Objectives
 
@@ -334,7 +350,9 @@ Required controls:
 - Publish operations bind to GitHub installation ID, repo ID, PR number, base
   and head SHA, and request hash.
 - Stale head SHA blocks publish unless the user explicitly accepts a refresh.
-- Comments/checks/SARIF use idempotency markers and update-in-place behavior.
+- Comments and checks use idempotency markers or stored external IDs for
+  update-in-place behavior; SARIF uploads are commit/ref/automation-ID bound and
+  tracked durably.
 - GitHub API errors, rate limits, and permissions failures are surfaced without
   retry storms or partial duplicate comments.
 
@@ -520,7 +538,7 @@ Future issues must preserve these gates:
 
 - No provider-token execution inside Vercel Sandbox.
 - No git-backed remote sandbox target execution before sandbox source binding.
-- No GitHub Checks, SARIF upload, or PR-comment publish implementation.
+- No Review Room web UI publication controls.
 - No web UI implementation.
 - No change to local-trusted CLI behavior.
 

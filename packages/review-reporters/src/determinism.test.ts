@@ -5,6 +5,7 @@ import {
   renderMarkdown,
   renderSarifJson,
   sortFindingsDeterministically,
+  toSarif,
 } from './index.js';
 
 const baseResult: ReviewResult = {
@@ -121,6 +122,38 @@ describe('artifact determinism', () => {
     const rules = sarif.runs[0].tool.driver.rules;
     expect(rules).toHaveLength(1);
     expect(rules[0].id).toBe('shared-title');
+  });
+
+  it('can render GitHub code-scanning SARIF with repo-relative paths and automation id', () => {
+    const sarif = toSarif(baseResult, {
+      automationId: 'agent-review/pr-123',
+      pathForFinding: (finding) =>
+        finding.codeLocation.absoluteFilePath.replace('/repo/', ''),
+    });
+
+    expect(sarif.runs[0]).toMatchObject({
+      automationDetails: { id: 'agent-review/pr-123' },
+      results: [
+        {
+          locations: [
+            {
+              physicalLocation: {
+                artifactLocation: { uri: 'a.ts' },
+              },
+            },
+          ],
+        },
+        {
+          locations: [
+            {
+              physicalLocation: {
+                artifactLocation: { uri: 'b.ts' },
+              },
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it('renders markdown with a single priority prefix', () => {

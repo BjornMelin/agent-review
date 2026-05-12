@@ -14,10 +14,13 @@ import { describe, expect, it } from 'vitest';
 import {
   type AuthAuditEventRecord,
   createDrizzleReviewAuthStore,
+  createDrizzleReviewPublicationStore,
   createDrizzleReviewStore,
   createInMemoryReviewAuthStore,
+  createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   createReviewAuthStoreFromEnv,
+  createReviewPublicationStoreFromEnv,
   createReviewStoreFromEnv,
   deleteReviewsById,
   listArtifactMetadata,
@@ -49,6 +52,7 @@ async function readStorageMigrationSql(): Promise<string> {
     await readInitialMigrationSql(),
     await readRuntimeControlMigrationSql(),
     await readGitHubAuthzMigrationSql(),
+    await readGitHubPublicationMigrationSql(),
   ].join('\n');
 }
 
@@ -74,6 +78,15 @@ async function readGitHubAuthzMigrationSql(): Promise<string> {
   return readFile(
     fileURLToPath(
       new URL('../../drizzle/0002_github_authz.sql', import.meta.url)
+    ),
+    'utf8'
+  );
+}
+
+async function readGitHubPublicationMigrationSql(): Promise<string> {
+  return readFile(
+    fileURLToPath(
+      new URL('../../drizzle/0003_github_publications.sql', import.meta.url)
     ),
     'utf8'
   );
@@ -313,6 +326,81 @@ describe('review storage', () => {
         requestHash: 'sha256:request',
       });
     });
+  });
+
+  it('persists GitHub publication state idempotently', async () => {
+    await withTestStore(async ({ db, store }) => {
+      await store.set(
+        createRecord({
+          status: 'completed',
+          result: createReviewResult(createRequest()),
+        })
+      );
+      const publicationStore = createDrizzleReviewPublicationStore(db);
+
+      await publicationStore.upsert({
+        publicationId: 'publication-1',
+        reviewId: 'review-1',
+        channel: 'checkRun',
+        targetKey: 'check-run:abcdef1',
+        status: 'published',
+        externalId: '100',
+        externalUrl: 'https://github.com/octo-org/repo/runs/100',
+        message: 'created check run',
+        metadata: { commitSha: 'abcdef1' },
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS,
+      });
+      await publicationStore.upsert({
+        publicationId: 'publication-1',
+        reviewId: 'review-1',
+        channel: 'checkRun',
+        targetKey: 'check-run:abcdef1',
+        status: 'published',
+        externalId: '100',
+        externalUrl: 'https://github.com/octo-org/repo/runs/100',
+        message: 'updated check run',
+        metadata: { commitSha: 'abcdef1', conclusion: 'success' },
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS + 1_000,
+      });
+
+      await expect(publicationStore.list('review-1')).resolves.toEqual([
+        expect.objectContaining({
+          publicationId: 'publication-1',
+          channel: 'checkRun',
+          targetKey: 'check-run:abcdef1',
+          status: 'published',
+          message: 'updated check run',
+          createdAt: BASE_TIME_MS,
+          updatedAt: BASE_TIME_MS + 1_000,
+        }),
+      ]);
+    });
+  });
+
+  it('provides copy-on-read publication state in memory', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    await publicationStore.upsert({
+      publicationId: 'publication-1',
+      reviewId: 'review-1',
+      channel: 'sarif',
+      targetKey: 'sarif:abcdef1:refs/heads/main',
+      status: 'unsupported',
+      message: 'code scanning unavailable',
+      createdAt: BASE_TIME_MS,
+      updatedAt: BASE_TIME_MS,
+    });
+
+    const [record] = await publicationStore.list('review-1');
+    if (!record) {
+      throw new Error('publication record missing');
+    }
+    record.status = 'failed';
+
+    await expect(publicationStore.list('review-1')).resolves.toEqual([
+      expect.objectContaining({ status: 'unsupported' }),
+    ]);
   });
 
   it('stores scoped service tokens and append-only auth audit events', async () => {
@@ -1329,6 +1417,22 @@ describe('review storage', () => {
     ).toBeDefined();
   });
 
+  it('requires durable publication storage in production unless fallback is explicit', () => {
+    expect(() =>
+      createReviewPublicationStoreFromEnv({
+        NODE_ENV: 'production',
+      })
+    ).toThrow(/DATABASE_URL or POSTGRES_URL/);
+    expect(
+      createReviewPublicationStoreFromEnv(
+        {
+          NODE_ENV: 'production',
+        },
+        { allowInMemoryFallback: true }
+      )
+    ).toBeDefined();
+  });
+
   it('upgrades existing initial-schema databases with runtime control columns', async () => {
     const client = new PGlite();
     await client.waitReady;
@@ -1358,6 +1462,7 @@ describe('review storage', () => {
       );
       await client.exec(await readRuntimeControlMigrationSql());
       await client.exec(await readGitHubAuthzMigrationSql());
+      await client.exec(await readGitHubPublicationMigrationSql());
       const db = drizzle(client, { schema });
       const store = createDrizzleReviewStore(db);
 
@@ -1398,7 +1503,7 @@ describe('review storage', () => {
       ),
     });
 
-    expect(migrations).toHaveLength(3);
+    expect(migrations).toHaveLength(4);
     expect(migrations[0]?.sql.join('\n').trim()).toBe(
       (await readInitialMigrationSql()).trim()
     );
@@ -1407,6 +1512,9 @@ describe('review storage', () => {
     );
     expect(migrations[2]?.sql.join('\n').trim()).toBe(
       (await readGitHubAuthzMigrationSql()).trim()
+    );
+    expect(migrations[3]?.sql.join('\n').trim()).toBe(
+      (await readGitHubPublicationMigrationSql()).trim()
     );
   });
 });

@@ -12,6 +12,8 @@ import {
   parseRawModelOutput,
   ReviewArtifactMetadataSchema,
   ReviewEventCursorSchema,
+  ReviewPublicationRecordSchema,
+  ReviewPublishResponseSchema,
   ReviewRepositorySelectionSchema,
   ReviewRequestSchema,
   ReviewResultSchema,
@@ -74,6 +76,28 @@ describe('review-types schemas', () => {
     expect(ReviewEventCursorSchema.parse({ reviewId: 'review-1' })).toEqual({
       reviewId: 'review-1',
       limit: 100,
+    });
+    expect(
+      ReviewPublishResponseSchema.parse({
+        reviewId: 'review-1',
+        status: 'published',
+        publications: [
+          {
+            publicationId: 'review-1:check-run',
+            reviewId: 'review-1',
+            channel: 'checkRun',
+            targetKey: 'check-run:abc1234',
+            status: 'published',
+            externalId: '123',
+            externalUrl: 'https://github.com/octo-org/repo/runs/123',
+            createdAt: 1_000,
+            updatedAt: 1_000,
+          },
+        ],
+      }).publications[0]
+    ).toMatchObject({
+      channel: 'checkRun',
+      status: 'published',
     });
   });
 
@@ -148,6 +172,17 @@ describe('review-types schemas', () => {
         outputFormats: ['json', 'json'],
       })
     ).toThrow(/duplicates/);
+    expect(() =>
+      ReviewPublicationRecordSchema.parse({
+        publicationId: 'publication-1',
+        reviewId: 'review-1',
+        channel: 'other',
+        targetKey: 'target',
+        status: 'published',
+        createdAt: 1,
+        updatedAt: 1,
+      })
+    ).toThrow();
     expect(() =>
       ReviewRequestSchema.parse({
         ...request,

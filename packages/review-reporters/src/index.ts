@@ -23,6 +23,7 @@ export type SarifReport = {
         }>;
       };
     };
+    automationDetails?: { id: string };
     results: Array<{
       ruleId: string;
       level: SarifLevel;
@@ -40,6 +41,11 @@ export type SarifReport = {
       };
     }>;
   }>;
+};
+
+export type SarifRenderOptions = {
+  pathForFinding?: (finding: ReviewFinding) => string;
+  automationId?: string;
 };
 
 function normalizePriority(priority: ReviewFinding['priority']): number {
@@ -97,7 +103,10 @@ export function sortFindingsDeterministically(
   });
 }
 
-export function toSarif(result: ReviewResult): SarifReport {
+export function toSarif(
+  result: ReviewResult,
+  options: SarifRenderOptions = {}
+): SarifReport {
   const safeResult = redactReviewResult(result).result;
   const findings = sortFindingsDeterministically(safeResult.findings);
   const rulesById = new Map<
@@ -136,7 +145,9 @@ export function toSarif(result: ReviewResult): SarifReport {
         {
           physicalLocation: {
             artifactLocation: {
-              uri: finding.codeLocation.absoluteFilePath,
+              uri:
+                options.pathForFinding?.(finding) ??
+                finding.codeLocation.absoluteFilePath,
             },
             region: {
               startLine: finding.codeLocation.lineRange.start,
@@ -167,6 +178,9 @@ export function toSarif(result: ReviewResult): SarifReport {
             rules,
           },
         },
+        ...(options.automationId
+          ? { automationDetails: { id: options.automationId } }
+          : {}),
         results,
       },
     ],
@@ -233,6 +247,9 @@ export function renderJson(result: ReviewResult): string {
   );
 }
 
-export function renderSarifJson(result: ReviewResult): string {
-  return JSON.stringify(toSarif(result), null, 2);
+export function renderSarifJson(
+  result: ReviewResult,
+  options: SarifRenderOptions = {}
+): string {
+  return JSON.stringify(toSarif(result, options), null, 2);
 }

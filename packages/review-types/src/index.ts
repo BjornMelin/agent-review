@@ -702,6 +702,44 @@ export const ReviewStartResponseSchema = z.strictObject({
 });
 
 /**
+ * Defines the GitHub publication channels owned by the hosted service.
+ */
+export const ReviewPublicationChannelSchema = z.enum([
+  'checkRun',
+  'sarif',
+  'pullRequestComment',
+]);
+
+/**
+ * Defines the terminal state of one GitHub publication side effect.
+ */
+export const ReviewPublicationStatusSchema = z.enum([
+  'published',
+  'skipped',
+  'unsupported',
+  'failed',
+]);
+
+/**
+ * Validates persisted and service-facing GitHub publication state.
+ */
+export const ReviewPublicationRecordSchema = z.strictObject({
+  publicationId: z.string().min(1),
+  reviewId: z.string().min(1),
+  channel: ReviewPublicationChannelSchema,
+  targetKey: z.string().min(1),
+  status: ReviewPublicationStatusSchema,
+  externalId: z.string().min(1).optional(),
+  externalUrl: z.string().min(1).optional(),
+  marker: z.string().min(1).optional(),
+  message: z.string().min(1).optional(),
+  error: z.string().min(1).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+/**
  * Validates the review status response with timestamps and optional error or result.
  */
 export const ReviewStatusResponseSchema = z.strictObject({
@@ -709,6 +747,7 @@ export const ReviewStatusResponseSchema = z.strictObject({
   status: ReviewRunStatusSchema,
   error: z.string().min(1).optional(),
   result: ReviewResultSchema.optional(),
+  publications: z.array(ReviewPublicationRecordSchema).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -720,6 +759,15 @@ export const ReviewCancelResponseSchema = z.strictObject({
   reviewId: z.string().min(1),
   status: ReviewRunStatusSchema,
   cancelled: z.boolean().optional(),
+});
+
+/**
+ * Validates the publish-review response with one row per attempted channel or comment.
+ */
+export const ReviewPublishResponseSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  status: z.enum(['published', 'partial', 'failed', 'skipped']),
+  publications: z.array(ReviewPublicationRecordSchema),
 });
 
 /**
@@ -1038,6 +1086,28 @@ export type ReviewStatusResponse = z.infer<typeof ReviewStatusResponseSchema>;
  * Response returned by the review cancellation endpoint.
  */
 export type ReviewCancelResponse = z.infer<typeof ReviewCancelResponseSchema>;
+/**
+ * GitHub publication side-effect channel.
+ */
+export type ReviewPublicationChannel = z.infer<
+  typeof ReviewPublicationChannelSchema
+>;
+/**
+ * Terminal state for one GitHub publication side effect.
+ */
+export type ReviewPublicationStatus = z.infer<
+  typeof ReviewPublicationStatusSchema
+>;
+/**
+ * Persisted and service-facing GitHub publication state.
+ */
+export type ReviewPublicationRecord = z.infer<
+  typeof ReviewPublicationRecordSchema
+>;
+/**
+ * Response returned by the review publication endpoint.
+ */
+export type ReviewPublishResponse = z.infer<typeof ReviewPublishResponseSchema>;
 /**
  * Cursor accepted when replaying review lifecycle events.
  */
@@ -1621,6 +1691,8 @@ export type JsonSchemaSet = {
   reviewStartResponse: unknown;
   reviewStatusResponse: unknown;
   reviewCancelResponse: unknown;
+  reviewPublicationRecord: unknown;
+  reviewPublishResponse: unknown;
   reviewEventCursor: unknown;
   reviewArtifactMetadata: unknown;
   commandRunInput: unknown;
@@ -1735,6 +1807,8 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     reviewStartResponse: toDraft7JsonSchema(ReviewStartResponseSchema),
     reviewStatusResponse: toDraft7JsonSchema(ReviewStatusResponseSchema),
     reviewCancelResponse: toDraft7JsonSchema(ReviewCancelResponseSchema),
+    reviewPublicationRecord: toDraft7JsonSchema(ReviewPublicationRecordSchema),
+    reviewPublishResponse: toDraft7JsonSchema(ReviewPublishResponseSchema),
     reviewEventCursor: toDraft7JsonSchema(ReviewEventCursorSchema),
     reviewArtifactMetadata: toDraft7JsonSchema(ReviewArtifactMetadataSchema),
     commandRunInput: toDraft7JsonSchema(CommandRunInputSchema),

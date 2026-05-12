@@ -23,6 +23,8 @@ import {
   type ReviewErrorResponse,
   ReviewEventCursorSchema,
   type ReviewProvider,
+  type ReviewPublicationRecord,
+  type ReviewPublishResponse,
   type ReviewRequest,
   type ReviewRunAuthorization,
   type ReviewSecurityLimits,
@@ -51,8 +53,14 @@ import {
   reviewRequestHash,
 } from './auth.js';
 import {
+  GitHubPublicationError,
+  type ReviewPublicationService,
+} from './github-publication.js';
+import {
+  createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   type ReviewAuthStoreAdapter,
+  type ReviewPublicationStoreAdapter,
   type ReviewRecord,
   type ReviewStoreAdapter,
 } from './storage/index.js';
@@ -77,8 +85,10 @@ export type {
  */
 export {
   createInMemoryReviewAuthStore,
+  createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   createReviewAuthStoreFromEnv,
+  createReviewPublicationStoreFromEnv,
   createReviewStoreFromEnv,
 } from './storage/index.js';
 
@@ -150,7 +160,9 @@ export type ReviewServiceDependencies = {
   worker: ReviewServiceWorker;
   bridge?: MirrorWriteBridge;
   store?: ReviewStoreAdapter;
+  publicationStore?: ReviewPublicationStoreAdapter;
   authStore?: ReviewAuthStoreAdapter;
+  publicationService?: ReviewPublicationService;
   nowMs?: () => number;
   uuid?: () => string;
   logger?: ReviewServiceLogger;
@@ -370,7 +382,10 @@ function runtimeScopeKeyForRequest(request: ReviewRequest): string {
   return [request.executionMode, request.provider, scopeCwd, target].join('|');
 }
 
-function buildStatusResponse(record: ReviewRecord): ReviewStatusResponse {
+function buildStatusResponse(
+  record: ReviewRecord,
+  publications: ReviewPublicationRecord[] = []
+): ReviewStatusResponse {
   return {
     reviewId: record.reviewId,
     status: record.status,
@@ -378,6 +393,7 @@ function buildStatusResponse(record: ReviewRecord): ReviewStatusResponse {
     ...(record.result
       ? { result: redactReviewResult(record.result.result).result }
       : {}),
+    ...(publications.length > 0 ? { publications } : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -471,6 +487,9 @@ export function createReviewServiceApp(
     }),
   };
   const store = dependencies.store ?? createInMemoryReviewStore();
+  const publicationStore =
+    dependencies.publicationStore ?? createInMemoryReviewPublicationStore();
+  const publicationService = dependencies.publicationService;
   const nowMs = dependencies.nowMs ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const logger = dependencies.logger ?? console;
@@ -1501,7 +1520,8 @@ export function createReviewServiceApp(
     try {
       await syncDetachedRecord(record);
       await failExpiredRuntimeLease(record);
-      return context.json(buildStatusResponse(record));
+      const publications = await publicationStore.list(record.reviewId);
+      return context.json(buildStatusResponse(record, publications));
     } catch (error) {
       logError(logger, '[review-service] failed to fetch run status', error);
       return jsonError(context, 'failed to fetch run status', 502);
@@ -1718,6 +1738,51 @@ export function createReviewServiceApp(
         'Content-Type': ARTIFACT_CONTENT_TYPES[format],
       },
     });
+  });
+
+  app.post('/v1/review/:reviewId/publish', async (context) => {
+    const reviewId = context.req.param('reviewId');
+    const record = await loadRecord(
+      context,
+      reviewId,
+      'review not found',
+      'failed to publish review'
+    );
+    if (record instanceof Response) {
+      return record;
+    }
+    const denied = await authorizeRecordAccess(
+      context,
+      record,
+      'review:publish',
+      {
+        forceDynamicAuthorization:
+          getReviewAuthContext(context)?.principal.type === 'githubUser',
+      }
+    );
+    if (denied) {
+      return denied;
+    }
+
+    try {
+      await syncDetachedRecord(record);
+      await failExpiredRuntimeLease(record);
+      if (record.status !== 'completed' || !record.result) {
+        return jsonError(context, 'review is not ready to publish', 409);
+      }
+      if (!publicationService) {
+        return jsonError(context, 'publication unavailable', 502);
+      }
+      const response: ReviewPublishResponse =
+        await publicationService.publish(record);
+      return context.json(response);
+    } catch (error) {
+      if (error instanceof GitHubPublicationError) {
+        return jsonError(context, error.message, error.status);
+      }
+      logError(logger, '[review-service] failed to publish review', error);
+      return jsonError(context, 'failed to publish review', 502);
+    }
   });
 
   app.post('/v1/review/:reviewId/cancel', async (context) => {

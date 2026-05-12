@@ -13,11 +13,13 @@ import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createInMemoryReviewAuthStore,
+  createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   createReviewServiceApp,
   createReviewServiceAuthPolicy,
   createServiceTokenCredential,
   type ReviewAuthStoreAdapter,
+  type ReviewPublicationService,
   type ReviewRecord,
   type ReviewServiceDependencies,
   type ReviewServiceRunner,
@@ -1035,6 +1037,162 @@ describe('createReviewServiceApp', () => {
     expect(invalidArtifact.status).toBe(400);
     expect(await invalidArtifact.json()).toEqual({
       error: 'invalid artifact format',
+    });
+  });
+
+  it('publishes completed GitHub reviews through the injected publication service', async () => {
+    const authorization = createAuthorization({
+      scopes: ['review:start', 'review:read', 'review:publish'],
+      repository: {
+        ...createAuthorization().repository,
+        pullRequestNumber: 25,
+      },
+    });
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization,
+      scopes: authorization.scopes,
+    });
+    const store = createStore();
+    const request = createHostedRequest();
+    const completed = createReviewRecord({
+      reviewId: 'review-publish',
+      status: 'completed',
+      request,
+      authorization,
+      result: createReviewResult(request),
+    });
+    store.records.set(completed.reviewId, completed);
+    const publicationService: ReviewPublicationService = {
+      publish: vi.fn(async () => ({
+        reviewId: 'review-publish',
+        status: 'published' as const,
+        publications: [
+          {
+            publicationId: 'review-publish:checkRun:1',
+            reviewId: 'review-publish',
+            channel: 'checkRun' as const,
+            targetKey: 'check-run:abcdef1',
+            status: 'published' as const,
+            externalId: '100',
+            createdAt: 1_000,
+            updatedAt: 1_000,
+          },
+        ],
+      })),
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authPolicy,
+      authStore,
+      publicationService,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/review-publish/publish', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      reviewId: 'review-publish',
+      status: 'published',
+      publications: [{ channel: 'checkRun', status: 'published' }],
+    });
+    expect(publicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewId: 'review-publish' })
+    );
+  });
+
+  it('rejects publication for unfinished runs before GitHub side effects', async () => {
+    const authorization = createAuthorization({
+      scopes: ['review:start', 'review:read', 'review:publish'],
+    });
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization,
+      scopes: authorization.scopes,
+    });
+    const store = createStore();
+    store.records.set(
+      'review-not-ready',
+      createReviewRecord({
+        reviewId: 'review-not-ready',
+        status: 'running',
+        authorization,
+      })
+    );
+    const publicationService: ReviewPublicationService = {
+      publish: vi.fn(async () => {
+        throw new Error('should not publish');
+      }),
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authPolicy,
+      authStore,
+      publicationService,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/review-not-ready/publish', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'review is not ready to publish',
+    });
+    expect(publicationService.publish).not.toHaveBeenCalled();
+  });
+
+  it('exposes durable publication state in status responses', async () => {
+    const store = createStore();
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const request = createRequest();
+    store.records.set(
+      'review-with-publication',
+      createReviewRecord({
+        reviewId: 'review-with-publication',
+        status: 'completed',
+        request,
+        result: createReviewResult(request),
+      })
+    );
+    await publicationStore.upsert({
+      publicationId: 'publication-1',
+      reviewId: 'review-with-publication',
+      channel: 'sarif',
+      targetKey: 'sarif:abcdef1:refs/heads/main',
+      status: 'unsupported',
+      message: 'code scanning unavailable',
+      createdAt: 1_000,
+      updatedAt: 1_500,
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      publicationStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/review-with-publication');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      reviewId: 'review-with-publication',
+      publications: [
+        {
+          channel: 'sarif',
+          status: 'unsupported',
+          message: 'code scanning unavailable',
+        },
+      ],
     });
   });
 

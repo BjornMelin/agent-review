@@ -74,6 +74,9 @@ importers:
       '@review-agent/review-provider-registry':
         specifier: workspace:*
         version: link:../../packages/review-provider-registry
+      '@review-agent/review-reporters':
+        specifier: workspace:*
+        version: link:../../packages/review-reporters
       '@review-agent/review-types':
         specifier: workspace:*
         version: link:../../packages/review-types

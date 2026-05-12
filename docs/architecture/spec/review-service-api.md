@@ -26,12 +26,18 @@ the same async contract. `NODE_ENV=production` requires `DATABASE_URL` or
 `POSTGRES_URL` unless volatile memory is selected explicitly with
 `REVIEW_SERVICE_STORAGE=memory`.
 
+GitHub publication state uses the same storage environment through
+`ReviewPublicationStoreAdapter`. Publication records are durable per review,
+channel, and target key so retrying a publish request updates existing GitHub
+side effects instead of creating duplicate checks or comments.
+
 Drizzle schema and migration ownership lives in `apps/review-service`:
 
 - `src/storage/schema.ts`
 - `drizzle/0000_initial_review_storage.sql`
 - `drizzle/0001_review_runtime_control.sql`
 - `drizzle/0002_github_authz.sql`
+- `drizzle/0003_github_publications.sql`
 - `drizzle.config.ts`
 
 Run migrations from the service package with:
@@ -224,11 +230,92 @@ Returns review status and result summary when available.
 - `result` (optional review result payload)
 - `createdAt`
 - `updatedAt`
+- `publications` (optional, durable GitHub publication records)
 
 Returns `404` when review ID is unknown.
 When auth is enabled, `404` is also returned for review IDs owned by a
 repository outside the authenticated principal's access boundary.
 The response body follows `ReviewStatusResponseSchema`.
+
+## `POST /v1/review/:reviewId/publish`
+
+Publishes a completed hosted review to GitHub. The route requires
+`review:publish` and authorizes against the stored run ownership snapshot before
+any GitHub write. GitHub-user bearer tokens are dynamically revalidated on every
+publish request, while service tokens must already carry the `review:publish`
+scope.
+
+Publication writes three GitHub surfaces when the target supports them:
+
+- Check Run summary on the reviewed commit.
+- SARIF code-scanning upload for machine-readable findings.
+- Inline pull request comments for findings whose locations map to changed
+  lines.
+
+The production server enables this endpoint when `GITHUB_APP_ID` and
+`GITHUB_APP_PRIVATE_KEY` are configured. Installation tokens are minted for the
+stored repository ID only and request the minimal GitHub App permissions needed
+for publication: Checks write, Pull requests write, and Code scanning alerts
+write. `GITHUB_API_BASE_URL` is honored for GitHub Enterprise Server testing.
+
+### Publication Safety
+
+- Reviews must be terminal `completed` and have a persisted result.
+- The stored repository ID, PR number, and reviewed commit SHA are compared with
+  the current GitHub PR before publishing.
+- A changed PR head SHA returns `409` so stale review output is not published to
+  a newer commit.
+- Check Runs, SARIF uploads, and PR comments persist channel-specific target
+  keys in `review_publications`.
+- PR comments include hidden idempotency markers and are updated in place;
+  obsolete comments owned by the same marker family are deleted.
+- Markdown bodies are redacted, mention-neutralized, HTML-comment escaped, and
+  truncated to GitHub-safe limits before outbound writes.
+- SARIF locations are repository-relative; host absolute paths are not
+  published.
+
+### Response
+
+`200` returns `ReviewPublishResponse`:
+
+```json
+{
+  "reviewId": "review_123",
+  "status": "published",
+  "publications": [
+    {
+      "publicationId": "review_123:checkRun:abcdef",
+      "reviewId": "review_123",
+      "channel": "checkRun",
+      "targetKey": "check-run:abcdef",
+      "status": "published",
+      "externalId": "123456",
+      "externalUrl": "https://github.com/octo-org/agent-review/actions/runs/...",
+      "createdAt": 1778560000000,
+      "updatedAt": 1778560000000
+    }
+  ]
+}
+```
+
+Responses:
+
+- `200`: publish attempt completed; inspect per-channel publication statuses.
+- `401`: missing or invalid bearer token.
+- `403`: authenticated token lacks `review:publish` or current GitHub write
+  authorization.
+- `404`: review not found or outside the authenticated repository boundary.
+- `409`: review is not completed, has no publishable result, has no GitHub
+  publish target, or the PR head no longer matches the reviewed commit.
+- `502`: publication service is not configured or GitHub/storage publication
+  failed.
+
+Relevant GitHub API references:
+
+- https://docs.github.com/en/rest/checks/runs
+- https://docs.github.com/en/rest/code-scanning/code-scanning#upload-an-analysis-as-sarif-data
+- https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support-for-code-scanning
+- https://docs.github.com/en/rest/pulls/comments
 
 ## `GET /v1/review/:reviewId/events`
 
