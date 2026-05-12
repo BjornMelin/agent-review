@@ -42,7 +42,10 @@ export function TabsContent({
 }: React.ComponentProps<typeof TabsPrimitive.Content>): React.ReactNode {
   return (
     <TabsPrimitive.Content
-      className={cn('mt-4 focus-visible:outline-none', className)}
+      className={cn(
+        'mt-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]',
+        className
+      )}
       {...props}
     />
   );
