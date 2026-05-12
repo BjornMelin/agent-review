@@ -9,7 +9,14 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import type { ReviewStartRequest } from '@review-agent/review-types';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  fetchReviewArtifact,
+  ServiceClientError,
+  startReview,
+} from './service-client.js';
 
 const cliPath = fileURLToPath(new URL('./index.ts', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
@@ -508,6 +515,84 @@ describe('review-agent hosted service commands', () => {
     }
   });
 
+  it('times out one-shot hosted service requests', async () => {
+    const fixture = await startReviewServiceFixture(() => {});
+    vi.useFakeTimers();
+    try {
+      const request: ReviewStartRequest = {
+        request: {
+          cwd: '/tmp/repo',
+          target: { type: 'custom', instructions: 'review this branch' },
+          provider: 'codexDelegate',
+          executionMode: 'localTrusted',
+          outputFormats: ['json'],
+        },
+        delivery: 'detached',
+      };
+      const pending = startReview(
+        { baseUrl: fixture.url, token: 'rat_test_secret' },
+        request
+      );
+      const captured = pending.then(
+        () => {
+          throw new Error('expected startReview to time out');
+        },
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const error = await captured;
+      expect(error).toBeInstanceOf(ServiceClientError);
+      expect(error).toMatchObject({ exitCode: 4 });
+      expect((error as Error).message).toBe(
+        'review service request timed out after 30000ms'
+      );
+    } finally {
+      vi.useRealTimers();
+      await fixture.close();
+    }
+  });
+
+  it('keeps one-shot request timeouts active while reading response bodies', async () => {
+    let wroteBody: () => void;
+    const bodyStarted = new Promise<void>((resolve) => {
+      wroteBody = resolve;
+    });
+    const fixture = await startReviewServiceFixture((_request, response) => {
+      response.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+      });
+      response.write(Buffer.from([0x41]));
+      wroteBody();
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = fetchReviewArtifact(
+        { baseUrl: fixture.url, token: 'rat_test_secret' },
+        'review_1',
+        'json'
+      );
+      const captured = pending.then(
+        () => {
+          throw new Error('expected fetchReviewArtifact to time out');
+        },
+        (error: unknown) => error
+      );
+
+      await bodyStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const error = await captured;
+      expect(error).toBeInstanceOf(ServiceClientError);
+      expect(error).toMatchObject({ exitCode: 4 });
+      expect((error as Error).message).toBe(
+        'review service request timed out after 30000ms'
+      );
+    } finally {
+      vi.useRealTimers();
+      await fixture.close();
+    }
+  });
+
   it('streams lifecycle events through post-completion artifacts', async () => {
     const fixture = await startReviewServiceFixture((_request, response) => {
       response.writeHead(200, {
@@ -577,6 +662,30 @@ describe('review-agent hosted service commands', () => {
         { type: 'exitedReviewMode', review: 'review requested' },
         { type: 'artifactReady', format: 'json' },
       ]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('rejects watch responses with non-SSE content types', async () => {
+    const fixture = await startReviewServiceFixture((_request, response) => {
+      writeJsonResponse(response, 200, { ok: true });
+    });
+    try {
+      const result = await runCli([
+        'watch',
+        'review_1',
+        '--service-url',
+        fixture.url,
+        '--service-token',
+        'rat_test_secret',
+      ]);
+
+      expect(result.status).toBe(4);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain(
+        "expected Content-Type 'text/event-stream' for review event stream but got 'application/json'"
+      );
     } finally {
       await fixture.close();
     }

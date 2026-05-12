@@ -17,6 +17,8 @@ import {
 } from '@review-agent/review-types';
 
 const DEFAULT_SERVICE_URL = 'http://localhost:3042';
+const DEFAULT_SERVICE_FETCH_TIMEOUT_MS = 30_000;
+const EVENT_STREAM_CONTENT_TYPE = 'text/event-stream';
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_SSE_BUFFER_BYTES = 1024 * 1024;
 const SERVICE_URL_ENV_KEYS = ['REVIEW_AGENT_SERVICE_URL', 'REVIEW_SERVICE_URL'];
@@ -265,34 +267,89 @@ async function responseError(
   );
 }
 
+type ServiceFetchResult = {
+  response: Response;
+  complete: () => void;
+  didTimeout: () => boolean;
+};
+
+function serviceTimeoutError(): ServiceClientError {
+  return new ServiceClientError(
+    `review service request timed out after ${DEFAULT_SERVICE_FETCH_TIMEOUT_MS}ms`,
+    4
+  );
+}
+
+function serviceRequestFailureError(
+  error: unknown,
+  token: string
+): ServiceClientError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new ServiceClientError(
+    `review service request failed: ${redactServiceText(message, token)}`,
+    4
+  );
+}
+
 async function serviceFetch(
   config: ReviewServiceConfig,
   path: string,
   init: RequestInit = {},
   query?: URLSearchParams
-): Promise<Response> {
+): Promise<ServiceFetchResult> {
+  const { signal: inputSignal, ...initWithoutSignal } = init;
+  const explicitSignal = inputSignal ?? undefined;
+  let didTimeout = false;
+  const timeoutController =
+    explicitSignal === undefined ? new AbortController() : undefined;
+  const timeout =
+    timeoutController === undefined
+      ? undefined
+      : setTimeout(() => {
+          didTimeout = true;
+          timeoutController.abort();
+        }, DEFAULT_SERVICE_FETCH_TIMEOUT_MS);
+  const signal = explicitSignal ?? timeoutController?.signal;
+  const complete = (): void => {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  };
   let response: Response;
   try {
     response = await fetch(buildServiceUrl(config, path, query), {
-      ...init,
+      ...initWithoutSignal,
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${config.token}`,
-        ...init.headers,
+        ...initWithoutSignal.headers,
       },
+      ...(signal === undefined ? {} : { signal }),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ServiceClientError(
-      `review service request failed: ${redactServiceText(message, config.token)}`,
-      4
-    );
+    complete();
+    if (didTimeout) {
+      throw serviceTimeoutError();
+    }
+    throw serviceRequestFailureError(error, config.token);
   }
 
   if (!response.ok) {
-    throw await responseError(response, config.token);
+    try {
+      throw await responseError(response, config.token);
+    } catch (error) {
+      if (error instanceof ServiceClientError) {
+        throw error;
+      }
+      if (didTimeout) {
+        throw serviceTimeoutError();
+      }
+      throw serviceRequestFailureError(error, config.token);
+    } finally {
+      complete();
+    }
   }
-  return response;
+  return { response, complete, didTimeout: () => didTimeout };
 }
 
 async function serviceJson<T>(
@@ -302,26 +359,34 @@ async function serviceJson<T>(
   init: RequestInit = {},
   query?: URLSearchParams
 ): Promise<T> {
-  const response = await serviceFetch(config, path, init, query);
+  const fetched = await serviceFetch(config, path, init, query);
+  const { response } = fetched;
   let body: unknown;
   try {
-    body = await response.json();
-  } catch {
-    throw new ServiceClientError(
-      `review service returned invalid JSON for ${path}`,
-      4,
-      response.status
-    );
-  }
+    try {
+      body = await response.json();
+    } catch {
+      if (fetched.didTimeout()) {
+        throw serviceTimeoutError();
+      }
+      throw new ServiceClientError(
+        `review service returned invalid JSON for ${path}`,
+        4,
+        response.status
+      );
+    }
 
-  try {
-    return schema.parse(body);
-  } catch {
-    throw new ServiceClientError(
-      `review service returned invalid response for ${path}`,
-      4,
-      response.status
-    );
+    try {
+      return schema.parse(body);
+    } catch {
+      throw new ServiceClientError(
+        `review service returned invalid response for ${path}`,
+        4,
+        response.status
+      );
+    }
+  } finally {
+    fetched.complete();
   }
 }
 
@@ -427,12 +492,21 @@ export async function fetchReviewArtifact(
   format: string
 ): Promise<Buffer> {
   const parsedFormat = OutputFormatSchema.parse(format);
-  const response = await serviceFetch(
+  const fetched = await serviceFetch(
     config,
     `/v1/review/${encodeURIComponent(reviewId)}/artifacts/${parsedFormat}`,
     { headers: { Accept: '*/*' } }
   );
-  return Buffer.from(await response.arrayBuffer());
+  try {
+    return Buffer.from(await fetched.response.arrayBuffer());
+  } catch (error) {
+    if (fetched.didTimeout()) {
+      throw serviceTimeoutError();
+    }
+    throw serviceRequestFailureError(error, config.token);
+  } finally {
+    fetched.complete();
+  }
 }
 
 function parseSseFrames(buffer: string): {
@@ -479,6 +553,13 @@ function parseSseFrames(buffer: string): {
 
 type SseFrame = ReturnType<typeof parseSseFrames>['frames'][number];
 
+function hasEventStreamContentType(contentType: string | null): boolean {
+  return (
+    contentType?.toLowerCase().split(';', 1)[0]?.trim() ===
+    EVENT_STREAM_CONTENT_TYPE
+  );
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
@@ -506,7 +587,7 @@ export async function watchReviewEvents(
   }
 
   const controller = new AbortController();
-  const response = await serviceFetch(
+  const { response, complete } = await serviceFetch(
     config,
     `/v1/review/${encodeURIComponent(reviewId)}/events`,
     {
@@ -515,8 +596,17 @@ export async function watchReviewEvents(
     },
     query
   );
+  complete();
   if (!response.body) {
     throw new ServiceClientError('review service event stream had no body', 4);
+  }
+  const contentType = response.headers.get('content-type');
+  if (!hasEventStreamContentType(contentType)) {
+    throw new ServiceClientError(
+      `expected Content-Type '${EVENT_STREAM_CONTENT_TYPE}' for review event stream but got '${contentType ?? 'missing'}'`,
+      4,
+      response.status
+    );
   }
 
   let exitCode = 0;

@@ -73,6 +73,10 @@ Service configuration:
 - `--service-token <token>`: bearer token. Defaults to
   `REVIEW_AGENT_SERVICE_TOKEN`, then `REVIEW_SERVICE_TOKEN`.
 
+One-shot hosted service requests (`submit`, `status`, `artifact`, `cancel`,
+`publish`, and `run --detached`) enforce a 30 second timeout across response
+headers and response body reads. Timeouts exit `4`.
+
 Repository selection:
 
 - `--repo <owner/name>`: GitHub repository. Defaults to `GITHUB_REPOSITORY`.
@@ -128,6 +132,8 @@ returning:
 
 If the SSE connection ends before a terminal lifecycle event, the command exits
 `4` so CI does not treat a truncated stream as a completed review.
+The response must advertise `Content-Type: text/event-stream`; missing or
+non-SSE content types are rejected before event parsing and exit `4`.
 
 Options:
 
@@ -235,7 +241,8 @@ Prints shell completion script for:
 - Hosted service HTTP mapping:
   - `401`/`403` -> `3`
   - `400`/`404`/`409`/`413` -> `2`
-  - network failures, invalid service JSON/SSE payloads, `429`, and `5xx` -> `4`
+  - network failures, one-shot request timeouts, invalid service JSON/SSE
+    payloads, non-SSE `watch` responses, `429`, and `5xx` -> `4`
 
 ## Output Semantics
 
