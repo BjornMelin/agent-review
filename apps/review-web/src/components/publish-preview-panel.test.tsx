@@ -28,6 +28,7 @@ function previewResponse(
         targetKey: `pr-comment:${reviewId}`,
         action: 'create',
         message: 'would create pull request comment',
+        externalUrl: 'https://github.com/owner/repo/pull/42#discussion_r1',
         fingerprint: `finding-${reviewId}`,
         path: 'src/app.ts',
         line: 12,
@@ -103,6 +104,12 @@ describe('PublishPreviewPanel', () => {
       await screen.findByText('owner/repo PR #42 @ aaaaaaaaaaaa')
     ).toBeTruthy();
     expect(screen.getByText('would create pull request comment')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Existing target/ })).toMatchObject(
+      {
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      }
+    );
     expect(screen.getByText('published check run')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/review/review-1/publish/preview',

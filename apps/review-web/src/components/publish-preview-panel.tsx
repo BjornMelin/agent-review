@@ -281,6 +281,8 @@ export function PublishPreviewPanel(
                     <a
                       className="mt-1 inline-flex items-center gap-1 text-xs text-[var(--primary)]"
                       href={item.externalUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
                     >
                       Existing target
                       <ExternalLink
