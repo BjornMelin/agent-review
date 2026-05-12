@@ -20,6 +20,12 @@ import {
 
 const cliPath = fileURLToPath(new URL('./index.ts', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
+const HOSTED_SERVICE_ENV_KEYS = [
+  'REVIEW_AGENT_SERVICE_URL',
+  'REVIEW_AGENT_SERVICE_TOKEN',
+  'REVIEW_SERVICE_URL',
+  'REVIEW_SERVICE_TOKEN',
+] as const;
 
 type CliResult = {
   status: number | null;
@@ -38,6 +44,19 @@ type RecordedRequest = {
   body: string;
 };
 
+function childEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of HOSTED_SERVICE_ENV_KEYS) {
+    delete env[key];
+  }
+  return {
+    ...env,
+    AI_GATEWAY_API_KEY: 'test-gateway-key',
+    OPENROUTER_API_KEY: 'test-openrouter-key',
+    ...overrides,
+  };
+}
+
 function runCli(
   args: string[],
   env: NodeJS.ProcessEnv = {}
@@ -45,12 +64,7 @@ function runCli(
   return new Promise((resolve, reject) => {
     const child = spawn('tsx', [cliPath, ...args], {
       cwd: repoRoot,
-      env: {
-        ...process.env,
-        AI_GATEWAY_API_KEY: 'test-gateway-key',
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        ...env,
-      },
+      env: childEnv(env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -75,12 +89,7 @@ function runCliWithBufferedStdout(
   return new Promise((resolve, reject) => {
     const child = spawn('tsx', [cliPath, ...args], {
       cwd: repoRoot,
-      env: {
-        ...process.env,
-        AI_GATEWAY_API_KEY: 'test-gateway-key',
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        ...env,
-      },
+      env: childEnv(env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdoutChunks: Buffer[] = [];
@@ -516,7 +525,23 @@ describe('review-agent hosted service commands', () => {
   });
 
   it('times out one-shot hosted service requests', async () => {
-    const fixture = await startReviewServiceFixture(() => {});
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (
+        _input: Parameters<typeof fetch>[0],
+        init?: Parameters<typeof fetch>[1]
+      ) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              reject(error);
+            },
+            { once: true }
+          );
+        })
+    );
     vi.useFakeTimers();
     try {
       const request: ReviewStartRequest = {
@@ -530,7 +555,7 @@ describe('review-agent hosted service commands', () => {
         delivery: 'detached',
       };
       const pending = startReview(
-        { baseUrl: fixture.url, token: 'rat_test_secret' },
+        { baseUrl: 'http://127.0.0.1:3042', token: 'rat_test_secret' },
         request
       );
       const captured = pending.then(
@@ -548,8 +573,8 @@ describe('review-agent hosted service commands', () => {
         'review service request timed out after 30000ms'
       );
     } finally {
+      fetchSpy.mockRestore();
       vi.useRealTimers();
-      await fixture.close();
     }
   });
 
