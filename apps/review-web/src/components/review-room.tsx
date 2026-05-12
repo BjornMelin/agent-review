@@ -1,6 +1,5 @@
 import type {
   ReviewArtifactMetadata,
-  ReviewFinding,
   ReviewRunListResponse,
   ReviewRunStatus,
   ReviewStatusResponse,
@@ -9,7 +8,6 @@ import {
   AlertTriangle,
   Archive,
   Bot,
-  CheckCircle2,
   CircleDot,
   Code2,
   Download,
@@ -21,7 +19,9 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import Link from 'next/link';
+import { FindingWorkspace } from '@/components/finding-workspace';
 import { LiveTimeline } from '@/components/live-timeline';
+import { PublishPreviewPanel } from '@/components/publish-preview-panel';
 import { ReviewActions } from '@/components/review-actions';
 import { StatusBadge } from '@/components/status-badge';
 import { Badge } from '@/components/ui/badge';
@@ -57,18 +57,6 @@ function issueCountLabel(count: number): string {
     return '1 finding';
   }
   return `${count} findings`;
-}
-
-function priorityLabel(priority: ReviewFinding['priority']): string {
-  if (priority === undefined) {
-    return 'P?';
-  }
-  return `P${priority}`;
-}
-
-function fileLabel(path: string): string {
-  const segments = path.split('/');
-  return segments.slice(-2).join('/');
 }
 
 function artifactIcon(
@@ -187,72 +175,6 @@ function EmptyState(): React.ReactNode {
           is accepted.
         </p>
       </div>
-    </div>
-  );
-}
-
-function FindingTable({
-  findings,
-}: {
-  findings: ReviewFinding[];
-}): React.ReactNode {
-  if (findings.length === 0) {
-    return (
-      <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-[var(--muted-foreground)]">
-        <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-        No findings in the normalized result.
-      </div>
-    );
-  }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[720px] border-separate border-spacing-0 text-left text-sm">
-        <thead>
-          <tr className="text-xs uppercase text-[var(--muted-foreground)]">
-            <th className="border-b border-[var(--border)] px-3 py-2 font-medium">
-              Priority
-            </th>
-            <th className="border-b border-[var(--border)] px-3 py-2 font-medium">
-              Finding
-            </th>
-            <th className="border-b border-[var(--border)] px-3 py-2 font-medium">
-              Location
-            </th>
-            <th className="border-b border-[var(--border)] px-3 py-2 font-medium">
-              Confidence
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {findings.map((finding) => (
-            <tr key={finding.fingerprint} className="align-top">
-              <td className="border-b border-[var(--border)] px-3 py-3">
-                <Badge variant={finding.priority === 0 ? 'danger' : 'warning'}>
-                  {priorityLabel(finding.priority)}
-                </Badge>
-              </td>
-              <td className="max-w-xl border-b border-[var(--border)] px-3 py-3">
-                <p className="font-medium">{finding.title}</p>
-                <p className="mt-1 line-clamp-3 text-xs text-[var(--muted-foreground)]">
-                  {finding.body}
-                </p>
-              </td>
-              <td className="border-b border-[var(--border)] px-3 py-3 font-mono text-xs">
-                <span className="block max-w-[18rem] truncate">
-                  {fileLabel(finding.codeLocation.absoluteFilePath)}
-                </span>
-                <span className="text-[var(--muted-foreground)]">
-                  {finding.codeLocation.lineRange.start}-
-                  {finding.codeLocation.lineRange.end}
-                </span>
-              </td>
-              <td className="border-b border-[var(--border)] px-3 py-3">
-                {Math.round(finding.confidenceScore * 100)}%
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
@@ -394,11 +316,30 @@ function DetailBody({
           <Tabs defaultValue="findings">
             <TabsList aria-label="Review detail views">
               <TabsTrigger value="findings">Findings</TabsTrigger>
+              <TabsTrigger value="publish">Publish</TabsTrigger>
               <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
               <TabsTrigger value="metadata">Metadata</TabsTrigger>
             </TabsList>
             <TabsContent value="findings">
-              <FindingTable findings={findings} />
+              <FindingWorkspace
+                findings={findings}
+                publications={detail.publications ?? []}
+                provider={
+                  detail.summary?.request.provider ??
+                  detail.result?.metadata.provider
+                }
+                reviewId={detail.reviewId}
+                triage={detail.triage ?? []}
+              />
+            </TabsContent>
+            <TabsContent value="publish">
+              <PublishPreviewPanel
+                canPreview={
+                  detail.status === 'completed' && Boolean(detail.result)
+                }
+                publications={detail.publications ?? []}
+                reviewId={detail.reviewId}
+              />
             </TabsContent>
             <TabsContent value="artifacts">
               <ArtifactLinks

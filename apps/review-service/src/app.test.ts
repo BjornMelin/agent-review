@@ -16,6 +16,7 @@ import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createInMemoryReviewAuthStore,
+  createInMemoryReviewFindingTriageStore,
   createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   createReviewServiceApp,
@@ -1463,6 +1464,217 @@ describe('createReviewServiceApp', () => {
         },
       ],
     });
+  });
+
+  it('exposes durable finding triage state in status responses', async () => {
+    const store = createStore();
+    const findingTriageStore = createInMemoryReviewFindingTriageStore();
+    const request = createRequest();
+    store.records.set(
+      'review-with-triage',
+      createReviewRecord({
+        reviewId: 'review-with-triage',
+        status: 'completed',
+        request,
+        result: createReviewResult(request),
+      })
+    );
+    await findingTriageStore.upsert({
+      reviewId: 'review-with-triage',
+      fingerprint: 'finding-1',
+      status: 'accepted',
+      note: 'verified',
+      actor: 'service-token:token-1',
+      nowMs: 2_000,
+    });
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      findingTriageStore,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/review-with-triage');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      reviewId: 'review-with-triage',
+      triage: [
+        {
+          fingerprint: 'finding-1',
+          status: 'accepted',
+          note: 'verified',
+        },
+      ],
+      triageAudit: [
+        {
+          fingerprint: 'finding-1',
+          toStatus: 'accepted',
+        },
+      ],
+    });
+  });
+
+  it('updates finding triage with publish-scoped authorization', async () => {
+    const authorization = createAuthorization({
+      scopes: ['review:start', 'review:read', 'review:publish'],
+      repository: {
+        ...createAuthorization().repository,
+        pullRequestNumber: 25,
+      },
+    });
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization,
+      scopes: authorization.scopes,
+    });
+    const store = createStore();
+    const findingTriageStore = createInMemoryReviewFindingTriageStore();
+    const request = createHostedRequest();
+    const result = createReviewResult(request);
+    result.result.findings = [
+      {
+        title: 'Persisted risk',
+        body: 'Needs owner triage.',
+        confidenceScore: 0.9,
+        codeLocation: {
+          absoluteFilePath: '/repo/octo-org/agent-review/src/app.ts',
+          lineRange: { start: 10, end: 10 },
+        },
+        fingerprint: 'finding-1',
+      },
+    ];
+    store.records.set(
+      'review-triage-write',
+      createReviewRecord({
+        reviewId: 'review-triage-write',
+        status: 'completed',
+        request,
+        authorization,
+        result,
+      })
+    );
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authPolicy,
+      authStore,
+      findingTriageStore,
+      nowMs: () => 2_500,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-triage-write/findings/finding-1/triage',
+      {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          status: 'accepted',
+          note: 'owner verified',
+        }),
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      reviewId: 'review-triage-write',
+      record: {
+        fingerprint: 'finding-1',
+        status: 'accepted',
+        note: 'owner verified',
+        actor: expect.stringMatching(/^service-token:/),
+      },
+      audit: {
+        toStatus: 'accepted',
+      },
+    });
+  });
+
+  it('previews publication plans before GitHub side effects', async () => {
+    const authorization = createAuthorization({
+      scopes: ['review:start', 'review:read', 'review:publish'],
+      repository: {
+        ...createAuthorization().repository,
+        pullRequestNumber: 25,
+      },
+    });
+    const { authPolicy, authStore, token } = await createServiceTokenAuth({
+      authorization,
+      scopes: authorization.scopes,
+    });
+    const store = createStore();
+    const request = createHostedRequest();
+    const completed = createReviewRecord({
+      reviewId: 'review-preview',
+      status: 'completed',
+      request,
+      authorization,
+      result: createReviewResult(request),
+    });
+    store.records.set(completed.reviewId, completed);
+    const publicationService: ReviewPublicationService = {
+      publish: vi.fn(async () => {
+        throw new Error('should not publish');
+      }),
+      preview: vi.fn(async () => ({
+        reviewId: 'review-preview',
+        target: {
+          owner: 'octo-org',
+          repo: 'agent-review',
+          repositoryId: 42,
+          installationId: 7,
+          commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
+          pullRequestNumber: 25,
+          pullRequestHeadSha: 'abcdef1234567890abcdef1234567890abcdef12',
+        },
+        items: [
+          {
+            channel: 'checkRun' as const,
+            targetKey: 'check-run:abcdef',
+            action: 'create' as const,
+            message: 'would create check run',
+          },
+        ],
+        existingPublications: [],
+        summary: {
+          checkRunAction: 'create' as const,
+          sarifAction: 'create' as const,
+          pullRequestCommentCount: 0,
+          blockedCount: 0,
+        },
+      })),
+    };
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      store,
+      authPolicy,
+      authStore,
+      publicationService,
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request(
+      '/v1/review/review-preview/publish/preview',
+      {
+        headers: { authorization: `Bearer ${token}` },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      reviewId: 'review-preview',
+      summary: { checkRunAction: 'create' },
+    });
+    expect(publicationService.preview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewId: 'review-preview' })
+    );
+    expect(publicationService.publish).not.toHaveBeenCalled();
   });
 
   it('refreshes inline leases while provider work is still running', async () => {

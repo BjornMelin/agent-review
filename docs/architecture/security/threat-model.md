@@ -154,7 +154,7 @@ External authority:
 | TB-6 Service/worker to durable store | run/event/artifact metadata and audit records | tenant data mixing, stale retention, unbounded sensitive storage | tenant/repo/run partitioning, retention and deletion policy, audit log immutability for security events. |
 | TB-7 Service to GitHub APIs | GitHub App tokens, Checks, SARIF, PR comments | overbroad token use, publishing to wrong repo/commit, comment spam | installation-scoped tokens, commit/repo binding, idempotency keys, publish permission checks. |
 | TB-8 Local CLI to hosted service | `submit`, `run --detached`, `status`, `watch`, `artifact`, `cancel`, and `publish` | accidental private data upload, token leakage, false-success CI on truncated streams | explicit hosted-service commands, HTTPS for remote service URLs, shared DTO parsing, token source precedence, token redaction before stderr, nonterminal SSE close failures. |
-| TB-9 Review Room web UI | internal service-token proxy shell, run lists, artifact/finding views, cancel/publish controls | XSS, IDOR, browser token exposure, unauthenticated same-origin visitors, CSRF-like mutation abuse, over-disclosure, stale authorization | fail-closed `REVIEW_WEB_ACCESS_TOKEN` gate in Next.js `proxy.ts` before any service-token-backed page or route, server-side authorization before storage queries, server-only bearer tokens, route-handler proxies for mutations/artifacts/SSE, escaped provider content, no raw secret display; browser-native session CSRF/CSP hardening lands with #28. |
+| TB-9 Review Room web UI | internal service-token proxy shell, run lists, artifact/finding views, triage writes, publish previews, cancel/publish controls | XSS, IDOR, browser token exposure, unauthenticated same-origin visitors, CSRF-like mutation abuse, over-disclosure, stale authorization | fail-closed `REVIEW_WEB_ACCESS_TOKEN` gate in Next.js `proxy.ts` before any service-token-backed page or route, service-side authorization before storage queries, server-only bearer tokens, route-handler proxies for mutations/artifacts/SSE, same-origin plus route-action headers for browser mutations, escaped provider content, no raw secret display; browser-native sessions and CSP remain follow-up hardening before a multi-user browser session surface. |
 | TB-10 Service/core to optional metadata mirrors | Convex bridge writes and future external mirrors | derived private-code leakage, tenant mixing, unbounded third-party retention | disabled-by-default hosted posture unless explicitly configured with redaction, tenant scoping, retention, and audit. |
 
 ## Abuse Cases and Required Mitigations
@@ -521,9 +521,9 @@ Future issues must preserve these gates:
 - #27 Review Room uses an internal server-side service-token proxy, fails closed
   in production/preview without a coarse web access token, and must enforce
   service-side run authorization before list/detail/artifact/mutation reads.
-  #28 adds browser-native identity/session protections, per-user repository
-  authorization, CSRF/origin/CORS controls, and CSP before Review Room becomes a
-  multi-user browser session surface.
+- #28 adds durable finding triage, publish previews, and mutation-specific
+  same-origin controls without turning Review Room into a browser-native
+  multi-user session surface.
 - #29 provider policy must add model budget classes, allowlists, fallback
   rules, diagnostics, and telemetry without letting prompts select providers.
 - #30 observability must record audit-quality security decisions without raw

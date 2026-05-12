@@ -7,6 +7,10 @@ import {
   type ReviewArtifactMetadata,
   type ReviewAuthPrincipal,
   type ReviewAuthScope,
+  type ReviewFindingTriageAuditRecord,
+  type ReviewFindingTriageListResponse,
+  type ReviewFindingTriageRecord,
+  type ReviewFindingTriageStatus,
   type ReviewPublicationRecord,
   type ReviewRepositoryAuthorization,
   type ReviewRequest,
@@ -34,6 +38,8 @@ import {
   githubUsers,
   reviewArtifacts,
   reviewEvents,
+  reviewFindingTriage,
+  reviewFindingTriageAudit,
   reviewPublications,
   reviewRuns,
   reviewStatusTransitions,
@@ -68,6 +74,8 @@ type ReviewRunListRow = Pick<
 type ReviewEventRow = typeof reviewEvents.$inferSelect;
 type ReviewArtifactRow = typeof reviewArtifacts.$inferSelect;
 type ReviewPublicationRow = typeof reviewPublications.$inferSelect;
+type ReviewFindingTriageRow = typeof reviewFindingTriage.$inferSelect;
+type ReviewFindingTriageAuditRow = typeof reviewFindingTriageAudit.$inferSelect;
 type ServiceTokenRow = typeof serviceTokens.$inferSelect;
 type AuthAuditEventRow = typeof authAuditEvents.$inferSelect;
 type CleanupCandidate = {
@@ -305,6 +313,29 @@ export type ReviewStoreAdapter = {
 export type ReviewPublicationStoreAdapter = {
   list(reviewId: string): Promise<ReviewPublicationRecord[]>;
   upsert(record: ReviewPublicationRecord): Promise<void>;
+};
+
+/**
+ * Defines one finding-triage write operation with audit context.
+ */
+export type ReviewFindingTriageUpsert = {
+  reviewId: string;
+  fingerprint: string;
+  status: ReviewFindingTriageStatus;
+  note?: string;
+  actor?: string;
+  nowMs: number;
+};
+
+/**
+ * Defines durable finding-triage storage for Review Room collaboration state.
+ */
+export type ReviewFindingTriageStoreAdapter = {
+  list(reviewId: string): Promise<ReviewFindingTriageListResponse>;
+  upsert(input: ReviewFindingTriageUpsert): Promise<{
+    record: ReviewFindingTriageRecord;
+    audit: ReviewFindingTriageAuditRecord;
+  }>;
 };
 
 /**
@@ -930,6 +961,18 @@ function clonePublicationRecord(
   return structuredClone(record);
 }
 
+function cloneFindingTriageRecord(
+  record: ReviewFindingTriageRecord
+): ReviewFindingTriageRecord {
+  return structuredClone(record);
+}
+
+function cloneFindingTriageAuditRecord(
+  record: ReviewFindingTriageAuditRecord
+): ReviewFindingTriageAuditRecord {
+  return structuredClone(record);
+}
+
 function publicationIdentityKey(record: ReviewPublicationRecord): string {
   return `${record.reviewId}:${record.channel}:${record.targetKey}`;
 }
@@ -965,6 +1008,64 @@ export function createInMemoryReviewPublicationStore(): ReviewPublicationStoreAd
           createdAt: previous?.createdAt ?? record.createdAt,
         })
       );
+    },
+  };
+}
+
+/**
+ * Creates an in-memory finding-triage store for local tests and no-database development.
+ *
+ * @returns A copy-on-read finding-triage store with append-only audit history.
+ */
+export function createInMemoryReviewFindingTriageStore(): ReviewFindingTriageStoreAdapter {
+  const records = new Map<string, ReviewFindingTriageRecord>();
+  const audit: ReviewFindingTriageAuditRecord[] = [];
+
+  return {
+    async list(reviewId) {
+      return {
+        reviewId,
+        items: [...records.values()]
+          .filter((record) => record.reviewId === reviewId)
+          .sort((left, right) =>
+            left.fingerprint.localeCompare(right.fingerprint)
+          )
+          .map(cloneFindingTriageRecord),
+        audit: audit
+          .filter((record) => record.reviewId === reviewId)
+          .sort((left, right) => left.createdAt - right.createdAt)
+          .map(cloneFindingTriageAuditRecord),
+      };
+    },
+    async upsert(input) {
+      const key = `${input.reviewId}:${input.fingerprint}`;
+      const previous = records.get(key);
+      const note = input.note?.trim() ? input.note.trim() : undefined;
+      const record: ReviewFindingTriageRecord = {
+        reviewId: input.reviewId,
+        fingerprint: input.fingerprint,
+        status: input.status,
+        ...(note ? { note } : {}),
+        ...(input.actor ? { actor: input.actor } : {}),
+        createdAt: previous?.createdAt ?? input.nowMs,
+        updatedAt: input.nowMs,
+      };
+      const auditRecord: ReviewFindingTriageAuditRecord = {
+        auditId: randomUUID(),
+        reviewId: input.reviewId,
+        fingerprint: input.fingerprint,
+        ...(previous ? { fromStatus: previous.status } : {}),
+        toStatus: input.status,
+        ...(note ? { note } : {}),
+        ...(input.actor ? { actor: input.actor } : {}),
+        createdAt: input.nowMs,
+      };
+      records.set(key, cloneFindingTriageRecord(record));
+      audit.push(cloneFindingTriageAuditRecord(auditRecord));
+      return {
+        record: cloneFindingTriageRecord(record),
+        audit: cloneFindingTriageAuditRecord(auditRecord),
+      };
     },
   };
 }
@@ -1915,6 +2016,35 @@ function publicationValues(
   };
 }
 
+function findingTriageRecordFromRow(
+  row: ReviewFindingTriageRow
+): ReviewFindingTriageRecord {
+  return {
+    reviewId: row.reviewId,
+    fingerprint: row.fingerprint,
+    status: row.status,
+    ...(row.note ? { note: row.note } : {}),
+    ...(row.actor ? { actor: row.actor } : {}),
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+  };
+}
+
+function findingTriageAuditRecordFromRow(
+  row: ReviewFindingTriageAuditRow
+): ReviewFindingTriageAuditRecord {
+  return {
+    auditId: row.auditId,
+    reviewId: row.reviewId,
+    fingerprint: row.fingerprint,
+    ...(row.fromStatus ? { fromStatus: row.fromStatus } : {}),
+    toStatus: row.toStatus,
+    ...(row.note ? { note: row.note } : {}),
+    ...(row.actor ? { actor: row.actor } : {}),
+    createdAt: row.createdAt.getTime(),
+  };
+}
+
 /**
  * Creates a Drizzle-backed publication store for PostgreSQL-compatible databases.
  *
@@ -1958,6 +2088,120 @@ export function createDrizzleReviewPublicationStore(
             updatedAt: values.updatedAt,
           },
         });
+    },
+  };
+}
+
+/**
+ * Creates a Drizzle-backed finding-triage store for PostgreSQL-compatible databases.
+ *
+ * @param db - Drizzle PostgreSQL database connected with the review storage schema.
+ * @returns A durable finding-triage store with append-only audit records.
+ */
+export function createDrizzleReviewFindingTriageStore(
+  db: ReviewStorageDatabase
+): ReviewFindingTriageStoreAdapter {
+  return {
+    async list(reviewId) {
+      const [items, audit] = await Promise.all([
+        db
+          .select()
+          .from(reviewFindingTriage)
+          .where(eq(reviewFindingTriage.reviewId, reviewId))
+          .orderBy(asc(reviewFindingTriage.fingerprint)),
+        db
+          .select()
+          .from(reviewFindingTriageAudit)
+          .where(eq(reviewFindingTriageAudit.reviewId, reviewId))
+          .orderBy(asc(reviewFindingTriageAudit.createdAt)),
+      ]);
+      return {
+        reviewId,
+        items: items.map(findingTriageRecordFromRow),
+        audit: audit.map(findingTriageAuditRecordFromRow),
+      };
+    },
+    async upsert(input) {
+      return db.transaction(async (tx) => {
+        const updatedAt = new Date(input.nowMs);
+        const note = input.note?.trim() ? input.note.trim() : null;
+        const [inserted] = await tx
+          .insert(reviewFindingTriage)
+          .values({
+            reviewId: input.reviewId,
+            fingerprint: input.fingerprint,
+            status: input.status,
+            note,
+            actor: input.actor ?? null,
+            createdAt: updatedAt,
+            updatedAt,
+          })
+          .onConflictDoNothing()
+          .returning();
+        let previous: ReviewFindingTriageRow | undefined;
+        let persisted = inserted;
+        if (!persisted) {
+          await tx.execute(sql`
+            SELECT ${reviewFindingTriage.reviewId}
+            FROM ${reviewFindingTriage}
+            WHERE ${reviewFindingTriage.reviewId} = ${input.reviewId}
+              AND ${reviewFindingTriage.fingerprint} = ${input.fingerprint}
+            FOR UPDATE
+          `);
+          [previous] = await tx
+            .select()
+            .from(reviewFindingTriage)
+            .where(
+              and(
+                eq(reviewFindingTriage.reviewId, input.reviewId),
+                eq(reviewFindingTriage.fingerprint, input.fingerprint)
+              )
+            );
+          const [updated] = await tx
+            .update(reviewFindingTriage)
+            .set({
+              status: input.status,
+              note,
+              actor: input.actor ?? null,
+              updatedAt,
+            })
+            .where(
+              and(
+                eq(reviewFindingTriage.reviewId, input.reviewId),
+                eq(reviewFindingTriage.fingerprint, input.fingerprint)
+              )
+            )
+            .returning();
+          persisted = updated;
+        }
+        if (!persisted) {
+          throw new Error('failed to persist finding triage record');
+        }
+        const auditRecord: ReviewFindingTriageAuditRecord = {
+          auditId: randomUUID(),
+          reviewId: input.reviewId,
+          fingerprint: input.fingerprint,
+          ...(previous ? { fromStatus: previous.status } : {}),
+          toStatus: input.status,
+          ...(note ? { note } : {}),
+          ...(input.actor ? { actor: input.actor } : {}),
+          createdAt: input.nowMs,
+        };
+        await tx.insert(reviewFindingTriageAudit).values({
+          auditId: auditRecord.auditId,
+          reviewId: auditRecord.reviewId,
+          fingerprint: auditRecord.fingerprint,
+          fromStatus: auditRecord.fromStatus ?? null,
+          toStatus: auditRecord.toStatus,
+          note: auditRecord.note ?? null,
+          actor: auditRecord.actor ?? null,
+          createdAt: new Date(auditRecord.createdAt),
+        });
+        return {
+          record: findingTriageRecordFromRow(persisted),
+          audit: auditRecord,
+        };
+      });
     },
   };
 }
@@ -2176,6 +2420,34 @@ export function createPostgresReviewPublicationStore(
 }
 
 /**
+ * Creates a durable finding-triage store from a node-postgres pool or connection string.
+ *
+ * @param config - PostgreSQL connection string or pool configuration.
+ * @returns A closable finding-triage store backed by Drizzle and node-postgres.
+ */
+export function createPostgresReviewFindingTriageStore(
+  config: string | PoolConfig
+): ReviewFindingTriageStoreAdapter & { close(): Promise<void> } {
+  const pool =
+    typeof config === 'string'
+      ? new pg.Pool({ connectionString: config })
+      : new pg.Pool(config);
+  pool.on('error', (error) => {
+    console.error(
+      '[review-service] PostgreSQL finding triage pool idle client error',
+      error
+    );
+  });
+  const db = drizzleNodePostgres(pool, { schema });
+  return {
+    ...createDrizzleReviewFindingTriageStore(db),
+    close() {
+      return pool.end();
+    },
+  };
+}
+
+/**
  * Creates the configured service store from process environment variables.
  *
  * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
@@ -2253,6 +2525,32 @@ export function createReviewPublicationStoreFromEnv(
     return createInMemoryReviewPublicationStore();
   }
   return createPostgresReviewPublicationStore(databaseUrl);
+}
+
+/**
+ * Creates the configured finding-triage store from process environment variables.
+ *
+ * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
+ * @param options - Runtime fallback policy.
+ * @returns A Postgres finding-triage store when configured, otherwise an in-memory store.
+ * @throws Error - When no database URL is configured and in-memory fallback is disallowed.
+ */
+export function createReviewFindingTriageStoreFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { allowInMemoryFallback?: boolean } = {}
+): ReviewFindingTriageStoreAdapter {
+  const databaseUrl = env.DATABASE_URL ?? env.POSTGRES_URL;
+  if (!databaseUrl) {
+    const allowInMemoryFallback =
+      options.allowInMemoryFallback ?? env.NODE_ENV !== 'production';
+    if (!allowInMemoryFallback) {
+      throw new Error(
+        'DATABASE_URL or POSTGRES_URL is required for review-service finding triage storage in production'
+      );
+    }
+    return createInMemoryReviewFindingTriageStore();
+  }
+  return createPostgresReviewFindingTriageStore(databaseUrl);
 }
 
 /**

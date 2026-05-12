@@ -3,6 +3,11 @@ import {
   type OutputFormat,
   type ReviewCancelResponse,
   ReviewCancelResponseSchema,
+  type ReviewFindingTriageUpdateRequest,
+  type ReviewFindingTriageUpdateResponse,
+  ReviewFindingTriageUpdateResponseSchema,
+  type ReviewPublishPreviewResponse,
+  ReviewPublishPreviewResponseSchema,
   type ReviewPublishResponse,
   ReviewPublishResponseSchema,
   type ReviewRunListResponse,
@@ -222,6 +227,31 @@ export function publishReview(
     `/v1/review/${encodeURIComponent(reviewId)}/publish`,
     ReviewPublishResponseSchema.parse,
     { method: 'POST' }
+  );
+}
+
+export function getPublishPreview(
+  reviewId: string
+): Promise<ReviewServiceReadResult<ReviewPublishPreviewResponse>> {
+  return serviceJson(
+    `/v1/review/${encodeURIComponent(reviewId)}/publish/preview`,
+    ReviewPublishPreviewResponseSchema.parse
+  );
+}
+
+export function updateFindingTriage(
+  reviewId: string,
+  fingerprint: string,
+  input: ReviewFindingTriageUpdateRequest
+): Promise<ReviewServiceReadResult<ReviewFindingTriageUpdateResponse>> {
+  return serviceJson(
+    `/v1/review/${encodeURIComponent(reviewId)}/findings/${encodeURIComponent(fingerprint)}/triage`,
+    ReviewFindingTriageUpdateResponseSchema.parse,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    }
   );
 }
 

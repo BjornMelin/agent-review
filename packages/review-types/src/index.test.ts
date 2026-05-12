@@ -12,7 +12,10 @@ import {
   parseRawModelOutput,
   ReviewArtifactMetadataSchema,
   ReviewEventCursorSchema,
+  ReviewFindingTriageListResponseSchema,
+  ReviewFindingTriageUpdateRequestSchema,
   ReviewPublicationRecordSchema,
+  ReviewPublishPreviewResponseSchema,
   ReviewPublishResponseSchema,
   ReviewRepositorySelectionSchema,
   ReviewRequestSchema,
@@ -456,6 +459,77 @@ describe('review-types schemas', () => {
     ).toMatchObject({
       sandboxId: 'sandbox-1',
       policy: { networkProfile: 'deny_all' },
+    });
+
+    expect(
+      ReviewFindingTriageUpdateRequestSchema.parse({
+        status: 'accepted',
+        note: 'Reviewed by platform owner.',
+      })
+    ).toEqual({
+      status: 'accepted',
+      note: 'Reviewed by platform owner.',
+    });
+    expect(() => ReviewFindingTriageUpdateRequestSchema.parse({})).toThrow(
+      /status or note is required/
+    );
+    expect(
+      ReviewFindingTriageListResponseSchema.parse({
+        reviewId: 'review-1',
+        items: [
+          {
+            reviewId: 'review-1',
+            fingerprint: 'finding-1',
+            status: 'accepted',
+            actor: 'service-token:token-1',
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+        audit: [
+          {
+            auditId: 'audit-1',
+            reviewId: 'review-1',
+            fingerprint: 'finding-1',
+            toStatus: 'accepted',
+            createdAt: 2,
+          },
+        ],
+      })
+    ).toMatchObject({
+      reviewId: 'review-1',
+      items: [{ status: 'accepted' }],
+      audit: [{ toStatus: 'accepted' }],
+    });
+
+    expect(
+      ReviewPublishPreviewResponseSchema.parse({
+        reviewId: 'review-1',
+        target: {
+          owner: 'octo-org',
+          repo: 'agent-review',
+          repositoryId: 42,
+          installationId: 7,
+          commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
+        },
+        items: [
+          {
+            channel: 'checkRun',
+            targetKey: 'check-run:abcdef',
+            action: 'create',
+            message: 'would create check run',
+          },
+        ],
+        existingPublications: [],
+        summary: {
+          checkRunAction: 'create',
+          sarifAction: 'skip',
+          pullRequestCommentCount: 0,
+          blockedCount: 0,
+        },
+      })
+    ).toMatchObject({
+      summary: { checkRunAction: 'create' },
     });
   });
 

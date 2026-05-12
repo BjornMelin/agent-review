@@ -10,7 +10,7 @@ function expectedOrigin(request: Request): string | undefined {
 
 export function validateReviewRoomMutation(
   request: Request,
-  expectedAction: 'cancel' | 'publish'
+  expectedAction: 'cancel' | 'publish' | 'triage'
 ): MutationGuardResult {
   const origin = request.headers.get('origin');
   const expected = expectedOrigin(request);

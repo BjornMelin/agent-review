@@ -449,6 +449,127 @@
         "additionalProperties": false
       }
     },
+    "triage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "accepted",
+              "false-positive",
+              "fixed",
+              "published",
+              "dismissed",
+              "ignored"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "updatedAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "reviewId",
+          "fingerprint",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "triageAudit": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "auditId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "fromStatus": {
+            "type": "string",
+            "enum": [
+              "open",
+              "accepted",
+              "false-positive",
+              "fixed",
+              "published",
+              "dismissed",
+              "ignored"
+            ]
+          },
+          "toStatus": {
+            "type": "string",
+            "enum": [
+              "open",
+              "accepted",
+              "false-positive",
+              "fixed",
+              "published",
+              "dismissed",
+              "ignored"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "auditId",
+          "reviewId",
+          "fingerprint",
+          "toStatus",
+          "createdAt"
+        ],
+        "additionalProperties": false
+      }
+    },
     "artifacts": {
       "type": "array",
       "items": {

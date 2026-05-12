@@ -22,8 +22,10 @@ import {
   type ReviewCancelResponse,
   type ReviewErrorResponse,
   ReviewEventCursorSchema,
+  ReviewFindingTriageUpdateRequestSchema,
   type ReviewProvider,
   type ReviewPublicationRecord,
+  type ReviewPublishPreviewResponse,
   type ReviewPublishResponse,
   type ReviewRequest,
   type ReviewRunAuthorization,
@@ -61,10 +63,12 @@ import {
 import {
   artifactMetadataForRecord,
   buildReviewRunSummary,
+  createInMemoryReviewFindingTriageStore,
   createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   decodeReviewRunListCursor,
   type ReviewAuthStoreAdapter,
+  type ReviewFindingTriageStoreAdapter,
   type ReviewPublicationStoreAdapter,
   type ReviewRecord,
   type ReviewStoreAdapter,
@@ -91,9 +95,11 @@ export type {
  */
 export {
   createInMemoryReviewAuthStore,
+  createInMemoryReviewFindingTriageStore,
   createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   createReviewAuthStoreFromEnv,
+  createReviewFindingTriageStoreFromEnv,
   createReviewPublicationStoreFromEnv,
   createReviewStoreFromEnv,
 } from './storage/index.js';
@@ -167,6 +173,7 @@ export type ReviewServiceDependencies = {
   bridge?: MirrorWriteBridge;
   store?: ReviewStoreAdapter;
   publicationStore?: ReviewPublicationStoreAdapter;
+  findingTriageStore?: ReviewFindingTriageStoreAdapter;
   authStore?: ReviewAuthStoreAdapter;
   publicationService?: ReviewPublicationService;
   nowMs?: () => number;
@@ -390,7 +397,12 @@ function runtimeScopeKeyForRequest(request: ReviewRequest): string {
 
 function buildStatusResponse(
   record: ReviewRecord,
-  publications: ReviewPublicationRecord[] = []
+  publications: ReviewPublicationRecord[] = [],
+  triage: Awaited<ReturnType<ReviewFindingTriageStoreAdapter['list']>> = {
+    reviewId: record.reviewId,
+    items: [],
+    audit: [],
+  }
 ): ReviewStatusResponse {
   const artifacts = artifactMetadataForRecord(record);
   return {
@@ -405,6 +417,8 @@ function buildStatusResponse(
       publicationCount: publications.length,
     }),
     ...(publications.length > 0 ? { publications } : {}),
+    ...(triage.items.length > 0 ? { triage: triage.items } : {}),
+    ...(triage.audit.length > 0 ? { triageAudit: triage.audit } : {}),
     ...(artifacts.length > 0 ? { artifacts } : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -432,6 +446,17 @@ function actorForAuth(auth: ReviewAuthenticatedRequest): string {
   return auth.principal.type === 'githubUser'
     ? `github:${auth.principal.login}`
     : `service-token:${auth.principal.tokenId}`;
+}
+
+function hasFindingFingerprint(
+  record: ReviewRecord,
+  fingerprint: string
+): boolean {
+  return Boolean(
+    record.result?.result.findings.some(
+      (finding) => finding.fingerprint === fingerprint
+    )
+  );
 }
 
 function scopeForOperation(
@@ -529,6 +554,8 @@ export function createReviewServiceApp(
   const store = dependencies.store ?? createInMemoryReviewStore();
   const publicationStore =
     dependencies.publicationStore ?? createInMemoryReviewPublicationStore();
+  const findingTriageStore =
+    dependencies.findingTriageStore ?? createInMemoryReviewFindingTriageStore();
   const publicationService = dependencies.publicationService;
   const nowMs = dependencies.nowMs ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
@@ -1707,13 +1734,130 @@ export function createReviewServiceApp(
     try {
       await syncDetachedRecord(record);
       await failExpiredRuntimeLease(record);
-      const publications = await publicationStore.list(record.reviewId);
-      return context.json(buildStatusResponse(record, publications));
+      const [publications, triage] = await Promise.all([
+        publicationStore.list(record.reviewId),
+        findingTriageStore.list(record.reviewId),
+      ]);
+      return context.json(buildStatusResponse(record, publications, triage));
     } catch (error) {
       logError(logger, '[review-service] failed to fetch run status', error);
       return jsonError(context, 'failed to fetch run status', 502);
     }
   });
+
+  app.get('/v1/review/:reviewId/triage', async (context) => {
+    const reviewId = context.req.param('reviewId');
+    const record = await loadRecord(
+      context,
+      reviewId,
+      'review not found',
+      'failed to fetch finding triage'
+    );
+    if (record instanceof Response) {
+      return record;
+    }
+    const denied = await authorizeRecordAccess(context, record, 'review:read');
+    if (denied) {
+      return denied;
+    }
+
+    try {
+      await syncDetachedRecord(record);
+      await failExpiredRuntimeLease(record);
+      return context.json(await findingTriageStore.list(reviewId));
+    } catch (error) {
+      logError(
+        logger,
+        '[review-service] failed to fetch finding triage',
+        error
+      );
+      return jsonError(context, 'failed to fetch finding triage', 502);
+    }
+  });
+
+  app.patch(
+    '/v1/review/:reviewId/findings/:fingerprint/triage',
+    bodyLimit({
+      maxSize: Math.min(config.maxRequestBodyBytes, 16 * 1024),
+      onError: (context) =>
+        jsonError(
+          context,
+          'finding triage request body exceeds configured byte limit',
+          413
+        ),
+    }),
+    async (context) => {
+      const reviewId = context.req.param('reviewId');
+      const fingerprint = decodeURIComponent(context.req.param('fingerprint'));
+      const record = await loadRecord(
+        context,
+        reviewId,
+        'review not found',
+        'failed to update finding triage'
+      );
+      if (record instanceof Response) {
+        return record;
+      }
+      const denied = await authorizeRecordAccess(
+        context,
+        record,
+        'review:publish',
+        {
+          forceDynamicAuthorization:
+            getReviewAuthContext(context)?.principal.type === 'githubUser',
+        }
+      );
+      if (denied) {
+        return denied;
+      }
+
+      let parsed: ReturnType<
+        typeof ReviewFindingTriageUpdateRequestSchema.parse
+      >;
+      try {
+        parsed = await parseJsonBody(context, (body) =>
+          ReviewFindingTriageUpdateRequestSchema.parse(body)
+        );
+      } catch {
+        return jsonError(context, 'invalid finding triage request', 400);
+      }
+
+      try {
+        await syncDetachedRecord(record);
+        await failExpiredRuntimeLease(record);
+        if (!record.result) {
+          return jsonError(context, 'review findings are not ready', 409);
+        }
+        if (!hasFindingFingerprint(record, fingerprint)) {
+          return jsonError(context, 'finding not found', 404);
+        }
+        const existing = await findingTriageStore.list(reviewId);
+        const previous = existing.items.find(
+          (item) => item.fingerprint === fingerprint
+        );
+        const status = parsed.status ?? previous?.status ?? 'open';
+        const note =
+          parsed.note === null ? undefined : (parsed.note ?? previous?.note);
+        const auth = getReviewAuthContext(context);
+        const response = await findingTriageStore.upsert({
+          reviewId,
+          fingerprint,
+          status,
+          ...(note === undefined ? {} : { note }),
+          ...(auth ? { actor: actorForAuth(auth) } : {}),
+          nowMs: nowMs(),
+        });
+        return context.json({ reviewId, ...response });
+      } catch (error) {
+        logError(
+          logger,
+          '[review-service] failed to update finding triage',
+          error
+        );
+        return jsonError(context, 'failed to update finding triage', 502);
+      }
+    }
+  );
 
   app.get('/v1/review/:reviewId/events', async (context) => {
     const reviewId = context.req.param('reviewId');
@@ -1969,6 +2113,55 @@ export function createReviewServiceApp(
       }
       logError(logger, '[review-service] failed to publish review', error);
       return jsonError(context, 'failed to publish review', 502);
+    }
+  });
+
+  app.get('/v1/review/:reviewId/publish/preview', async (context) => {
+    const reviewId = context.req.param('reviewId');
+    const record = await loadRecord(
+      context,
+      reviewId,
+      'review not found',
+      'failed to preview review publication'
+    );
+    if (record instanceof Response) {
+      return record;
+    }
+    const denied = await authorizeRecordAccess(
+      context,
+      record,
+      'review:publish',
+      {
+        forceDynamicAuthorization:
+          getReviewAuthContext(context)?.principal.type === 'githubUser',
+      }
+    );
+    if (denied) {
+      return denied;
+    }
+
+    try {
+      await syncDetachedRecord(record);
+      await failExpiredRuntimeLease(record);
+      if (record.status !== 'completed' || !record.result) {
+        return jsonError(context, 'review is not ready to publish', 409);
+      }
+      if (!publicationService?.preview) {
+        return jsonError(context, 'publication preview unavailable', 502);
+      }
+      const response: ReviewPublishPreviewResponse =
+        await publicationService.preview(record);
+      return context.json(response);
+    } catch (error) {
+      if (error instanceof GitHubPublicationError) {
+        return jsonError(context, error.message, error.status);
+      }
+      logError(
+        logger,
+        '[review-service] failed to preview review publication',
+        error
+      );
+      return jsonError(context, 'failed to preview review publication', 502);
     }
   });
 

@@ -181,7 +181,8 @@ The review service uses `review-types` for request parsing and response DTOs.
   optional `detachedRunId`, and optional `result`.
 - `ReviewStatusResponseSchema`: status response with timestamps, optional
   `error`, optional `result`, optional compact run `summary`, optional artifact
-  metadata, and optional durable publication records.
+  metadata, optional durable publication records, and optional Review Room
+  triage/audit records.
 - `ReviewRunSummarySchema`: compact run summary for list/detail headers,
   including target/provider/output-format metadata, finding count, optional
   repository identity, model/workflow/sandbox identifiers, and timestamps.
@@ -193,6 +194,16 @@ The review service uses `review-types` for request parsing and response DTOs.
   and optional `cancelled=false` for conflict responses.
 - `ReviewPublicationRecordSchema`: durable per-channel publication state for
   outbound GitHub side effects.
+- `ReviewFindingTriageStatusSchema`: reviewer-owned finding states (`open`,
+  `accepted`, `false-positive`, `fixed`, `published`, `dismissed`, `ignored`).
+- `ReviewFindingTriageRecordSchema` and
+  `ReviewFindingTriageAuditRecordSchema`: mutable finding triage state plus
+  append-only audit history keyed by review ID and finding fingerprint.
+- `ReviewFindingTriageUpdateRequestSchema`: Review Room triage mutation body;
+  requires at least one of `status` or `note`.
+- `ReviewPublishPreviewResponseSchema`: side-effect-free GitHub publication
+  preview with resolved target, planned actions, existing publication records,
+  and compact summary counts.
 - `ReviewPublishResponseSchema`: publish response with aggregate status and
   per-channel publication records.
 - `ReviewErrorResponseSchema`: canonical `{ error }` response body.

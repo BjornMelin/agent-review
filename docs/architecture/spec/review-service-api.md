@@ -31,6 +31,10 @@ GitHub publication state uses the same storage environment through
 channel, and target key so retrying a publish request updates existing GitHub
 side effects instead of creating duplicate checks or comments.
 
+Review Room finding triage state also uses the same storage environment through
+`ReviewFindingTriageStoreAdapter`. Triage records are keyed by review ID and
+finding fingerprint, while every state update writes an append-only audit row.
+
 Drizzle schema and migration ownership lives in `apps/review-service`:
 
 - `src/storage/schema.ts`
@@ -38,6 +42,7 @@ Drizzle schema and migration ownership lives in `apps/review-service`:
 - `drizzle/0001_review_runtime_control.sql`
 - `drizzle/0002_github_authz.sql`
 - `drizzle/0003_github_publications.sql`
+- `drizzle/0004_finding_triage.sql`
 - `drizzle.config.ts`
 
 Run migrations from the service package with:
@@ -305,14 +310,77 @@ Returns review status and result summary when available.
 - `result` (optional review result payload)
 - `summary` (optional compact `ReviewRunSummary`)
 - `artifacts` (optional artifact metadata list)
+- `publications` (optional, durable GitHub publication records)
+- `triage` (optional, durable finding triage records)
+- `triageAudit` (optional, append-only finding triage audit records)
 - `createdAt`
 - `updatedAt`
-- `publications` (optional, durable GitHub publication records)
 
 Returns `404` when review ID is unknown.
 When auth is enabled, `404` is also returned for review IDs owned by a
 repository outside the authenticated principal's access boundary.
 The response body follows `ReviewStatusResponseSchema`.
+
+## `GET /v1/review/:reviewId/triage`
+
+Returns durable Review Room triage state for one review. The route requires
+`review:read` and authorizes against the stored run ownership snapshot.
+
+`200` returns `ReviewFindingTriageListResponse`:
+
+```json
+{
+  "reviewId": "review_123",
+  "items": [
+    {
+      "reviewId": "review_123",
+      "fingerprint": "finding-1",
+      "status": "accepted",
+      "note": "Owner verified this before publish.",
+      "actor": "service-token:ci",
+      "createdAt": 1778560000000,
+      "updatedAt": 1778560100000
+    }
+  ],
+  "audit": [
+    {
+      "auditId": "audit_123",
+      "reviewId": "review_123",
+      "fingerprint": "finding-1",
+      "toStatus": "accepted",
+      "createdAt": 1778560000000
+    }
+  ]
+}
+```
+
+## `PATCH /v1/review/:reviewId/findings/:fingerprint/triage`
+
+Updates mutable reviewer-owned state for one immutable finding. The route
+requires `review:publish`, verifies that the review has a completed result, and
+rejects fingerprints that do not exist in that result.
+
+Request body follows `ReviewFindingTriageUpdateRequestSchema`:
+
+```json
+{
+  "status": "accepted",
+  "note": "Ready to publish after owner validation."
+}
+```
+
+Supported states are `open`, `accepted`, `false-positive`, `fixed`,
+`published`, `dismissed`, and `ignored`. Sending `note: null` clears the note.
+
+Responses:
+
+- `200`: update persisted; body follows `ReviewFindingTriageUpdateResponse`.
+- `400`: request body parse/validation error.
+- `401`: missing or invalid bearer token.
+- `403`: authenticated token lacks `review:publish`.
+- `404`: review or finding not found.
+- `409`: review findings are not ready.
+- `502`: triage storage failed.
 
 ## `POST /v1/review/:reviewId/publish`
 
@@ -393,6 +461,27 @@ Relevant GitHub API references:
 - https://docs.github.com/en/rest/code-scanning/code-scanning#upload-an-analysis-as-sarif-data
 - https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support-for-code-scanning
 - https://docs.github.com/en/rest/pulls/comments
+
+## `GET /v1/review/:reviewId/publish/preview`
+
+Builds a side-effect-free GitHub publication plan for the same target used by
+`POST /publish`. The route requires `review:publish`, dynamically revalidates
+GitHub-user bearer tokens, resolves the current PR head, reads existing
+publication records, and reads existing owned PR comments. It does not write
+GitHub state and does not upsert `review_publications`.
+
+`200` returns `ReviewPublishPreviewResponse` with:
+
+- `target`: resolved owner/repo, installation ID, repository ID, commit SHA,
+  ref, and PR number when applicable.
+- `items`: planned Checks, SARIF, and PR-comment effects with `create`,
+  `update`, `reuse`, `delete`, `skip`, `unsupported`, or `blocked` actions.
+- `existingPublications`: stored publication evidence already written for the
+  review.
+- `summary`: compact action counts for Review Room controls.
+
+Responses mirror the publish route for auth, missing targets, stale PR heads,
+not-ready reviews, and unconfigured publication service.
 
 ## `GET /v1/review/:reviewId/events`
 

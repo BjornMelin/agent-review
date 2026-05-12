@@ -14,12 +14,15 @@ import { describe, expect, it } from 'vitest';
 import {
   type AuthAuditEventRecord,
   createDrizzleReviewAuthStore,
+  createDrizzleReviewFindingTriageStore,
   createDrizzleReviewPublicationStore,
   createDrizzleReviewStore,
   createInMemoryReviewAuthStore,
+  createInMemoryReviewFindingTriageStore,
   createInMemoryReviewPublicationStore,
   createInMemoryReviewStore,
   createReviewAuthStoreFromEnv,
+  createReviewFindingTriageStoreFromEnv,
   createReviewPublicationStoreFromEnv,
   createReviewStoreFromEnv,
   decodeReviewRunListCursor,
@@ -54,6 +57,7 @@ async function readStorageMigrationSql(): Promise<string> {
     await readRuntimeControlMigrationSql(),
     await readGitHubAuthzMigrationSql(),
     await readGitHubPublicationMigrationSql(),
+    await readFindingTriageMigrationSql(),
   ].join('\n');
 }
 
@@ -88,6 +92,15 @@ async function readGitHubPublicationMigrationSql(): Promise<string> {
   return readFile(
     fileURLToPath(
       new URL('../../drizzle/0003_github_publications.sql', import.meta.url)
+    ),
+    'utf8'
+  );
+}
+
+async function readFindingTriageMigrationSql(): Promise<string> {
+  return readFile(
+    fileURLToPath(
+      new URL('../../drizzle/0004_finding_triage.sql', import.meta.url)
     ),
     'utf8'
   );
@@ -436,6 +449,146 @@ describe('review storage', () => {
         updatedAt: BASE_TIME_MS + 1,
       }),
     ]);
+  });
+
+  it('persists finding triage with append-only audit records', async () => {
+    const request = createRequest();
+    await withTestStore(async ({ db, store }) => {
+      await store.set(
+        createRecord({
+          status: 'completed',
+          result: createReviewResult(request),
+        })
+      );
+      const triageStore = createDrizzleReviewFindingTriageStore(db);
+
+      const first = await triageStore.upsert({
+        reviewId: 'review-1',
+        fingerprint: 'finding-1',
+        status: 'accepted',
+        note: 'owner verified',
+        actor: 'service-token:token-1',
+        nowMs: BASE_TIME_MS,
+      });
+      const second = await triageStore.upsert({
+        reviewId: 'review-1',
+        fingerprint: 'finding-1',
+        status: 'published',
+        actor: 'service-token:token-1',
+        nowMs: BASE_TIME_MS + 1_000,
+      });
+
+      expect(first.record).toMatchObject({
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS,
+      });
+      expect(second.record).toMatchObject({
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS + 1_000,
+      });
+      expect(second.audit).toMatchObject({
+        fromStatus: 'accepted',
+        toStatus: 'published',
+      });
+      await expect(triageStore.list('review-1')).resolves.toMatchObject({
+        reviewId: 'review-1',
+        items: [
+          {
+            fingerprint: 'finding-1',
+            status: 'published',
+            actor: 'service-token:token-1',
+            createdAt: BASE_TIME_MS,
+            updatedAt: BASE_TIME_MS + 1_000,
+          },
+        ],
+        audit: [
+          {
+            fingerprint: 'finding-1',
+            toStatus: 'accepted',
+            note: 'owner verified',
+          },
+          {
+            fingerprint: 'finding-1',
+            fromStatus: 'accepted',
+            toStatus: 'published',
+          },
+        ],
+      });
+    });
+  });
+
+  it('serializes concurrent durable finding triage audit transitions', async () => {
+    const request = createRequest();
+    await withTestStore(async ({ db, store }) => {
+      await store.set(
+        createRecord({
+          status: 'completed',
+          result: createReviewResult(request),
+        })
+      );
+      const triageStore = createDrizzleReviewFindingTriageStore(db);
+
+      await triageStore.upsert({
+        reviewId: 'review-1',
+        fingerprint: 'finding-1',
+        status: 'accepted',
+        nowMs: BASE_TIME_MS,
+      });
+      await Promise.all([
+        triageStore.upsert({
+          reviewId: 'review-1',
+          fingerprint: 'finding-1',
+          status: 'fixed',
+          nowMs: BASE_TIME_MS + 1_000,
+        }),
+        triageStore.upsert({
+          reviewId: 'review-1',
+          fingerprint: 'finding-1',
+          status: 'published',
+          nowMs: BASE_TIME_MS + 2_000,
+        }),
+      ]);
+
+      const { audit } = await triageStore.list('review-1');
+      const concurrentTransitions = audit.slice(1);
+      expect(concurrentTransitions).toHaveLength(2);
+      expect(
+        concurrentTransitions.filter(
+          (record) => record.fromStatus === 'accepted'
+        )
+      ).toHaveLength(1);
+      expect(
+        concurrentTransitions.some(
+          (record) =>
+            record.fromStatus === 'fixed' || record.fromStatus === 'published'
+        )
+      ).toBe(true);
+    });
+  });
+
+  it('provides copy-on-read finding triage state in memory', async () => {
+    const triageStore = createInMemoryReviewFindingTriageStore();
+    await triageStore.upsert({
+      reviewId: 'review-1',
+      fingerprint: 'finding-1',
+      status: 'accepted',
+      note: 'reviewed',
+      nowMs: BASE_TIME_MS,
+    });
+
+    const listed = await triageStore.list('review-1');
+    const [item] = listed.items;
+    const [audit] = listed.audit;
+    if (!item || !audit) {
+      throw new Error('triage records missing');
+    }
+    item.status = 'dismissed';
+    audit.toStatus = 'dismissed';
+
+    await expect(triageStore.list('review-1')).resolves.toMatchObject({
+      items: [{ status: 'accepted' }],
+      audit: [{ toStatus: 'accepted' }],
+    });
   });
 
   it('stores scoped service tokens and append-only auth audit events', async () => {
@@ -1556,6 +1709,22 @@ describe('review storage', () => {
     ).toBeDefined();
   });
 
+  it('requires durable finding triage storage in production unless fallback is explicit', () => {
+    expect(() =>
+      createReviewFindingTriageStoreFromEnv({
+        NODE_ENV: 'production',
+      })
+    ).toThrow(/DATABASE_URL or POSTGRES_URL/);
+    expect(
+      createReviewFindingTriageStoreFromEnv(
+        {
+          NODE_ENV: 'production',
+        },
+        { allowInMemoryFallback: true }
+      )
+    ).toBeDefined();
+  });
+
   it('upgrades existing initial-schema databases with runtime control columns', async () => {
     const client = new PGlite();
     await client.waitReady;
@@ -1626,7 +1795,7 @@ describe('review storage', () => {
       ),
     });
 
-    expect(migrations).toHaveLength(4);
+    expect(migrations).toHaveLength(5);
     expect(migrations[0]?.sql.join('\n').trim()).toBe(
       (await readInitialMigrationSql()).trim()
     );
@@ -1638,6 +1807,9 @@ describe('review storage', () => {
     );
     expect(migrations[3]?.sql.join('\n').trim()).toBe(
       (await readGitHubPublicationMigrationSql()).trim()
+    );
+    expect(migrations[4]?.sql.join('\n').trim()).toBe(
+      (await readFindingTriageMigrationSql()).trim()
     );
   });
 });

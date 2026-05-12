@@ -299,6 +299,86 @@ describe('createGitHubPublicationService', () => {
     );
   });
 
+  it('previews GitHub publication without mutating GitHub or durable records', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    await publicationStore.upsert({
+      publicationId: 'publication-check',
+      reviewId: 'review-1',
+      channel: 'checkRun',
+      targetKey: 'check-run:abcdef1',
+      status: 'published',
+      externalId: '100',
+      externalUrl: 'https://github.com/checks/100',
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+    const calls: Array<{ route: string; options?: Record<string, unknown> }> =
+      [];
+    const requestClient = vi.fn(async (route, options) => {
+      calls.push({ route, options });
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        return { data: [] };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const preview = await service.preview?.(createRecord());
+
+    expect(preview).toMatchObject({
+      reviewId: 'review-1',
+      summary: {
+        checkRunAction: 'update',
+        sarifAction: 'create',
+        pullRequestCommentCount: 1,
+        blockedCount: 0,
+      },
+      existingPublications: [
+        expect.objectContaining({
+          channel: 'checkRun',
+          status: 'published',
+        }),
+      ],
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          channel: 'checkRun',
+          action: 'update',
+          externalId: '100',
+        }),
+        expect.objectContaining({
+          channel: 'pullRequestComment',
+          action: 'create',
+          fingerprint: 'finding-fingerprint',
+          path: 'src/app.ts',
+          line: 10,
+        }),
+      ]),
+    });
+    expect(calls.map((call) => call.route)).toEqual([
+      'GET /repos/{owner}/{repo}/pulls/{pull_number}',
+      'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments',
+    ]);
+    await expect(publicationStore.list('review-1')).resolves.toHaveLength(1);
+  });
+
   it('reuploads SARIF until GitHub reports terminal success', async () => {
     const publicationStore = createInMemoryReviewPublicationStore();
     const calls: Array<{ route: string; options?: Record<string, unknown> }> =
