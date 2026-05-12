@@ -152,7 +152,7 @@ External authority:
 | TB-5 Service/worker to sandbox | uploaded files, commands, env, network, stdout/stderr | command injection, token exfiltration, SSRF, filesystem escape, noisy artifacts | command/env allowlists, deny-all default network, allowlisted bootstrap, microVM lifecycle cleanup, budget and redaction gates. |
 | TB-6 Service/worker to durable store | run/event/artifact metadata and audit records | tenant data mixing, stale retention, unbounded sensitive storage | tenant/repo/run partitioning, retention and deletion policy, audit log immutability for security events. |
 | TB-7 Service to GitHub APIs | GitHub App tokens, Checks, SARIF, PR comments | overbroad token use, publishing to wrong repo/commit, comment spam | installation-scoped tokens, commit/repo binding, idempotency keys, publish permission checks. |
-| TB-8 Local CLI to hosted service | future CLI submit/watch/publish | accidental private data upload, token leakage | explicit `submit` command, endpoint allowlist, token source precedence, dry-run summary before upload. |
+| TB-8 Local CLI to hosted service | `submit`, `run --detached`, `status`, `watch`, `artifact`, `cancel`, and `publish` | accidental private data upload, token leakage, false-success CI on truncated streams | explicit hosted-service commands, HTTPS for remote service URLs, shared DTO parsing, token source precedence, token redaction before stderr, nonterminal SSE close failures. |
 | TB-9 Review Room web UI | browser auth, run lists, artifact/finding views, cancel/publish/triage mutations | XSS, IDOR, CSRF, over-disclosure, stale authorization | server-side authorization, CSRF/origin/CORS policy, SameSite/session controls, CSP, escaped markdown/code rendering, no raw secret display. |
 | TB-10 Service/core to optional metadata mirrors | Convex bridge writes and future external mirrors | derived private-code leakage, tenant mixing, unbounded third-party retention | disabled-by-default hosted posture unless explicitly configured with redaction, tenant scoping, retention, and audit. |
 
@@ -511,8 +511,10 @@ Future issues must preserve these gates:
   artifact, browser mutation, and publish operation.
 - #25 publishing must be idempotent, commit-bound, permission-checked, and safe
   for untrusted provider output.
-- #26 CLI hosted commands must make upload boundaries explicit and must not
-  reuse local-trusted `cwd` semantics for hosted execution.
+- #26 CLI hosted commands make upload boundaries explicit. Hosted requests still
+  carry the shared `ReviewRequest.cwd` field, but that field is request context,
+  not authority; the service must validate it against hosted repository roots
+  and the authenticated repository before execution.
 - #27 and #28 Review Room must enforce server-side run authorization,
   CSRF/origin/CORS/session-cookie protections for browser mutations, and safe
   rendering before showing code, prompts, findings, comments, or artifacts.

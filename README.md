@@ -67,19 +67,39 @@ pnpm build
 Run the CLI in dev mode:
 
 ```bash
-pnpm --filter @review-agent/review-cli dev -- run --uncommitted --provider codex --format json
+pnpm --filter @review-agent/review-cli dev run --uncommitted --provider codex --format json
 ```
 
 List provider-registry model presets:
 
 ```bash
-pnpm --filter @review-agent/review-cli dev -- models
+pnpm --filter @review-agent/review-cli dev models
 ```
 
 Run provider checks:
 
 ```bash
-pnpm --filter @review-agent/review-cli dev -- doctor
+pnpm --filter @review-agent/review-cli dev doctor
+```
+
+Submit and watch a hosted detached review:
+
+```bash
+export REVIEW_AGENT_SERVICE_URL=http://localhost:3042
+export REVIEW_AGENT_SERVICE_TOKEN=rat_<tokenId>_<secret>
+
+pnpm --filter @review-agent/review-cli dev submit \
+  --commit "$GITHUB_SHA" \
+  --provider gateway \
+  --format json \
+  --repo "$GITHUB_REPOSITORY" \
+  --pull-request "$PR_NUMBER"
+
+pnpm --filter @review-agent/review-cli dev watch <reviewId>
+pnpm --filter @review-agent/review-cli dev status <reviewId>
+pnpm --filter @review-agent/review-cli dev artifact <reviewId> markdown --output review.md
+pnpm --filter @review-agent/review-cli dev cancel <reviewId>
+pnpm --filter @review-agent/review-cli dev publish <reviewId>
 ```
 
 ### Service
@@ -112,6 +132,10 @@ pnpm --filter @review-agent/review-service db:migrate
 | `GITHUB_API_BASE_URL` | `apps/review-service` | Optional GitHub API base URL override for Enterprise Server testing |
 | `GITHUB_APP_ID` | `apps/review-service` | Enables GitHub publication by identifying the GitHub App used to mint installation-scoped write tokens |
 | `GITHUB_APP_PRIVATE_KEY` | `apps/review-service` | GitHub App private key used for publication tokens; escaped `\n` sequences are normalized at startup |
+| `REVIEW_AGENT_SERVICE_URL` / `REVIEW_SERVICE_URL` | `apps/review-cli` | Hosted review service URL for `submit`, `status`, `watch`, `artifact`, `cancel`, `publish`, and `run --detached` (default `http://localhost:3042`) |
+| `REVIEW_AGENT_SERVICE_TOKEN` / `REVIEW_SERVICE_TOKEN` | `apps/review-cli` | Hosted review service bearer token for service commands; prefer env over `--service-token` in CI |
+| `GITHUB_REPOSITORY` / `GITHUB_REPOSITORY_ID` | `apps/review-cli` | Optional GitHub repository defaults attached to hosted start requests (`submit` and `run --detached`) |
+| `REVIEW_AGENT_GITHUB_INSTALLATION_ID` | `apps/review-cli` | Optional GitHub App installation ID attached to hosted start requests (`submit` and `run --detached`) |
 | `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
 | `OPENROUTER_API_KEY` | `packages/review-provider-openai` via provider registry | API key for OpenRouter |

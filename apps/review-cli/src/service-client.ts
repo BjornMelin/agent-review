@@ -1,0 +1,720 @@
+import { isIP } from 'node:net';
+
+import {
+  type LifecycleEvent,
+  LifecycleEventSchema,
+  OutputFormatSchema,
+  type ReviewCancelResponse,
+  ReviewCancelResponseSchema,
+  ReviewErrorResponseSchema,
+  type ReviewPublishResponse,
+  ReviewPublishResponseSchema,
+  type ReviewStartRequest,
+  type ReviewStartResponse,
+  ReviewStartResponseSchema,
+  type ReviewStatusResponse,
+  ReviewStatusResponseSchema,
+  redactSensitiveText,
+} from '@review-agent/review-types';
+
+const DEFAULT_SERVICE_URL = 'http://localhost:3042';
+const DEFAULT_SERVICE_FETCH_TIMEOUT_MS = 30_000;
+const EVENT_STREAM_CONTENT_TYPE = 'text/event-stream';
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+const MAX_SSE_BUFFER_BYTES = 1024 * 1024;
+const SERVICE_URL_ENV_KEYS = ['REVIEW_AGENT_SERVICE_URL', 'REVIEW_SERVICE_URL'];
+const SERVICE_TOKEN_ENV_KEYS = [
+  'REVIEW_AGENT_SERVICE_TOKEN',
+  'REVIEW_SERVICE_TOKEN',
+];
+
+type Schema<T> = {
+  parse(input: unknown): T;
+};
+
+/**
+ * Defines caller-provided hosted service configuration overrides.
+ *
+ * @remarks
+ * Missing values are resolved from the hosted CLI environment defaults.
+ */
+export type ServiceConfigInput = {
+  serviceUrl?: string;
+  serviceToken?: string;
+};
+
+/**
+ * Stores the normalized hosted service endpoint and bearer token.
+ *
+ * @remarks
+ * The base URL has already passed URL safety validation.
+ */
+export type ReviewServiceConfig = {
+  baseUrl: string;
+  token: string;
+};
+
+/**
+ * Configures hosted review lifecycle event streaming.
+ *
+ * @remarks
+ * The callback receives parsed and schema-validated lifecycle events.
+ */
+export type WatchEventsOptions = {
+  afterEventId?: string;
+  limit?: number;
+  onEvent: (event: LifecycleEvent) => void | Promise<void>;
+};
+
+/**
+ * Carries hosted service failures with the CLI exit code to report.
+ *
+ * @remarks
+ * Optional HTTP status is attached when a service response caused the failure.
+ */
+export class ServiceClientError extends Error {
+  readonly exitCode: number;
+  readonly status?: number;
+
+  constructor(message: string, exitCode: number, status?: number) {
+    super(message);
+    this.name = 'ServiceClientError';
+    this.exitCode = exitCode;
+    if (status !== undefined) {
+      this.status = status;
+    }
+  }
+}
+
+function firstNonEmpty(
+  values: Array<string | undefined>,
+  fallback?: string
+): string | undefined {
+  for (const value of values) {
+    if (value && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return fallback;
+}
+
+function envValue(
+  env: NodeJS.ProcessEnv,
+  keys: readonly string[]
+): string | undefined {
+  return firstNonEmpty(keys.map((key) => env[key]));
+}
+
+function isLocalServiceHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '[::1]' ||
+    hostname === '::1' ||
+    (isIP(hostname) === 4 && hostname.startsWith('127.'))
+  );
+}
+
+function normalizeServiceUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.username || parsed.password) {
+      throw new ServiceClientError(
+        'review service URL must not contain credentials',
+        2
+      );
+    }
+    if (parsed.search || parsed.hash) {
+      throw new ServiceClientError(
+        'review service URL must not include query strings or fragments',
+        2
+      );
+    }
+    if (parsed.protocol === 'http:' && !isLocalServiceHost(parsed.hostname)) {
+      throw new ServiceClientError(
+        'review service URL must use HTTPS unless it targets localhost or loopback',
+        2
+      );
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new ServiceClientError(
+        'review service URL must use HTTP or HTTPS',
+        2
+      );
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch (error) {
+    if (error instanceof ServiceClientError) {
+      throw error;
+    }
+    const redactedUrl = redactSensitiveText(rawUrl).text;
+    throw new ServiceClientError(
+      `invalid review service URL "${redactedUrl}"`,
+      2
+    );
+  }
+}
+
+/**
+ * Resolves hosted service configuration from CLI input and environment defaults.
+ *
+ * @param input - CLI-provided service URL and token overrides.
+ * @param env - Environment source used for hosted service fallbacks.
+ * @returns Validated hosted service base URL and bearer token.
+ * @throws ServiceClientError when URL validation fails or no token is available.
+ */
+export function resolveReviewServiceConfig(
+  input: ServiceConfigInput,
+  env: NodeJS.ProcessEnv = process.env
+): ReviewServiceConfig {
+  const baseUrl = normalizeServiceUrl(
+    firstNonEmpty(
+      [input.serviceUrl, envValue(env, SERVICE_URL_ENV_KEYS)],
+      DEFAULT_SERVICE_URL
+    ) ?? DEFAULT_SERVICE_URL
+  );
+  const token = firstNonEmpty([
+    input.serviceToken,
+    envValue(env, SERVICE_TOKEN_ENV_KEYS),
+  ]);
+
+  if (!token) {
+    throw new ServiceClientError(
+      'review service token is required; set REVIEW_AGENT_SERVICE_TOKEN or pass --service-token',
+      3
+    );
+  }
+
+  return { baseUrl, token };
+}
+
+function buildServiceUrl(
+  config: ReviewServiceConfig,
+  path: string,
+  query?: URLSearchParams
+): string {
+  const base = new URL(config.baseUrl);
+  if (!base.pathname.endsWith('/')) {
+    base.pathname = `${base.pathname}/`;
+  }
+  const url = new URL(path.replace(/^\//, ''), base);
+  if (query) {
+    url.search = query.toString();
+  }
+  return url.toString();
+}
+
+function statusToExitCode(status: number): number {
+  if (status === 401 || status === 403) {
+    return 3;
+  }
+  if (status === 400 || status === 404 || status === 409 || status === 413) {
+    return 2;
+  }
+  return 4;
+}
+
+function redactServiceText(text: string, token: string): string {
+  const redacted = redactSensitiveText(text).text;
+  return token.length > 0
+    ? redacted.replaceAll(token, '[REDACTED_SECRET]')
+    : redacted;
+}
+
+async function boundedResponseText(response: Response): Promise<string> {
+  if (!response.body) {
+    return '';
+  }
+
+  const chunks: Uint8Array[] = [];
+  let receivedBytes = 0;
+  for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+    const remainingBytes = MAX_ERROR_BODY_BYTES - receivedBytes;
+    if (remainingBytes <= 0) {
+      break;
+    }
+    const nextChunk =
+      chunk.byteLength > remainingBytes
+        ? chunk.slice(0, remainingBytes)
+        : chunk;
+    chunks.push(nextChunk);
+    receivedBytes += nextChunk.byteLength;
+    if (chunk.byteLength > remainingBytes) {
+      break;
+    }
+  }
+
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+async function responseError(
+  response: Response,
+  token: string
+): Promise<ServiceClientError> {
+  let message = `review service request failed with HTTP ${response.status}`;
+  const text = await boundedResponseText(response);
+  if (text.trim().length > 0) {
+    try {
+      const parsed = ReviewErrorResponseSchema.parse(JSON.parse(text));
+      message = parsed.error;
+    } catch {
+      message = text;
+    }
+  }
+  message = redactServiceText(message, token);
+  return new ServiceClientError(
+    message,
+    statusToExitCode(response.status),
+    response.status
+  );
+}
+
+type ServiceFetchResult = {
+  response: Response;
+  complete: () => void;
+  didTimeout: () => boolean;
+};
+
+function serviceTimeoutError(): ServiceClientError {
+  return new ServiceClientError(
+    `review service request timed out after ${DEFAULT_SERVICE_FETCH_TIMEOUT_MS}ms`,
+    4
+  );
+}
+
+function serviceRequestFailureError(
+  error: unknown,
+  token: string
+): ServiceClientError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new ServiceClientError(
+    `review service request failed: ${redactServiceText(message, token)}`,
+    4
+  );
+}
+
+async function serviceFetch(
+  config: ReviewServiceConfig,
+  path: string,
+  init: RequestInit = {},
+  query?: URLSearchParams
+): Promise<ServiceFetchResult> {
+  const { signal: inputSignal, ...initWithoutSignal } = init;
+  const explicitSignal = inputSignal ?? undefined;
+  let didTimeout = false;
+  const timeoutController =
+    explicitSignal === undefined ? new AbortController() : undefined;
+  const timeout =
+    timeoutController === undefined
+      ? undefined
+      : setTimeout(() => {
+          didTimeout = true;
+          timeoutController.abort();
+        }, DEFAULT_SERVICE_FETCH_TIMEOUT_MS);
+  const signal = explicitSignal ?? timeoutController?.signal;
+  const complete = (): void => {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  };
+  let response: Response;
+  try {
+    response = await fetch(buildServiceUrl(config, path, query), {
+      ...initWithoutSignal,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${config.token}`,
+        ...initWithoutSignal.headers,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    });
+  } catch (error) {
+    complete();
+    if (didTimeout) {
+      throw serviceTimeoutError();
+    }
+    throw serviceRequestFailureError(error, config.token);
+  }
+
+  if (!response.ok) {
+    try {
+      throw await responseError(response, config.token);
+    } catch (error) {
+      if (error instanceof ServiceClientError) {
+        throw error;
+      }
+      if (didTimeout) {
+        throw serviceTimeoutError();
+      }
+      throw serviceRequestFailureError(error, config.token);
+    } finally {
+      complete();
+    }
+  }
+  return { response, complete, didTimeout: () => didTimeout };
+}
+
+async function serviceJson<T>(
+  config: ReviewServiceConfig,
+  path: string,
+  schema: Schema<T>,
+  init: RequestInit = {},
+  query?: URLSearchParams
+): Promise<T> {
+  const fetched = await serviceFetch(config, path, init, query);
+  const { response } = fetched;
+  let body: unknown;
+  try {
+    try {
+      body = await response.json();
+    } catch {
+      if (fetched.didTimeout()) {
+        throw serviceTimeoutError();
+      }
+      throw new ServiceClientError(
+        `review service returned invalid JSON for ${path}`,
+        4,
+        response.status
+      );
+    }
+
+    try {
+      return schema.parse(body);
+    } catch {
+      throw new ServiceClientError(
+        `review service returned invalid response for ${path}`,
+        4,
+        response.status
+      );
+    }
+  } finally {
+    fetched.complete();
+  }
+}
+
+function jsonPostInit(body?: unknown): RequestInit {
+  return {
+    method: 'POST',
+    ...(body === undefined
+      ? {}
+      : {
+          body: JSON.stringify(body),
+          headers: { 'Content-Type': 'application/json' },
+        }),
+  };
+}
+
+/**
+ * Starts a hosted detached review through the service API.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param request - Shared start-review request DTO to submit.
+ * @returns Parsed hosted review start response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
+export function startReview(
+  config: ReviewServiceConfig,
+  request: ReviewStartRequest
+): Promise<ReviewStartResponse> {
+  return serviceJson(config, '/v1/review/start', ReviewStartResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify(request),
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Fetches the current hosted review status.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier to read.
+ * @returns Parsed hosted review status response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
+export function getReviewStatus(
+  config: ReviewServiceConfig,
+  reviewId: string
+): Promise<ReviewStatusResponse> {
+  return serviceJson(
+    config,
+    `/v1/review/${encodeURIComponent(reviewId)}`,
+    ReviewStatusResponseSchema
+  );
+}
+
+/**
+ * Requests cancellation for a hosted detached review.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier to cancel.
+ * @returns Parsed hosted review cancellation response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
+export function cancelReview(
+  config: ReviewServiceConfig,
+  reviewId: string
+): Promise<ReviewCancelResponse> {
+  return serviceJson(
+    config,
+    `/v1/review/${encodeURIComponent(reviewId)}/cancel`,
+    ReviewCancelResponseSchema,
+    jsonPostInit()
+  );
+}
+
+/**
+ * Publishes hosted review results through configured service integrations.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier to publish.
+ * @returns Parsed hosted review publication response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
+export function publishReview(
+  config: ReviewServiceConfig,
+  reviewId: string
+): Promise<ReviewPublishResponse> {
+  return serviceJson(
+    config,
+    `/v1/review/${encodeURIComponent(reviewId)}/publish`,
+    ReviewPublishResponseSchema,
+    jsonPostInit()
+  );
+}
+
+/**
+ * Downloads a hosted review artifact without changing its bytes.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier containing the artifact.
+ * @param format - Artifact format validated by the shared output-format schema.
+ * @returns Raw artifact bytes as returned by the hosted service.
+ * @throws ServiceClientError when the request fails or the format is invalid.
+ */
+export async function fetchReviewArtifact(
+  config: ReviewServiceConfig,
+  reviewId: string,
+  format: string
+): Promise<Buffer> {
+  const parsedFormat = OutputFormatSchema.parse(format);
+  const fetched = await serviceFetch(
+    config,
+    `/v1/review/${encodeURIComponent(reviewId)}/artifacts/${parsedFormat}`,
+    { headers: { Accept: '*/*' } }
+  );
+  try {
+    return Buffer.from(await fetched.response.arrayBuffer());
+  } catch (error) {
+    if (fetched.didTimeout()) {
+      throw serviceTimeoutError();
+    }
+    throw serviceRequestFailureError(error, config.token);
+  } finally {
+    fetched.complete();
+  }
+}
+
+function parseSseFrames(buffer: string): {
+  frames: Array<{ event?: string; id?: string; data: string }>;
+  remainder: string;
+} {
+  const normalized = buffer.replace(/\r\n/g, '\n');
+  const blocks = normalized.split('\n\n');
+  const remainder = blocks.pop() ?? '';
+  const frames: Array<{ event?: string; id?: string; data: string }> = [];
+
+  for (const block of blocks) {
+    const dataLines: string[] = [];
+    let event: string | undefined;
+    let id: string | undefined;
+    for (const line of block.split('\n')) {
+      if (line.length === 0 || line.startsWith(':')) {
+        continue;
+      }
+      const separatorIndex = line.indexOf(':');
+      const field =
+        separatorIndex === -1 ? line : line.slice(0, separatorIndex);
+      const rawValue =
+        separatorIndex === -1 ? '' : line.slice(separatorIndex + 1);
+      const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue;
+      if (field === 'event') {
+        event = value;
+      } else if (field === 'id') {
+        id = value;
+      } else if (field === 'data') {
+        dataLines.push(value);
+      }
+    }
+
+    frames.push({
+      ...(event ? { event } : {}),
+      ...(id ? { id } : {}),
+      data: dataLines.join('\n'),
+    });
+  }
+
+  return { frames, remainder };
+}
+
+type SseFrame = ReturnType<typeof parseSseFrames>['frames'][number];
+
+function hasEventStreamContentType(contentType: string | null): boolean {
+  return (
+    contentType?.toLowerCase().split(';', 1)[0]?.trim() ===
+    EVENT_STREAM_CONTENT_TYPE
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+/**
+ * Streams hosted lifecycle events until a terminal review outcome is observed.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param reviewId - Hosted review identifier whose events should be streamed.
+ * @param options - Cursor, replay limit, and event callback options.
+ * @returns CLI exit code implied by the streamed terminal event.
+ * @throws ServiceClientError when the stream is malformed or ends too early.
+ */
+export async function watchReviewEvents(
+  config: ReviewServiceConfig,
+  reviewId: string,
+  options: WatchEventsOptions
+): Promise<number> {
+  const query = new URLSearchParams();
+  if (options.afterEventId) {
+    query.set('afterEventId', options.afterEventId);
+  }
+  if (options.limit !== undefined) {
+    query.set('limit', String(options.limit));
+  }
+
+  const controller = new AbortController();
+  const { response, complete } = await serviceFetch(
+    config,
+    `/v1/review/${encodeURIComponent(reviewId)}/events`,
+    {
+      headers: { Accept: 'text/event-stream' },
+      signal: controller.signal,
+    },
+    query
+  );
+  complete();
+  if (!response.body) {
+    throw new ServiceClientError('review service event stream had no body', 4);
+  }
+  const contentType = response.headers.get('content-type');
+  if (!hasEventStreamContentType(contentType)) {
+    throw new ServiceClientError(
+      `expected Content-Type '${EVENT_STREAM_CONTENT_TYPE}' for review event stream but got '${contentType ?? 'missing'}'`,
+      4,
+      response.status
+    );
+  }
+
+  let exitCode = 0;
+  let buffer = '';
+  let terminalExitCode: number | undefined;
+  const decoder = new TextDecoder();
+
+  const processFrames = async (frames: SseFrame[]): Promise<void> => {
+    for (const frame of frames) {
+      if (terminalExitCode !== undefined && frame.event === 'keepalive') {
+        continue;
+      }
+      if (frame.event === 'keepalive' || frame.data.length === 0) {
+        continue;
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(frame.data);
+      } catch {
+        throw new ServiceClientError(
+          'review service returned invalid SSE event JSON',
+          4
+        );
+      }
+      let event: LifecycleEvent;
+      try {
+        event = LifecycleEventSchema.parse(payload);
+      } catch {
+        throw new ServiceClientError(
+          'review service returned invalid SSE event payload',
+          4
+        );
+      }
+      await options.onEvent(event);
+      if (event.type === 'failed' || event.type === 'cancelled') {
+        exitCode = 4;
+        terminalExitCode = exitCode;
+        controller.abort();
+        return;
+      }
+      if (event.type === 'exitedReviewMode') {
+        terminalExitCode = exitCode;
+      }
+    }
+  };
+
+  try {
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      buffer += decoder.decode(chunk, { stream: true });
+      if (Buffer.byteLength(buffer) > MAX_SSE_BUFFER_BYTES) {
+        throw new ServiceClientError(
+          'review service SSE buffer exceeded the CLI safety limit',
+          4
+        );
+      }
+      const parsed = parseSseFrames(buffer);
+      buffer = parsed.remainder;
+
+      await processFrames(parsed.frames);
+      if (terminalExitCode !== undefined && exitCode === 0) {
+        const lastFrame = parsed.frames.at(-1);
+        if (lastFrame?.event === 'keepalive') {
+          return terminalExitCode;
+        }
+      }
+      if (terminalExitCode !== undefined && exitCode !== 0) {
+        break;
+      }
+    }
+
+    const flushed = decoder.decode();
+    if (flushed.length > 0) {
+      buffer += flushed;
+      if (Buffer.byteLength(buffer) > MAX_SSE_BUFFER_BYTES) {
+        throw new ServiceClientError(
+          'review service SSE buffer exceeded the CLI safety limit',
+          4
+        );
+      }
+      const parsed = parseSseFrames(buffer);
+      buffer = parsed.remainder;
+      await processFrames(parsed.frames);
+      if (terminalExitCode !== undefined && exitCode === 0) {
+        const lastFrame = parsed.frames.at(-1);
+        if (lastFrame?.event === 'keepalive') {
+          return terminalExitCode;
+        }
+      }
+    }
+  } catch (error) {
+    if (terminalExitCode !== undefined && isAbortError(error)) {
+      return terminalExitCode;
+    }
+    throw error;
+  } finally {
+    controller.abort();
+  }
+
+  if (terminalExitCode !== undefined) {
+    return terminalExitCode;
+  }
+
+  throw new ServiceClientError(
+    'review service event stream ended before a terminal lifecycle event',
+    4
+  );
+}

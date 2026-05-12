@@ -17,13 +17,31 @@ issue closeout.
 ## Functional Verification
 
 1. Run CLI parity smoke tests:
-   1. `pnpm --filter @review-agent/review-cli dev -- run --uncommitted --provider codex --format json --output -`
-   2. `pnpm --filter @review-agent/review-cli dev -- doctor --provider all --json`
-2. Run service API smoke tests:
+   1. `pnpm --filter @review-agent/review-cli dev run --uncommitted --provider codex --format json --output -`
+   2. `pnpm --filter @review-agent/review-cli dev doctor --provider all --json`
+2. Run hosted CLI service smoke tests:
+   1. Start the service and apply required database migrations.
+   2. Configure `REVIEW_AGENT_SERVICE_URL` and a
+      `REVIEW_AGENT_SERVICE_TOKEN` scoped for `review:start`, `review:read`,
+      `review:cancel`, and `review:publish`.
+   3. Submit a commit-backed PR review and save the returned `reviewId` for
+      steps 4, 5, 6, and 9:
+      `reviewId=$(pnpm --filter @review-agent/review-cli dev submit --commit <sha> --repo <owner/name> --pull-request <number> --provider gateway --format json --output - | jq -r .reviewId)`
+   4. `pnpm --filter @review-agent/review-cli dev watch "$reviewId"`
+   5. `pnpm --filter @review-agent/review-cli dev status "$reviewId" --output -`
+   6. `pnpm --filter @review-agent/review-cli dev artifact "$reviewId" markdown --output -`
+   7. Submit a disposable commit-backed PR review and save its `cancelReviewId`:
+      `cancelReviewId=$(pnpm --filter @review-agent/review-cli dev submit --commit <sha> --repo <owner/name> --pull-request <number> --provider gateway --format json --output - | jq -r .reviewId)`
+   8. Cancel the disposable review:
+      `pnpm --filter @review-agent/review-cli dev cancel "$cancelReviewId" --output -`
+   9. Publish the successful review from step 3, not the cancelled disposable
+      review from step 8:
+      `pnpm --filter @review-agent/review-cli dev publish "$reviewId" --output -`
+3. Run service API smoke tests:
    1. Start service: `pnpm --filter @review-agent/review-service dev`
    2. Submit inline review request to `/v1/review/start`
    3. Verify `/v1/review/:reviewId/events` lifecycle ordering
-3. Validate detached flow:
+4. Validate detached flow:
    1. Start detached run (`delivery=detached`)
    2. Poll `/v1/review/:reviewId`
    3. Cancel using `/v1/review/:reviewId/cancel`
