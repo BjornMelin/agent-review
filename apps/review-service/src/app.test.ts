@@ -3154,6 +3154,58 @@ describe('createReviewServiceApp', () => {
     );
   });
 
+  it('rejects malformed service-token prefixes before GitHub authentication', async () => {
+    const authStore = createInMemoryReviewAuthStore();
+    const authenticateUserToken = vi.fn(async () => ({
+      type: 'githubUser' as const,
+      githubUserId: 101,
+      login: 'octocat',
+    }));
+    const app = createTestReviewServiceApp({
+      providers: createProviders(),
+      worker: createWorker(),
+      authStore,
+      authPolicy: createReviewServiceAuthPolicy({
+        store: authStore,
+        serviceTokenPepper: 'test-pepper',
+        githubUserTokenAuthorizer: {
+          authenticateUserToken,
+          authorizeUserToken: vi.fn(async () => {
+            throw new Error('should not authorize repository');
+          }),
+        },
+      }),
+      config: { recordCleanupIntervalMs: false },
+    });
+
+    const response = await app.request('/v1/review/start', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer rat_malformed',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        request: createHostedRequest(),
+        repository: { owner: 'octo-org', name: 'agent-review' },
+        delivery: 'detached',
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'invalid bearer token' });
+    expect(authenticateUserToken).not.toHaveBeenCalled();
+    await expect(authStore.listAuthAuditEvents()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'request',
+          result: 'denied',
+          reason: 'service_token_invalid',
+          status: 401,
+        }),
+      ])
+    );
+  });
+
   it('maps GitHub authentication outages to dependency failures', async () => {
     const authStore = createInMemoryReviewAuthStore();
     const app = createTestReviewServiceApp({

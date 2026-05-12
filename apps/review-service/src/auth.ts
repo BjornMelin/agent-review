@@ -357,6 +357,19 @@ export function createReviewServiceAuthPolicy(options: {
       }
 
       const serviceTokenId = parseServiceTokenId(token);
+      if (
+        !serviceTokenId &&
+        token.startsWith(`${REVIEW_SERVICE_TOKEN_PREFIX}_`)
+      ) {
+        await audit(options.store, {
+          eventType: 'authn',
+          operation: 'request',
+          result: 'denied',
+          reason: 'service_token_invalid',
+          status: 401,
+        });
+        return jsonAuthError('invalid bearer token', 401);
+      }
       if (serviceTokenId) {
         try {
           const record = await options.store.getServiceToken(serviceTokenId);
