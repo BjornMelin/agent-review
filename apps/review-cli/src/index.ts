@@ -15,11 +15,24 @@ import {
   type LifecycleEvent,
   type OutputFormat,
   OutputFormatSchema,
+  type ReviewRepositorySelection,
   type ReviewRequest,
   ReviewRequestSchema,
+  type ReviewStartRequest,
+  ReviewStartRequestSchema,
   type ReviewTarget,
 } from '@review-agent/review-types';
 import { program } from 'commander';
+import {
+  cancelReview,
+  fetchReviewArtifact,
+  getReviewStatus,
+  publishReview,
+  resolveReviewServiceConfig,
+  ServiceClientError,
+  startReview,
+  watchReviewEvents,
+} from './service-client.js';
 
 type RunCliOptions = {
   uncommitted?: boolean;
@@ -42,7 +55,37 @@ type RunCliOptions = {
   cwd?: string;
   quiet?: boolean;
   convexMirror?: boolean;
+  serviceUrl?: string;
+  serviceToken?: string;
+  repo?: string;
+  repositoryId?: string;
+  installationId?: string;
+  pullRequest?: string;
+  ref?: string;
+  commitSha?: string;
 };
+
+type ServiceCliOptions = {
+  serviceUrl?: string;
+  serviceToken?: string;
+  output?: string;
+};
+
+type RepositoryCliOptions = {
+  repo?: string;
+  repositoryId?: string;
+  installationId?: string;
+  pullRequest?: string;
+  ref?: string;
+  commitSha?: string;
+};
+
+type WatchCliOptions = ServiceCliOptions & {
+  afterEventId?: string;
+  limit?: string;
+};
+
+type ArtifactCliOptions = ServiceCliOptions;
 
 function toOutputFormats(values: string[] | undefined): OutputFormat[] {
   const defaults: OutputFormat[] = ['sarif', 'json', 'markdown'];
@@ -112,6 +155,77 @@ function parsePositiveIntOption(
   return parsed;
 }
 
+function parsePositiveInt(
+  input: string | undefined,
+  name: string
+): number | undefined {
+  return parsePositiveIntOption(input, name);
+}
+
+function parseRepositoryFullName(
+  repo: string | undefined
+): Pick<ReviewRepositorySelection, 'owner' | 'name'> | undefined {
+  const candidate = repo?.trim() || process.env.GITHUB_REPOSITORY?.trim();
+  if (!candidate) {
+    return undefined;
+  }
+  const [owner, name, extra] = candidate.split('/');
+  if (!owner || !name || extra) {
+    throw new Error(
+      '--repo must use owner/name format when selecting a hosted repository'
+    );
+  }
+  return { owner, name };
+}
+
+function parseRepositorySelection(
+  options: RepositoryCliOptions
+): ReviewRepositorySelection | undefined {
+  const repo = parseRepositoryFullName(options.repo);
+  const repositoryId = parsePositiveInt(
+    options.repositoryId ?? process.env.GITHUB_REPOSITORY_ID,
+    'repository-id'
+  );
+  const installationId = parsePositiveInt(
+    options.installationId ?? process.env.REVIEW_AGENT_GITHUB_INSTALLATION_ID,
+    'installation-id'
+  );
+  const pullRequestNumber = parsePositiveInt(
+    options.pullRequest,
+    'pull-request'
+  );
+
+  if (
+    !repo &&
+    repositoryId === undefined &&
+    installationId === undefined &&
+    pullRequestNumber === undefined &&
+    options.ref === undefined &&
+    options.commitSha === undefined
+  ) {
+    return undefined;
+  }
+
+  if (!repo) {
+    throw new Error(
+      '--repo owner/name is required when repository metadata flags are set'
+    );
+  }
+
+  return {
+    provider: 'github',
+    owner: repo.owner,
+    name: repo.name,
+    ...(repositoryId === undefined ? {} : { repositoryId }),
+    ...(installationId === undefined ? {} : { installationId }),
+    ...(pullRequestNumber === undefined ? {} : { pullRequestNumber }),
+    ...(options.ref === undefined ? {} : { ref: options.ref.trim() }),
+    ...(options.commitSha === undefined
+      ? {}
+      : { commitSha: options.commitSha.trim() }),
+  };
+}
+
 function parseDoctorProviderFilter(
   value: string
 ): Parameters<typeof filterDoctorChecks>[1] {
@@ -129,6 +243,9 @@ function parseDoctorProviderFilter(
 }
 
 function mapErrorToExitCode(error: unknown): number {
+  if (error instanceof ServiceClientError) {
+    return error.exitCode;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/auth|unauthoriz|api key|token/i.test(message)) {
     return 3;
@@ -148,14 +265,16 @@ function mapErrorToExitCode(error: unknown): number {
 
 function buildCompletionScript(shell: string): string {
   const command = 'review-agent';
+  const commands =
+    'run submit status watch artifact cancel publish models doctor completion';
   if (shell === 'bash') {
-    return `_${command}_completions() { COMPREPLY=( $(compgen -W "run models doctor completion" -- "\${COMP_WORDS[1]}") ); }\ncomplete -F _${command}_completions ${command}\n`;
+    return `_${command}_completions() { COMPREPLY=( $(compgen -W "${commands}" -- "\${COMP_WORDS[1]}") ); }\ncomplete -F _${command}_completions ${command}\n`;
   }
   if (shell === 'zsh') {
-    return `#compdef ${command}\n_arguments '1: :((run models doctor completion))'\n`;
+    return `#compdef ${command}\n_arguments '1: :((${commands}))'\n`;
   }
   if (shell === 'fish') {
-    return `complete -c ${command} -f -a "run models doctor completion"\n`;
+    return `complete -c ${command} -f -a "${commands}"\n`;
   }
   throw new Error(`unsupported shell: ${shell}`);
 }
@@ -168,7 +287,18 @@ async function writeOutput(outputPath: string, payload: string): Promise<void> {
   await writeFile(resolve(outputPath), payload, 'utf8');
 }
 
-async function runCommand(options: RunCliOptions): Promise<number> {
+async function writeRawOutput(
+  outputPath: string,
+  payload: string | Uint8Array
+): Promise<void> {
+  if (outputPath === '-') {
+    process.stdout.write(payload);
+    return;
+  }
+  await writeFile(resolve(outputPath), payload, 'utf8');
+}
+
+function buildReviewRequest(options: RunCliOptions): ReviewRequest {
   const target = parseTarget(options);
   const providerConfig = normalizeCliProviderModel(
     options.provider,
@@ -180,7 +310,7 @@ async function runCommand(options: RunCliOptions): Promise<number> {
     'max-diff-bytes'
   );
   const outputFormats = toOutputFormats(options.format);
-  const request: ReviewRequest = ReviewRequestSchema.parse({
+  return ReviewRequestSchema.parse({
     cwd: resolve(options.cwd ?? process.cwd()),
     target,
     provider: providerConfig.provider,
@@ -196,6 +326,30 @@ async function runCommand(options: RunCliOptions): Promise<number> {
     severityThreshold: options.severityThreshold,
     detached: Boolean(options.detached),
   });
+}
+
+async function submitCommand(options: RunCliOptions): Promise<number> {
+  const request = buildReviewRequest({ ...options, detached: true });
+  const serviceRequest: ReviewStartRequest = ReviewStartRequestSchema.parse({
+    request: { ...request, detached: true },
+    delivery: 'detached',
+    repository: parseRepositorySelection(options),
+  });
+  const response = await startReview(
+    resolveReviewServiceConfig(options),
+    serviceRequest
+  );
+  await writeOutput(options.output, JSON.stringify(response, null, 2));
+  return 0;
+}
+
+async function runCommand(options: RunCliOptions): Promise<number> {
+  if (options.detached) {
+    return submitCommand(options);
+  }
+
+  const request = buildReviewRequest(options);
+  const outputFormats = request.outputFormats;
 
   const providers = createReviewProviders();
   const bridge = options.convexMirror ? new ConvexMetadataBridge() : undefined;
@@ -236,15 +390,78 @@ async function runCommand(options: RunCliOptions): Promise<number> {
   return computeExitCode(run.result, request.severityThreshold);
 }
 
-async function main(): Promise<void> {
-  program
-    .name('review-agent')
-    .description('Codex-grade review agent CLI')
-    .version('0.1.0');
+async function statusCommand(
+  reviewId: string,
+  options: ServiceCliOptions
+): Promise<number> {
+  const response = await getReviewStatus(
+    resolveReviewServiceConfig(options),
+    reviewId
+  );
+  await writeOutput(options.output ?? '-', JSON.stringify(response, null, 2));
+  if (response.status === 'failed' || response.status === 'cancelled') {
+    return 4;
+  }
+  return 0;
+}
 
-  program
-    .command('run')
-    .description('Run a review')
+async function watchCommand(
+  reviewId: string,
+  options: WatchCliOptions
+): Promise<number> {
+  const limit = parsePositiveInt(options.limit, 'limit');
+  return watchReviewEvents(resolveReviewServiceConfig(options), reviewId, {
+    ...(options.afterEventId ? { afterEventId: options.afterEventId } : {}),
+    ...(limit === undefined ? {} : { limit }),
+    onEvent: (event) => {
+      process.stdout.write(`${JSON.stringify(event)}\n`);
+    },
+  });
+}
+
+async function artifactCommand(
+  reviewId: string,
+  format: string,
+  options: ArtifactCliOptions
+): Promise<number> {
+  const artifact = await fetchReviewArtifact(
+    resolveReviewServiceConfig(options),
+    reviewId,
+    format
+  );
+  await writeRawOutput(options.output ?? '-', artifact);
+  return 0;
+}
+
+async function cancelCommand(
+  reviewId: string,
+  options: ServiceCliOptions
+): Promise<number> {
+  const response = await cancelReview(
+    resolveReviewServiceConfig(options),
+    reviewId
+  );
+  await writeOutput(options.output ?? '-', JSON.stringify(response, null, 2));
+  return 0;
+}
+
+async function publishCommand(
+  reviewId: string,
+  options: ServiceCliOptions
+): Promise<number> {
+  const response = await publishReview(
+    resolveReviewServiceConfig(options),
+    reviewId
+  );
+  await writeOutput(options.output ?? '-', JSON.stringify(response, null, 2));
+  if (response.status === 'partial' || response.status === 'failed') {
+    return 4;
+  }
+  return 0;
+}
+
+function addReviewRequestOptions(command: typeof program): typeof program {
+  return command
     .option('--uncommitted', 'review staged/unstaged/untracked files')
     .option('--base <branch>', 'review against base branch')
     .option('--commit <sha>', 'review a commit')
@@ -261,23 +478,120 @@ async function main(): Promise<void> {
     .option('--output <path>', 'output file path or - for stdout', '-')
     .option('--severity-threshold <threshold>', 'p0|p1|p2|p3')
     .option('--reasoning-effort <effort>', 'minimal|low|medium|high|xhigh')
-    .option('--detached', 'request detached execution')
     .option('--include-path <glob...>', 'only include matching paths')
     .option('--exclude-path <glob...>', 'exclude matching paths')
     .option('--max-files <n>', 'max files in diff context')
     .option('--max-diff-bytes <n>', 'max diff bytes in context')
-    .option('--cwd <path>', 'working directory')
+    .option('--cwd <path>', 'working directory');
+}
+
+function addServiceOptions(command: typeof program): typeof program {
+  return command
+    .option('--service-url <url>', 'review service base URL')
+    .option('--service-token <token>', 'review service bearer token');
+}
+
+function addRepositoryOptions(command: typeof program): typeof program {
+  return command
+    .option('--repo <owner/name>', 'GitHub repository for hosted auth')
+    .option('--repository-id <id>', 'GitHub repository numeric id')
+    .option('--installation-id <id>', 'GitHub App installation numeric id')
+    .option('--pull-request <number>', 'GitHub pull request number')
+    .option('--ref <ref>', 'GitHub ref for repository-scoped runs')
+    .option(
+      '--commit-sha <sha>',
+      'GitHub commit sha for repository-scoped runs'
+    );
+}
+
+async function runAction(
+  action: () => Promise<number> | number,
+  options?: ServiceCliOptions
+): Promise<void> {
+  try {
+    process.exitCode = await action();
+  } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const token = options?.serviceToken;
+    const message =
+      token && token.length > 0
+        ? rawMessage.replaceAll(token, '[redacted]')
+        : rawMessage;
+    console.error(message);
+    process.exitCode = mapErrorToExitCode(error);
+  }
+}
+
+async function main(): Promise<void> {
+  program
+    .name('review-agent')
+    .description('Codex-grade review agent CLI')
+    .version('0.1.0');
+
+  addRepositoryOptions(
+    addServiceOptions(addReviewRequestOptions(program.command('run')))
+  )
+    .description('Run a review')
+    .option('--detached', 'submit detached execution to the review service')
     .option('--quiet', 'suppress progress events')
     .option('--convex-mirror', 'enable optional convex metadata mirror writes')
     .action(async (options: RunCliOptions) => {
-      try {
-        const code = await runCommand(options);
-        process.exitCode = code;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(message);
-        process.exitCode = mapErrorToExitCode(error);
+      await runAction(() => runCommand(options), options);
+    });
+
+  addRepositoryOptions(
+    addServiceOptions(addReviewRequestOptions(program.command('submit')))
+  )
+    .description('Submit a detached review to the hosted service')
+    .action(async (options: RunCliOptions) => {
+      await runAction(() => submitCommand(options), options);
+    });
+
+  addServiceOptions(program.command('status'))
+    .description('Fetch hosted review status')
+    .argument('<reviewId>', 'review id')
+    .option('--output <path>', 'output file path or - for stdout', '-')
+    .action(async (reviewId: string, options: ServiceCliOptions) => {
+      await runAction(() => statusCommand(reviewId, options), options);
+    });
+
+  addServiceOptions(program.command('watch'))
+    .description('Watch hosted review lifecycle events')
+    .argument('<reviewId>', 'review id')
+    .option('--after-event-id <eventId>', 'resume after event id')
+    .option('--limit <n>', 'max replay events before live streaming')
+    .action(async (reviewId: string, options: WatchCliOptions) => {
+      await runAction(() => watchCommand(reviewId, options), options);
+    });
+
+  addServiceOptions(program.command('artifact'))
+    .description('Fetch a hosted review artifact')
+    .argument('<reviewId>', 'review id')
+    .argument('<format>', 'sarif|json|markdown')
+    .option('--output <path>', 'output file path or - for stdout', '-')
+    .action(
+      async (reviewId: string, format: string, options: ArtifactCliOptions) => {
+        await runAction(
+          () => artifactCommand(reviewId, format, options),
+          options
+        );
       }
+    );
+
+  addServiceOptions(program.command('cancel'))
+    .description('Cancel a hosted detached review')
+    .argument('<reviewId>', 'review id')
+    .option('--output <path>', 'output file path or - for stdout', '-')
+    .action(async (reviewId: string, options: ServiceCliOptions) => {
+      await runAction(() => cancelCommand(reviewId, options), options);
+    });
+
+  addServiceOptions(program.command('publish'))
+    .description('Publish a completed hosted review to GitHub')
+    .argument('<reviewId>', 'review id')
+    .option('--output <path>', 'output file path or - for stdout', '-')
+    .action(async (reviewId: string, options: ServiceCliOptions) => {
+      await runAction(() => publishCommand(reviewId, options), options);
     });
 
   program
@@ -294,7 +608,7 @@ async function main(): Promise<void> {
     .option('--provider <provider>', 'codex|gateway|openrouter|all', 'all')
     .option('--json', 'emit machine-readable diagnostics')
     .action(async (options: { provider: string; json?: boolean }) => {
-      try {
+      await runAction(async () => {
         const provider = parseDoctorProviderFilter(options.provider);
         const checks = filterDoctorChecks(
           await runProviderDoctorChecks(createReviewProviders()),
@@ -314,8 +628,7 @@ async function main(): Promise<void> {
 
         const hasFailures = checks.some((check) => !check.ok);
         if (!hasFailures) {
-          process.exitCode = 0;
-          return;
+          return 0;
         }
         const hasAuthOrProviderFailure = checks.some(
           (check) =>
@@ -324,12 +637,8 @@ async function main(): Promise<void> {
               check.name.includes('binary_missing') ||
               check.name.includes('provider_unavailable'))
         );
-        process.exitCode = hasAuthOrProviderFailure ? 3 : 2;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(message);
-        process.exitCode = mapErrorToExitCode(error);
-      }
+        return hasAuthOrProviderFailure ? 3 : 2;
+      });
     });
 
   program
