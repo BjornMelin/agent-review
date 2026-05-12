@@ -39,7 +39,6 @@ import {
   redactErrorMessage,
   redactLifecycleEvent,
   redactReviewResult,
-  redactSensitiveText,
   resolveReviewSecurityLimits,
   withReviewRequestSecurityDefaults,
 } from '@review-agent/review-types';
@@ -62,6 +61,7 @@ import {
   GitHubPublicationError,
   type ReviewPublicationService,
 } from './github-publication.js';
+import { safeRunDiagnosticMessage } from './run-diagnostics.js';
 import {
   artifactMetadataForRecord,
   buildReviewRunMetrics,
@@ -241,12 +241,6 @@ const DEFAULT_CONFIG: ReviewServiceConfig = {
 const REMOTE_SANDBOX_UNSUPPORTED_TARGET_ERROR =
   'executionMode "remoteSandbox" currently supports only custom targets until sandbox source binding is implemented';
 const RUNTIME_LEASE_OWNER = 'review-service';
-const MAX_PUBLIC_RUN_ERROR_LENGTH = 240;
-const PRIVATE_RUN_ERROR_MARKER_PATTERN =
-  /\b(?:args|argv|artifact|authorization|bearer|body|command|cwd|diff|env|environment|file|path|prompt|sandbox output|scope[-_ ]?key|secret|stderr|stdout|stack|token|trace)\b\s*[:=]?/i;
-const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
-const STACK_FRAME_RUN_ERROR_PATTERN =
-  /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
 
 type LifecycleEventPayload = {
   [TType in LifecycleEvent['type']]: Omit<
@@ -453,34 +447,6 @@ function safeRunErrorForStatus(record: ReviewRecord): string | undefined {
       : 'detached run failed'
     : 'review run failed';
   return safeRunDiagnosticMessage(record.error, fallback);
-}
-
-function safeRunDiagnosticMessage(error: unknown, fallback: string): string {
-  const raw =
-    error instanceof Error
-      ? error.message
-      : typeof error === 'string'
-        ? error
-        : fallback;
-  const normalized = raw.replace(/\s+/g, ' ').trim();
-  if (!normalized) {
-    return fallback;
-  }
-  const redacted = redactSensitiveText(normalized);
-  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
-    return fallback;
-  }
-  const candidate = redacted.text.trim();
-  if (
-    !candidate ||
-    candidate.length > MAX_PUBLIC_RUN_ERROR_LENGTH ||
-    PRIVATE_RUN_ERROR_MARKER_PATTERN.test(candidate) ||
-    PATHISH_RUN_ERROR_PATTERN.test(candidate) ||
-    STACK_FRAME_RUN_ERROR_PATTERN.test(candidate)
-  ) {
-    return fallback;
-  }
-  return candidate;
 }
 
 function runLogRecord(

@@ -35,6 +35,7 @@ import {
 } from 'drizzle-orm/node-postgres';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import pg, { type PoolConfig } from 'pg';
+import { safeRunDiagnosticMessage } from '../run-diagnostics.js';
 import * as schema from './schema.js';
 import {
   authAuditEvents,
@@ -96,12 +97,6 @@ type RuntimeCapacityRecord = Pick<
   ReviewRecord,
   'status' | 'lease' | 'detachedRunId' | 'updatedAt' | 'request'
 >;
-const MAX_PUBLIC_RUN_ERROR_LENGTH = 240;
-const PRIVATE_RUN_ERROR_MARKER_PATTERN =
-  /\b(?:args|argv|artifact|authorization|bearer|body|command|cwd|diff|env|environment|file|path|prompt|sandbox output|scope[-_ ]?key|secret|stderr|stdout|stack|token|trace)\b\s*[:=]?/i;
-const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
-const STACK_FRAME_RUN_ERROR_PATTERN =
-  /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
 
 type SerializedReviewRunResult = Omit<ReviewRunResult, 'diff'> & {
   diff: Omit<ReviewRunResult['diff'], 'changedLineIndex'> & {
@@ -1072,28 +1067,6 @@ function safeRunErrorForStatus(status: ReviewRunStatus, error: string): string {
   return safeRunDiagnosticMessage(error, fallback);
 }
 
-function safeRunDiagnosticMessage(error: string, fallback: string): string {
-  const normalized = error.replace(/\s+/g, ' ').trim();
-  if (!normalized) {
-    return fallback;
-  }
-  const redacted = redactSensitiveText(normalized);
-  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
-    return fallback;
-  }
-  const candidate = redacted.text.trim();
-  if (
-    !candidate ||
-    candidate.length > MAX_PUBLIC_RUN_ERROR_LENGTH ||
-    PRIVATE_RUN_ERROR_MARKER_PATTERN.test(candidate) ||
-    PATHISH_RUN_ERROR_PATTERN.test(candidate) ||
-    STACK_FRAME_RUN_ERROR_PATTERN.test(candidate)
-  ) {
-    return fallback;
-  }
-  return candidate;
-}
-
 function safeObservableModel(
   model: string | null | undefined
 ): string | undefined {
@@ -1303,7 +1276,11 @@ function runInsertFor(record: ReviewRecord): typeof reviewRuns.$inferInsert {
     authorization: authorization ?? null,
     requestSummary: buildRequestSummary(record.request),
     result: record.result ? serializeReviewRunResult(record.result) : null,
-    metrics: structuredClone(buildReviewRunMetrics(record)),
+    metrics: structuredClone(
+      record.metrics
+        ? safeReviewRunMetrics(record.metrics)
+        : buildReviewRunMetrics(record)
+    ),
     error: record.error ?? null,
     detachedRunId: record.detachedRunId ?? null,
     workflowRunId: record.workflowRunId ?? record.detachedRunId ?? null,
