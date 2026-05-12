@@ -73,8 +73,8 @@ Service configuration:
 - `--service-token <token>`: bearer token. Defaults to
   `REVIEW_AGENT_SERVICE_TOKEN`, then `REVIEW_SERVICE_TOKEN`.
 
-One-shot hosted service requests (`submit`, `status`, `artifact`, `cancel`,
-`publish`, and `run --detached`) enforce a 30-second timeout across response
+One-shot hosted service requests (`submit`, `list`, `status`, `artifact`,
+`cancel`, `publish`, and `run --detached`) enforce a 30-second timeout across response
 headers and response body reads. Timeouts exit `4`.
 
 Repository selection:
@@ -104,6 +104,27 @@ Output:
 Hosted `cwd` remains part of the shared `ReviewRequest` contract. It is request
 context only: the service must validate it against configured hosted repository
 roots and the authenticated repository before execution.
+
+## `review-agent list`
+
+Lists hosted review runs from `GET /v1/review`, parses
+`ReviewRunListResponseSchema`, and emits formatted JSON. Run summaries include
+redaction-safe `metrics` when the service has captured them.
+
+Options:
+
+- `--service-url <url>`
+- `--service-token <token>`
+- `--limit <n>`: max runs to return
+- `--status <status>`: `queued|running|completed|failed|cancelled`
+- `--cursor <cursor>`: opaque `nextCursor` from a previous list page
+- `--repo <owner/name>`: GitHub repository filter. Defaults to
+  `GITHUB_REPOSITORY` when present.
+- `--output <path>`: output file path or `-` for stdout (default `-`)
+
+The command exits `0` when the list request succeeds, regardless of the statuses
+inside the returned page. HTTP/auth/schema failures use the operational
+exit-code mapping below.
 
 ## `review-agent status <reviewId>`
 

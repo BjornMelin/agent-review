@@ -105,6 +105,7 @@ pnpm --filter @review-agent/review-cli dev submit \
   --repo "$GITHUB_REPOSITORY" \
   --pull-request "$PR_NUMBER"
 
+pnpm --filter @review-agent/review-cli dev list --status failed --repo "$GITHUB_REPOSITORY"
 pnpm --filter @review-agent/review-cli dev watch <reviewId>
 pnpm --filter @review-agent/review-cli dev status <reviewId>
 pnpm --filter @review-agent/review-cli dev artifact <reviewId> markdown --output review.md
@@ -158,12 +159,12 @@ loading and token-safe route handlers. Deployment notes are in
 | `GITHUB_API_BASE_URL` | `apps/review-service` | Optional GitHub API base URL override for Enterprise Server testing |
 | `GITHUB_APP_ID` | `apps/review-service` | Enables GitHub publication by identifying the GitHub App used to mint installation-scoped write tokens |
 | `GITHUB_APP_PRIVATE_KEY` | `apps/review-service` | GitHub App private key used for publication tokens; escaped `\n` sequences are normalized at startup |
-| `REVIEW_AGENT_SERVICE_URL` / `REVIEW_SERVICE_URL` | `apps/review-cli` | Hosted review service URL for `submit`, `status`, `watch`, `artifact`, `cancel`, `publish`, and `run --detached` (default `http://localhost:3042`) |
+| `REVIEW_AGENT_SERVICE_URL` / `REVIEW_SERVICE_URL` | `apps/review-cli` | Hosted review service URL for `submit`, `list`, `status`, `watch`, `artifact`, `cancel`, `publish`, and `run --detached` (default `http://localhost:3042`) |
 | `REVIEW_AGENT_SERVICE_TOKEN` / `REVIEW_SERVICE_TOKEN` | `apps/review-cli` | Hosted review service bearer token for service commands; prefer env over `--service-token` in CI |
 | `REVIEW_WEB_SERVICE_URL` / `REVIEW_AGENT_SERVICE_URL` / `REVIEW_SERVICE_URL` | `apps/review-web` | Review Room service URL; defaults to `http://localhost:3042` for local development |
 | `REVIEW_WEB_SERVICE_TOKEN` / `REVIEW_AGENT_SERVICE_TOKEN` / `REVIEW_SERVICE_TOKEN` | `apps/review-web` | Server-only bearer token used by Review Room route handlers; never expose it through `NEXT_PUBLIC_*` |
 | `REVIEW_WEB_ACCESS_TOKEN` | `apps/review-web` | Required in production/preview to gate browser access before any server-side service token is used; accepted through Basic auth, bearer auth, or `x-review-room-access-token` |
-| `GITHUB_REPOSITORY` / `GITHUB_REPOSITORY_ID` | `apps/review-cli` | Optional GitHub repository defaults attached to hosted start requests (`submit` and `run --detached`) |
+| `GITHUB_REPOSITORY` / `GITHUB_REPOSITORY_ID` | `apps/review-cli` | Optional GitHub repository defaults attached to hosted start requests (`submit` and `run --detached`); `GITHUB_REPOSITORY` also defaults `review-agent list --repo` |
 | `REVIEW_AGENT_GITHUB_INSTALLATION_ID` | `apps/review-cli` | Optional GitHub App installation ID attached to hosted start requests (`submit` and `run --detached`) |
 | `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |

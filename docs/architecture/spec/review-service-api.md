@@ -43,6 +43,7 @@ Drizzle schema and migration ownership lives in `apps/review-service`:
 - `drizzle/0002_github_authz.sql`
 - `drizzle/0003_github_publications.sql`
 - `drizzle/0004_finding_triage.sql`
+- `drizzle/0005_run_observability.sql`
 - `drizzle.config.ts`
 
 Run migrations from the service package with:
@@ -229,6 +230,13 @@ Lists review runs as compact operational summaries for CLI and Review Room
 consumers. The route returns newest-updated runs first and does not hydrate
 lifecycle events, artifact bodies, or full review results.
 
+Before querying summaries, the route reconciles active detached records in the
+authorized repository scope against Workflow state. That read-time reconciliation
+can update run status, emit terminal lifecycle events, persist refreshed
+`ReviewRunMetrics`, and write structured `review.run.*` logs. If reconciliation
+fails for any active detached run in scope, the route fails closed with `502`
+instead of returning stale `queued` or `running` summaries.
+
 ### Query Parameters
 
 - `limit`: positive integer up to `100`, default `25`.
@@ -263,8 +271,8 @@ The response body follows `ReviewRunListResponseSchema`:
       "status": "completed",
       "request": {
         "provider": "openaiCompatible",
-        "executionMode": "localTrusted",
-        "targetType": "commit",
+        "executionMode": "remoteSandbox",
+        "targetType": "custom",
         "outputFormats": ["json", "markdown"],
         "model": "gateway:openai/gpt-5"
       },
@@ -305,6 +313,40 @@ The response body follows `ReviewRunListResponseSchema`:
         ],
         "usage": { "status": "reported", "totalTokens": 1600 }
       },
+      "metrics": {
+        "status": "completed",
+        "startedAt": 1778560000000,
+        "completedAt": 1778560060000,
+        "durationMs": 60000,
+        "queueMs": 250,
+        "provider": "openaiCompatible",
+        "executionMode": "remoteSandbox",
+        "targetType": "custom",
+        "requestedModel": "gateway:openai/gpt-5",
+        "resolvedModel": "gateway:openai/gpt-5",
+        "correlation": {
+          "reviewId": "review_123",
+          "workflowRunId": "workflow_123",
+          "sandboxId": "sandbox_123"
+        },
+        "providerSummary": {
+          "totalLatencyMs": 1200,
+          "attemptCount": 1,
+          "fallbackUsed": false,
+          "failureClass": "none",
+          "usage": { "status": "reported", "totalTokens": 1600 }
+        },
+        "sandbox": {
+          "commandCount": 2,
+          "commandDurationMs": 1100,
+          "wallTimeMs": 1800,
+          "outputBytes": 4096,
+          "artifactBytes": 2048,
+          "redactions": { "apiKeyLike": 0, "bearer": 0 }
+        },
+        "artifacts": { "count": 2, "totalBytes": 4096 },
+        "runtime": { "leaseOwner": "review-service", "leaseTtlMs": 600000 }
+      },
       "createdAt": 1778560000000,
       "updatedAt": 1778560060000,
       "repository": {
@@ -329,7 +371,8 @@ Responses:
 - `400`: query parse/validation error.
 - `401`: missing or invalid bearer token.
 - `403`: authenticated token lacks a concrete authorized repository scope.
-- `502`: authorization dependencies or review storage are unavailable.
+- `502`: authorization dependencies, review storage, or detached Workflow status
+  reconciliation are unavailable.
 
 ## `GET /v1/review/:reviewId`
 
@@ -345,6 +388,15 @@ Returns review status and result summary when available.
   - Completed OpenAI-compatible runs may include `summary.providerTelemetry`
     with policy version, fallback attempts, final provider, usage/cost when
     reported, input/output/timeout budgets, and retention flags.
+  - Runs may include `summary.metrics` with redaction-safe duration, queue,
+    provider, sandbox aggregate, artifact byte, correlation ID, and lease timing
+    fields. The metrics contract intentionally excludes cwd, prompts, raw diffs,
+    provider output, artifact bodies, sandbox command args, stdout, stderr, and
+    runtime scope keys.
+- `error` is a bounded, redaction-safe terminal run diagnostic. Harmless
+  summaries may be preserved, but raw provider output, command output, prompts,
+  cwd values, host paths, secrets, stack traces, sandbox output, and diffs must
+  not be persisted or returned as run errors.
 - `artifacts` (optional artifact metadata list)
 - `publications` (optional, durable GitHub publication records)
 - `triage` (optional, durable finding triage records)

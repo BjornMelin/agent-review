@@ -19,6 +19,7 @@ import {
   isTerminalReviewRunStatus,
   type LifecycleEvent,
   OutputFormatSchema,
+  type ProviderFailureClass,
   type ReviewCancelResponse,
   type ReviewErrorResponse,
   ReviewEventCursorSchema,
@@ -60,8 +61,10 @@ import {
   GitHubPublicationError,
   type ReviewPublicationService,
 } from './github-publication.js';
+import { safeRunDiagnosticMessage } from './run-diagnostics.js';
 import {
   artifactMetadataForRecord,
+  buildReviewRunMetrics,
   buildReviewRunSummary,
   createInMemoryReviewFindingTriageStore,
   createInMemoryReviewPublicationStore,
@@ -126,7 +129,39 @@ export type ReviewServiceRunner = (
  * Defines the logger surface used by the service app factory.
  */
 export type ReviewServiceLogger = {
+  info?(message?: unknown, ...optionalParams: unknown[]): void;
+  warn?(message?: unknown, ...optionalParams: unknown[]): void;
   error(message?: unknown, ...optionalParams: unknown[]): void;
+};
+
+/**
+ * Defines the allowlisted structured log envelope for run observability.
+ */
+export type ReviewServiceRunLogRecord = {
+  event:
+    | 'review.run.reserved'
+    | 'review.run.backpressure'
+    | 'review.run.running'
+    | 'review.run.terminal'
+    | 'review.run.cancel.requested';
+  reviewId: string;
+  status: ReviewRecord['status'];
+  provider: ReviewRequest['provider'];
+  executionMode: ReviewRequest['executionMode'];
+  targetType: ReviewRequest['target']['type'];
+  workflowRunId?: string;
+  sandboxId?: string;
+  durationMs?: number;
+  queueMs?: number;
+  providerLatencyMs?: number;
+  providerAttemptCount?: number;
+  providerUsageStatus?: 'reported' | 'unknown';
+  sandboxCommandCount?: number;
+  sandboxOutputBytes?: number;
+  artifactBytes: number;
+  fallbackUsed?: boolean;
+  failureClass?: ProviderFailureClass;
+  cancelRequested: boolean;
 };
 
 /**
@@ -358,7 +393,125 @@ function logError(
   message: string,
   error: unknown
 ): void {
-  logger.error(message, redactErrorMessage(error));
+  logger.error(message, safeRunDiagnosticMessage(error, 'operation failed'));
+}
+
+function refreshReviewRunMetrics(record: ReviewRecord): void {
+  record.metrics = buildReviewRunMetrics(record);
+}
+
+function safeFailureClass(
+  record: ReviewRecord
+): ProviderFailureClass | undefined {
+  const providerTelemetry = record.result?.result.metadata.providerTelemetry;
+  if (providerTelemetry) {
+    return providerTelemetry.failureClass ?? 'unknown';
+  }
+  if (record.status === 'cancelled') {
+    return 'cancelled';
+  }
+  return undefined;
+}
+
+function safeRunFailureMessage(
+  error: unknown,
+  fallback:
+    | 'review run failed'
+    | 'detached run failed'
+    | 'detached start failed'
+): string {
+  if (error instanceof ReviewRunCancelledError) {
+    return 'review run cancelled';
+  }
+  return safeRunDiagnosticMessage(error, fallback);
+}
+
+function safeRunErrorForStatus(record: ReviewRecord): string | undefined {
+  if (!record.error) {
+    return undefined;
+  }
+  if (
+    record.error === 'runtime lease expired' ||
+    record.error === 'detached run not found'
+  ) {
+    return record.error;
+  }
+  if (record.status === 'cancelled') {
+    return 'review run cancelled';
+  }
+  const fallback = /detached/i.test(record.error)
+    ? /start/i.test(record.error)
+      ? 'detached start failed'
+      : 'detached run failed'
+    : 'review run failed';
+  return safeRunDiagnosticMessage(record.error, fallback);
+}
+
+function runLogRecord(
+  event: ReviewServiceRunLogRecord['event'],
+  record: ReviewRecord
+): ReviewServiceRunLogRecord {
+  const metrics = buildReviewRunMetrics(record);
+  const failureClass = safeFailureClass(record);
+  return {
+    event,
+    reviewId: record.reviewId,
+    status: record.status,
+    provider: metrics.provider,
+    executionMode: metrics.executionMode,
+    targetType: metrics.targetType,
+    ...(metrics.correlation.workflowRunId
+      ? { workflowRunId: metrics.correlation.workflowRunId }
+      : {}),
+    ...(metrics.correlation.sandboxId
+      ? { sandboxId: metrics.correlation.sandboxId }
+      : {}),
+    ...(metrics.durationMs === undefined
+      ? {}
+      : { durationMs: metrics.durationMs }),
+    ...(metrics.queueMs === undefined ? {} : { queueMs: metrics.queueMs }),
+    ...(metrics.providerSummary
+      ? {
+          providerLatencyMs: metrics.providerSummary.totalLatencyMs,
+          providerAttemptCount: metrics.providerSummary.attemptCount,
+          providerUsageStatus: metrics.providerSummary.usage.status,
+          fallbackUsed: metrics.providerSummary.fallbackUsed,
+        }
+      : {}),
+    ...(metrics.sandbox
+      ? {
+          sandboxCommandCount: metrics.sandbox.commandCount,
+          sandboxOutputBytes: metrics.sandbox.outputBytes,
+        }
+      : {}),
+    artifactBytes: metrics.artifacts.totalBytes,
+    ...(failureClass ? { failureClass } : {}),
+    cancelRequested: record.cancelRequestedAt !== undefined,
+  };
+}
+
+function logRunInfo(
+  logger: ReviewServiceLogger,
+  event: ReviewServiceRunLogRecord['event'],
+  record: ReviewRecord
+): void {
+  logger.info?.(
+    '[review-service] run observability',
+    runLogRecord(event, record)
+  );
+}
+
+function logRunWarning(
+  logger: ReviewServiceLogger,
+  event: ReviewServiceRunLogRecord['event'],
+  record: ReviewRecord
+): void {
+  const log = logger.warn ?? logger.info;
+  log?.call(
+    logger,
+    '[review-service] run observability',
+    runLogRecord(event, record)
+  );
 }
 
 function createReviewRecord(
@@ -408,7 +561,9 @@ function buildStatusResponse(
   return {
     reviewId: record.reviewId,
     status: record.status,
-    ...(record.error ? { error: redactErrorMessage(record.error) } : {}),
+    ...(safeRunErrorForStatus(record)
+      ? { error: safeRunErrorForStatus(record) }
+      : {}),
     ...(record.result
       ? { result: redactReviewResult(record.result.result).result }
       : {}),
@@ -1077,6 +1232,7 @@ export function createReviewServiceApp(
   }
 
   function setTerminalRetention(record: ReviewRecord): void {
+    record.completedAt ??= record.updatedAt;
     releaseRuntimeLease(record);
     record.retentionExpiresAt = record.updatedAt + config.maxRecordAgeMs;
   }
@@ -1120,6 +1276,43 @@ export function createReviewServiceApp(
     }
   }
 
+  async function persistReviewRecord(
+    record: ReviewRecord,
+    options: { reason?: string } = {}
+  ): Promise<void> {
+    refreshReviewRunMetrics(record);
+    await store.set(record, options);
+  }
+
+  async function syncDetachedRecordsForList(
+    repositories: ReviewStoreListRepositoryFilter[] | undefined
+  ): Promise<void> {
+    const activeDetachedRecords = await store.listActiveDetached({
+      ...(repositories ? { repositories } : {}),
+    });
+    const failures: string[] = [];
+    await Promise.all(
+      activeDetachedRecords.map(async (record) => {
+        try {
+          await syncDetachedRecord(record);
+        } catch (error) {
+          failures.push(record.reviewId);
+          logError(
+            logger,
+            `[review-service] failed to sync detached run ${record.reviewId} before list`,
+            error
+          );
+        }
+      })
+    );
+    if (failures.length > 0) {
+      logger.error('[review-service] list sync freshness unavailable', {
+        failedReviewIds: failures,
+      });
+      throw new Error('detached sync unavailable');
+    }
+  }
+
   function runtimeLeaseExpired(record: ReviewRecord, now: number): boolean {
     return (
       !isTerminalReviewRunStatus(record.status) &&
@@ -1134,7 +1327,8 @@ export function createReviewServiceApp(
     record.updatedAt = nowMs();
     setTerminalRetention(record);
     await emit(record, { type: 'failed', message: record.error });
-    await store.set(record, { reason: 'runtime lease expired' });
+    await persistReviewRecord(record, { reason: 'runtime lease expired' });
+    logRunWarning(logger, 'review.run.terminal', record);
   }
 
   async function failExpiredRuntimeLease(
@@ -1153,7 +1347,8 @@ export function createReviewServiceApp(
     record.updatedAt = nowMs();
     setTerminalRetention(record);
     await emit(record, { type: 'failed', message: record.error });
-    await store.set(record, { reason: 'detached run missing' });
+    await persistReviewRecord(record, { reason: 'detached run missing' });
+    logRunWarning(logger, 'review.run.terminal', record);
   }
 
   function detachedTerminalMeta(
@@ -1302,7 +1497,7 @@ export function createReviewServiceApp(
         return;
       }
       heartbeatRuntimeLease(record);
-      await store.set(record, { reason: 'inline heartbeat' });
+      await persistReviewRecord(record, { reason: 'inline heartbeat' });
     };
     const startInlineHeartbeat = () => {
       const heartbeatIntervalMs = Math.max(
@@ -1325,7 +1520,8 @@ export function createReviewServiceApp(
         type: 'progress',
         message: 'starting inline review run',
       });
-      await store.set(record, { reason: 'inline running' });
+      await persistReviewRecord(record, { reason: 'inline running' });
+      logRunInfo(logger, 'review.run.running', record);
 
       if (request.executionMode === 'remoteSandbox') {
         throw new Error(config.remoteSandboxInlineError);
@@ -1354,15 +1550,15 @@ export function createReviewServiceApp(
       record.status = 'completed';
       record.updatedAt = nowMs();
       setTerminalRetention(record);
-      await store.set(record, { reason: 'inline completed' });
+      await persistReviewRecord(record, { reason: 'inline completed' });
+      logRunInfo(logger, 'review.run.terminal', record);
     } catch (error) {
       stopInlineHeartbeat();
       const cancelled = error instanceof ReviewRunCancelledError;
       record.status = cancelled ? 'cancelled' : 'failed';
-      record.error = redactErrorMessage(
-        error,
-        cancelled ? 'review run cancelled' : 'review run failed'
-      );
+      record.error = cancelled
+        ? 'review run cancelled'
+        : safeRunFailureMessage(error, 'review run failed');
       record.updatedAt = nowMs();
       setTerminalRetention(record);
       await emit(
@@ -1371,9 +1567,10 @@ export function createReviewServiceApp(
           ? { type: 'cancelled' }
           : { type: 'failed', message: record.error }
       );
-      await store.set(record, {
+      await persistReviewRecord(record, {
         reason: cancelled ? 'inline cancelled' : 'inline failed',
       });
+      logRunWarning(logger, 'review.run.terminal', record);
     } finally {
       stopInlineHeartbeat();
     }
@@ -1439,7 +1636,7 @@ export function createReviewServiceApp(
         record.cancelRequestedAt = nowMs();
         record.updatedAt = nowMs();
         heartbeatRuntimeLease(record);
-        await store.set(record, {
+        await persistReviewRecord(record, {
           reason: 'runtime lease expired cancellation requested',
         });
       } else {
@@ -1481,7 +1678,7 @@ export function createReviewServiceApp(
       changed = true;
     }
     if (detached.status === 'failed') {
-      record.error = redactErrorMessage(
+      record.error = safeRunFailureMessage(
         detached.error ?? 'detached run failed',
         'detached run failed'
       );
@@ -1497,6 +1694,7 @@ export function createReviewServiceApp(
         record.status === 'failed' ||
         record.status === 'cancelled'
       ) {
+        record.completedAt = detached.completedAt ?? record.updatedAt;
         setTerminalRetention(record);
       }
       await emitDetachedTerminalEvents(record);
@@ -1505,7 +1703,12 @@ export function createReviewServiceApp(
     }
 
     if (changed) {
-      await store.set(record, { reason: 'detached sync' });
+      await persistReviewRecord(record, { reason: 'detached sync' });
+      if (isTerminalReviewRunStatus(record.status)) {
+        logRunInfo(logger, 'review.run.terminal', record);
+      } else if (record.status === 'running') {
+        logRunInfo(logger, 'review.run.running', record);
+      }
     }
     if (!changed) {
       await failExpiredRuntimeLease(record);
@@ -1599,6 +1802,7 @@ export function createReviewServiceApp(
         );
         attachRuntimeLease(record, runtimeScopeKeyForRequest(request));
         assertRuntimeLeaseAttached(record);
+        refreshReviewRunMetrics(record);
         await cleanupReviewRecords();
         const reservation = await store.reserve(record, {
           nowMs: nowMs(),
@@ -1610,8 +1814,10 @@ export function createReviewServiceApp(
           reason: 'runtime reserved',
         });
         if (!reservation.reserved) {
+          logRunWarning(logger, 'review.run.backpressure', record);
           throw new RuntimeBackpressureError(reservation.message);
         }
+        logRunInfo(logger, 'review.run.reserved', record);
 
         if (delivery === 'detached' || request.detached) {
           let detached: DetachedRunRecord;
@@ -1619,7 +1825,10 @@ export function createReviewServiceApp(
             detached = await dependencies.worker.startDetached(request);
           } catch (error) {
             record.status = 'failed';
-            record.error = redactErrorMessage(error, 'detached start failed');
+            record.error = safeRunFailureMessage(
+              error,
+              'detached start failed'
+            );
             record.updatedAt = nowMs();
             setTerminalRetention(record);
             await emit(record, {
@@ -1627,8 +1836,11 @@ export function createReviewServiceApp(
               message: record.error,
               meta: detachedTerminalMeta(record, 'start:failed'),
             });
-            await store.set(record, { reason: 'detached start failed' });
-            throw error;
+            await persistReviewRecord(record, {
+              reason: 'detached start failed',
+            });
+            logRunWarning(logger, 'review.run.terminal', record);
+            return jsonError(context, 'failed to start review', 502);
           }
           record.detachedRunId = detached.runId;
           record.workflowRunId = detached.workflowRunId ?? detached.runId;
@@ -1642,11 +1854,15 @@ export function createReviewServiceApp(
             record.result = redactReviewRunResult(detached.result);
           }
           if (detached.error) {
-            record.error = redactErrorMessage(detached.error);
+            record.error = safeRunFailureMessage(
+              detached.error,
+              'detached run failed'
+            );
           }
           record.updatedAt = nowMs();
           heartbeatRuntimeLease(record);
           if (isTerminalReviewRunStatus(record.status)) {
+            record.completedAt = detached.completedAt ?? record.updatedAt;
             setTerminalRetention(record);
           }
           await emit(record, {
@@ -1656,7 +1872,12 @@ export function createReviewServiceApp(
           if (isTerminalReviewRunStatus(record.status)) {
             await emitDetachedTerminalEvents(record);
           }
-          await store.set(record, { reason: 'detached started' });
+          await persistReviewRecord(record, { reason: 'detached started' });
+          if (isTerminalReviewRunStatus(record.status)) {
+            logRunInfo(logger, 'review.run.terminal', record);
+          } else if (record.status === 'running') {
+            logRunInfo(logger, 'review.run.running', record);
+          }
           const response: ReviewStartResponse = {
             reviewId,
             status: record.status,
@@ -1703,6 +1924,7 @@ export function createReviewServiceApp(
     }
 
     try {
+      await syncDetachedRecordsForList(repositories);
       const response = await store.list({
         limit: parsed.query.limit,
         ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
@@ -2211,7 +2433,8 @@ export function createReviewServiceApp(
         if (cancelled) {
           record.cancelRequestedAt = nowMs();
           heartbeatRuntimeLease(record);
-          await store.set(record, { reason: 'cancel requested' });
+          await persistReviewRecord(record, { reason: 'cancel requested' });
+          logRunInfo(logger, 'review.run.cancel.requested', record);
           await syncDetachedRecord(record);
           if (record.status === 'cancelled') {
             await cleanupReviewRecords();

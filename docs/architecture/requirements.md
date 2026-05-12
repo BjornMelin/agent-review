@@ -55,10 +55,13 @@ Findings shall be validated against changed lines in collected diff context. Inv
 Service shall expose endpoints for:
 
 - Start review
+- List review runs with repository and status filters
 - Read review status
 - Stream review lifecycle events (SSE)
 - Cancel detached review
 - Retrieve generated artifacts by format
+- Read and update finding triage state
+- Preview and publish completed review output to authorized GitHub targets
 
 ### FR-8 Detached Execution
 
@@ -112,6 +115,9 @@ Remote sandbox execution shall enforce:
 
 - Single monorepo build/test/lint entrypoints
 - No required external persistence for baseline operation
+- Hosted service status/list surfaces expose redaction-safe run metrics for
+  duration, queue time, provider usage, sandbox consumption, artifact bytes, and
+  correlation without requiring operators to inspect raw logs.
 
 ### NFR-5 CI Compatibility
 

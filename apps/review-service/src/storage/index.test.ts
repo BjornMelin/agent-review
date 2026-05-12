@@ -8,12 +8,15 @@ import type {
   ProviderPolicyTelemetry,
   ReviewRequest,
   ReviewResult,
+  ReviewRunMetrics,
 } from '@review-agent/review-types';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { describe, expect, it } from 'vitest';
 import {
   type AuthAuditEventRecord,
+  buildReviewRunMetrics,
+  buildReviewRunSummary,
   createDrizzleReviewAuthStore,
   createDrizzleReviewFindingTriageStore,
   createDrizzleReviewPublicationStore,
@@ -59,6 +62,7 @@ async function readStorageMigrationSql(): Promise<string> {
     await readGitHubAuthzMigrationSql(),
     await readGitHubPublicationMigrationSql(),
     await readFindingTriageMigrationSql(),
+    await readRunObservabilityMigrationSql(),
   ].join('\n');
 }
 
@@ -102,6 +106,15 @@ async function readFindingTriageMigrationSql(): Promise<string> {
   return readFile(
     fileURLToPath(
       new URL('../../drizzle/0004_finding_triage.sql', import.meta.url)
+    ),
+    'utf8'
+  );
+}
+
+async function readRunObservabilityMigrationSql(): Promise<string> {
+  return readFile(
+    fileURLToPath(
+      new URL('../../drizzle/0005_run_observability.sql', import.meta.url)
     ),
     'utf8'
   );
@@ -351,6 +364,222 @@ describe('review storage', () => {
       expect(actual?.events.map((event) => event.meta.eventId)).toEqual([
         'event-1',
       ]);
+    });
+  });
+
+  it('persists redaction-safe run metrics for status and list views', async () => {
+    await withTestStore(async ({ db, store }) => {
+      const request = {
+        ...createRequest(),
+        model: 'gateway:openai/sk-abcdefghijklmnopqrstuvwxyz123456',
+      };
+      const providerTelemetry = createProviderTelemetry();
+      providerTelemetry.requestedModel =
+        'prompt=review cwd=/repo/secret stdout=build log';
+      providerTelemetry.resolvedModel = 'model body: private-marker';
+      providerTelemetry.finalProvider = 'provider cwd=/repo/secret';
+      providerTelemetry.fallbackOrder = ['model body: private-marker'];
+      const firstAttempt = providerTelemetry.attempts[0];
+      if (!firstAttempt) {
+        throw new Error('expected provider telemetry attempt');
+      }
+      providerTelemetry.attempts[0] = {
+        ...firstAttempt,
+        model: 'model body: private-marker',
+        provider: 'provider cwd=/repo/secret',
+        errorCode: 'stderr: private-marker',
+        generationId: 'artifact body: private-marker',
+      };
+      (
+        providerTelemetry.usage as unknown as Record<string, unknown>
+      ).rawProviderOutput = 'OPENAI_API_KEY=secret';
+      const result = createReviewResult(request, { providerTelemetry });
+      result.result.metadata.modelResolved = 'model body: private-marker';
+      const record = createRecord({
+        status: 'completed',
+        request,
+        updatedAt: BASE_TIME_MS + 2_500,
+        workflowRunId: 'workflow-run-1',
+        sandboxId: 'sandbox-1',
+        lease: {
+          owner: 'review-service',
+          scopeKey: 'localTrusted|codexDelegate|/repo/secret|custom',
+          acquiredAt: BASE_TIME_MS + 250,
+          heartbeatAt: BASE_TIME_MS + 2_000,
+          expiresAt: BASE_TIME_MS + 62_000,
+        },
+        result: {
+          ...result,
+          sandboxAudit: {
+            sandboxId: 'sandbox-1',
+            policy: {
+              networkProfile: 'deny_all',
+              allowlistDomains: [],
+              commandAllowlistSize: 1,
+              envAllowlistSize: 1,
+            },
+            consumed: {
+              commandCount: 1,
+              wallTimeMs: 900,
+              outputBytes: 120,
+              artifactBytes: 32,
+            },
+            redactions: {
+              apiKeyLike: 1,
+              bearer: 0,
+              leakedEnv: 1,
+            } as unknown as NonNullable<
+              ReviewRunResult['sandboxAudit']
+            >['redactions'],
+            commands: [
+              {
+                commandId: 'command-1',
+                cmd: 'node',
+                args: ['review-runner.mjs', 'OPENAI_API_KEY=secret'],
+                cwd: '/repo/secret',
+                phase: 'runtime',
+                startedAtMs: BASE_TIME_MS + 400,
+                endedAtMs: BASE_TIME_MS + 900,
+                durationMs: 500,
+                outputBytes: 120,
+                redactions: { apiKeyLike: 1, bearer: 0 },
+                exitCode: 0,
+              },
+            ],
+          },
+        },
+      });
+
+      const metricsWithLeasedRuntime = buildReviewRunMetrics(record);
+      const terminalRecordWithoutLease: ReviewRecord = {
+        ...record,
+        metrics: {
+          ...metricsWithLeasedRuntime,
+          runtime: {
+            ...metricsWithLeasedRuntime.runtime,
+            scopeKey: 'localTrusted|codexDelegate|/repo/secret|custom',
+          } as ReviewRunMetrics['runtime'],
+        },
+      };
+      delete terminalRecordWithoutLease.lease;
+      const terminalMetrics = buildReviewRunMetrics(terminalRecordWithoutLease);
+      expect(terminalMetrics.runtime).toEqual({
+        leaseOwner: 'review-service',
+        leaseAcquiredAt: BASE_TIME_MS + 250,
+        leaseHeartbeatAt: BASE_TIME_MS + 2_000,
+        leaseExpiresAt: BASE_TIME_MS + 62_000,
+        leaseTtlMs: 60_000,
+      });
+      expect(JSON.stringify(terminalMetrics.runtime)).not.toContain('scopeKey');
+
+      expect(buildReviewRunMetrics(record)).toMatchObject({
+        status: 'completed',
+        durationMs: 2500,
+        queueMs: 250,
+        providerSummary: {
+          totalLatencyMs: 42,
+          attemptCount: 1,
+          usage: { status: 'unknown' },
+        },
+        sandbox: {
+          commandCount: 1,
+          commandDurationMs: 500,
+          outputBytes: 120,
+          redactions: { apiKeyLike: 1 },
+        },
+        runtime: {
+          leaseOwner: 'review-service',
+          leaseTtlMs: 60_000,
+        },
+      });
+
+      await store.set(record, { reason: 'completed with metrics' });
+      const restartedStore = createDrizzleReviewStore(db);
+      const actual = await restartedStore.get('review-1');
+      const listed = await restartedStore.list({ limit: 10 });
+      const persistedArtifactBytes = Object.values(
+        actual?.result?.artifacts ?? {}
+      ).reduce(
+        (total, content) => total + (content ? Buffer.byteLength(content) : 0),
+        0
+      );
+
+      expect(actual?.metrics).toMatchObject({
+        correlation: {
+          reviewId: 'review-1',
+          workflowRunId: 'workflow-run-1',
+          sandboxId: 'sandbox-1',
+        },
+        sandbox: { artifactBytes: 32 },
+        artifacts: {
+          count: 2,
+          totalBytes: persistedArtifactBytes,
+        },
+      });
+      expect(listed.runs[0]?.metrics).toEqual(actual?.metrics);
+      expect(actual?.metrics?.providerSummary?.usage).toEqual({
+        status: 'unknown',
+      });
+      expect(actual?.metrics?.sandbox?.redactions).toEqual({
+        apiKeyLike: 1,
+        bearer: 0,
+      });
+      expect(JSON.stringify(listed.runs[0]?.metrics)).not.toContain(
+        '/repo/secret'
+      );
+      expect(JSON.stringify(listed.runs[0]?.metrics)).not.toContain(
+        'OPENAI_API_KEY'
+      );
+      expect(JSON.stringify(listed.runs[0]?.metrics)).not.toContain(
+        'leakedEnv'
+      );
+      expect(buildReviewRunMetrics(record).requestedModel).toBeUndefined();
+      expect(buildReviewRunMetrics(record).resolvedModel).toBeUndefined();
+      expect(buildReviewRunSummary(record).request.model).toBeUndefined();
+      expect(buildReviewRunSummary(record).modelResolved).toBeUndefined();
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.requestedModel
+      ).toBeUndefined();
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.resolvedModel
+      ).toBe('unknown');
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.fallbackOrder
+      ).toEqual([]);
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.finalProvider
+      ).toBeUndefined();
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.attempts[0]?.provider
+      ).toBeUndefined();
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.attempts[0]?.errorCode
+      ).toBeUndefined();
+      expect(
+        buildReviewRunSummary(record).providerTelemetry?.attempts[0]
+          ?.generationId
+      ).toBeUndefined();
+      expect(listed.runs[0]?.request.model).toBeUndefined();
+      expect(listed.runs[0]?.modelResolved).toBeUndefined();
+      expect(listed.runs[0]?.metrics?.resolvedModel).toBeUndefined();
+      expect(listed.runs[0]?.providerTelemetry?.attempts[0]?.model).toBe(
+        'unknown'
+      );
+      expect(listed.runs[0]?.providerTelemetry?.finalProvider).toBeUndefined();
+      expect(
+        listed.runs[0]?.providerTelemetry?.attempts[0]?.provider
+      ).toBeUndefined();
+      expect(
+        listed.runs[0]?.providerTelemetry?.attempts[0]?.errorCode
+      ).toBeUndefined();
+      expect(
+        listed.runs[0]?.providerTelemetry?.attempts[0]?.generationId
+      ).toBeUndefined();
+      expect(JSON.stringify(listed.runs[0])).not.toContain(
+        'sk-abcdefghijklmnopqrstuvwxyz123456'
+      );
+      expect(JSON.stringify(listed.runs[0])).not.toContain('private-marker');
+      expect(JSON.stringify(listed.runs[0])).not.toContain('/repo/secret');
     });
   });
 
@@ -1999,6 +2228,7 @@ describe('review storage', () => {
       await client.exec(await readRuntimeControlMigrationSql());
       await client.exec(await readGitHubAuthzMigrationSql());
       await client.exec(await readGitHubPublicationMigrationSql());
+      await client.exec(await readRunObservabilityMigrationSql());
       const db = drizzle(client, { schema });
       const store = createDrizzleReviewStore(db);
 
@@ -2039,7 +2269,7 @@ describe('review storage', () => {
       ),
     });
 
-    expect(migrations).toHaveLength(5);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]?.sql.join('\n').trim()).toBe(
       (await readInitialMigrationSql()).trim()
     );
@@ -2054,6 +2284,9 @@ describe('review storage', () => {
     );
     expect(migrations[4]?.sql.join('\n').trim()).toBe(
       (await readFindingTriageMigrationSql()).trim()
+    );
+    expect(migrations[5]?.sql.join('\n').trim()).toBe(
+      (await readRunObservabilityMigrationSql()).trim()
     );
   });
 });

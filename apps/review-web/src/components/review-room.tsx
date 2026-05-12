@@ -3,6 +3,7 @@ import type {
   ProviderUsage,
   ReviewArtifactMetadata,
   ReviewRunListResponse,
+  ReviewRunMetrics,
   ReviewRunStatus,
   ReviewStatusResponse,
 } from '@review-agent/review-types';
@@ -66,13 +67,22 @@ function formatProviderUsage(usage: ProviderUsage | undefined): string {
     return 'unknown';
   }
   const tokenParts = [
-    usage.inputTokens === undefined ? undefined : `${usage.inputTokens} in`,
-    usage.outputTokens === undefined ? undefined : `${usage.outputTokens} out`,
-    usage.totalTokens === undefined ? undefined : `${usage.totalTokens} total`,
+    usage.inputTokens === undefined
+      ? undefined
+      : `${usage.inputTokens}\u00a0in`,
+    usage.outputTokens === undefined
+      ? undefined
+      : `${usage.outputTokens}\u00a0out`,
+    usage.totalTokens === undefined
+      ? undefined
+      : `${usage.totalTokens}\u00a0total`,
   ].filter((part): part is string => Boolean(part));
   const costPart =
     usage.costUsd === undefined ? undefined : `$${usage.costUsd.toFixed(6)}`;
-  return [...tokenParts, costPart].filter(Boolean).join(' / ') || 'reported';
+  return (
+    [...tokenParts, costPart].filter(Boolean).join('\u00a0/\u00a0') ||
+    'reported'
+  );
 }
 
 function formatProviderFallback(
@@ -85,6 +95,42 @@ function formatProviderFallback(
     return telemetry.fallbackOrder.length === 0 ? 'not configured' : 'not used';
   }
   return `used ${telemetry.resolvedModel}`;
+}
+
+function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) {
+    return 'pending';
+  }
+  if (ms < 1000) {
+    return `${ms}\u00a0ms`;
+  }
+  const seconds = ms / 1000;
+  if (seconds < 10) {
+    return `${seconds.toFixed(1)}\u00a0s`;
+  }
+  const roundedSeconds = Math.round(seconds);
+  if (roundedSeconds < 60) {
+    return `${roundedSeconds}\u00a0s`;
+  }
+  const minutes = Math.floor(roundedSeconds / 60);
+  const remainingSeconds = roundedSeconds % 60;
+  return `${minutes}\u00a0m\u00a0${remainingSeconds}\u00a0s`;
+}
+
+function formatOptionalDuration(
+  ms: number | undefined,
+  fallback: string
+): string {
+  return ms === undefined ? fallback : formatDuration(ms);
+}
+
+function formatSandboxCommands(metrics: ReviewRunMetrics | undefined): string {
+  if (!metrics?.sandbox) {
+    return 'none';
+  }
+  return `${metrics.sandbox.commandCount}\u00a0/\u00a0${formatDuration(
+    metrics.sandbox.commandDurationMs
+  )}`;
 }
 
 function artifactIcon(
@@ -298,6 +344,7 @@ function DetailBody({
   const providerTelemetry =
     detail.summary?.providerTelemetry ??
     detail.result?.metadata.providerTelemetry;
+  const runMetrics = detail.summary?.metrics;
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
       <main className="min-w-0 overflow-auto">
@@ -392,6 +439,28 @@ function DetailBody({
                   ['Detached Run', detail.summary?.detachedRunId ?? 'none'],
                   ['Workflow Run', detail.summary?.workflowRunId ?? 'none'],
                   ['Sandbox', detail.summary?.sandboxId ?? 'none'],
+                  ['Duration', formatDuration(runMetrics?.durationMs)],
+                  ['Queue Time', formatDuration(runMetrics?.queueMs)],
+                  [
+                    'Artifact Bytes',
+                    runMetrics
+                      ? formatBytes(runMetrics.artifacts.totalBytes)
+                      : 'pending',
+                  ],
+                  ['Sandbox Commands', formatSandboxCommands(runMetrics)],
+                  [
+                    'Sandbox Output',
+                    runMetrics?.sandbox
+                      ? formatBytes(runMetrics.sandbox.outputBytes)
+                      : 'none',
+                  ],
+                  [
+                    'Lease TTL',
+                    formatOptionalDuration(
+                      runMetrics?.runtime?.leaseTtlMs,
+                      'not leased'
+                    ),
+                  ],
                   [
                     'Provider Policy',
                     providerTelemetry?.policyVersion ?? 'none',
@@ -405,13 +474,13 @@ function DetailBody({
                   [
                     'Provider Latency',
                     providerTelemetry
-                      ? `${providerTelemetry.totalLatencyMs}ms`
+                      ? `${providerTelemetry.totalLatencyMs}\u00a0ms`
                       : 'pending',
                   ],
                   [
                     'Provider Timeout',
                     providerTelemetry
-                      ? `${providerTelemetry.timeoutMs}ms`
+                      ? `${providerTelemetry.timeoutMs}\u00a0ms`
                       : 'pending',
                   ],
                   ['Usage', formatProviderUsage(providerTelemetry?.usage)],
@@ -424,7 +493,7 @@ function DetailBody({
                     <dt className="text-xs uppercase text-[var(--muted-foreground)]">
                       {label}
                     </dt>
-                    <dd className="mt-1 break-words font-mono text-xs">
+                    <dd className="mt-1 break-words font-mono text-xs tabular-nums">
                       {value}
                     </dd>
                   </div>

@@ -426,6 +426,19 @@ Required controls:
 - Observability uses structured event names, IDs, status, durations, counts,
   redaction counters, model budget classes, and error categories instead of raw
   private payloads.
+- Service structured logs use the `ReviewServiceRunLogRecord` allowlist:
+  `review.run.*` event names, run status, safe provider/execution/target
+  dimensions, workflow/sandbox IDs, durations, provider usage status,
+  sandbox/output/artifact byte counts, fallback state, safe failure class, and
+  cancellation state.
+- Durable `ReviewRunMetricsSchema` summaries are safe for status/list/Review
+  Room/CLI surfaces and must not add cwd, prompts, diffs, artifact bodies,
+  sandbox command args, stdout/stderr, environment values, stack traces, or
+  runtime scope keys.
+- Durable run errors returned through APIs, CLI, Review Room, and lifecycle
+  failure events use bounded, redaction-safe diagnostic text. Raw diagnostic
+  output that contains secrets, host paths, cwd, prompts, diffs, files, stack
+  traces, or sandbox output is not a durable/user-facing error message.
 - Security-relevant decisions are auditable: authz allow/deny, cwd policy deny,
   sandbox deny, provider deny, publish deny, redaction counts, retention delete.
 - Production debug tooling requires explicit elevated access and does not

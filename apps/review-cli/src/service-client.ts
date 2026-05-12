@@ -9,6 +9,9 @@ import {
   ReviewErrorResponseSchema,
   type ReviewPublishResponse,
   ReviewPublishResponseSchema,
+  type ReviewRunListResponse,
+  ReviewRunListResponseSchema,
+  type ReviewRunStatus,
   type ReviewStartRequest,
   type ReviewStartResponse,
   ReviewStartResponseSchema,
@@ -64,6 +67,17 @@ export type WatchEventsOptions = {
   afterEventId?: string;
   limit?: number;
   onEvent: (event: LifecycleEvent) => void | Promise<void>;
+};
+
+/**
+ * Filters hosted review-run list queries.
+ */
+export type ListReviewRunsOptions = {
+  limit?: number;
+  status?: ReviewRunStatus;
+  cursor?: string;
+  owner?: string;
+  name?: string;
 };
 
 /**
@@ -438,6 +452,47 @@ export function getReviewStatus(
     config,
     `/v1/review/${encodeURIComponent(reviewId)}`,
     ReviewStatusResponseSchema
+  );
+}
+
+/**
+ * Lists hosted review runs as compact summaries.
+ *
+ * @param config - Validated hosted service connection settings.
+ * @param options - Optional bounded pagination, status, and repository filters.
+ * @returns Parsed hosted review-run list response.
+ * @throws ServiceClientError when the request fails or the response is invalid.
+ */
+export function listReviewRuns(
+  config: ReviewServiceConfig,
+  options: ListReviewRunsOptions = {}
+): Promise<ReviewRunListResponse> {
+  if ((options.owner && !options.name) || (!options.owner && options.name)) {
+    throw new ServiceClientError(
+      'repository filter requires both owner and name',
+      2
+    );
+  }
+  const query = new URLSearchParams();
+  if (options.limit !== undefined) {
+    query.set('limit', String(options.limit));
+  }
+  if (options.status) {
+    query.set('status', options.status);
+  }
+  if (options.cursor) {
+    query.set('cursor', options.cursor);
+  }
+  if (options.owner && options.name) {
+    query.set('owner', options.owner);
+    query.set('name', options.name);
+  }
+  return serviceJson(
+    config,
+    '/v1/review',
+    ReviewRunListResponseSchema,
+    {},
+    query
   );
 }
 

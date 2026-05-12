@@ -36,6 +36,13 @@
       "when": 1778500004000,
       "tag": "0004_finding_triage",
       "breakpoints": false
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778500005000,
+      "tag": "0005_run_observability",
+      "breakpoints": false
     }
   ]
 }

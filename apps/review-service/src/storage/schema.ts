@@ -11,6 +11,7 @@ import type {
   ReviewRepositoryAuthorization,
   ReviewRequest,
   ReviewRunAuthorization,
+  ReviewRunMetrics,
   ReviewRunStatus,
 } from '@review-agent/review-types';
 import { isNotNull, relations } from 'drizzle-orm';
@@ -88,6 +89,7 @@ export const reviewRuns = pgTable(
       }>()
       .notNull(),
     result: jsonb('result').$type<unknown>(),
+    metrics: jsonb('metrics').$type<ReviewRunMetrics>(),
     error: text('error'),
     detachedRunId: text('detached_run_id'),
     workflowRunId: text('workflow_run_id'),

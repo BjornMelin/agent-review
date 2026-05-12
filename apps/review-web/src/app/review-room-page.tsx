@@ -12,17 +12,20 @@ export async function ReviewRoomPage(props: {
 }): Promise<React.ReactNode> {
   const { reviewId } = props;
   const runsPromise = getReviewRuns({ limit: 25 });
-  const requestedReviewStatusPromise = reviewId
+  const selectedStatusPromise = reviewId
     ? getReviewStatus(reviewId)
-    : null;
-  const runs = await runsPromise;
+    : runsPromise.then((runs) => {
+        const latestReviewId = runs.ok
+          ? runs.data.runs[0]?.reviewId
+          : undefined;
+        return latestReviewId ? getReviewStatus(latestReviewId) : null;
+      });
+  const [runs, selected] = await Promise.all([
+    runsPromise,
+    selectedStatusPromise,
+  ]);
   const selectedReviewId =
     reviewId ?? (runs.ok ? runs.data.runs[0]?.reviewId : undefined);
-  const selected = requestedReviewStatusPromise
-    ? await requestedReviewStatusPromise
-    : selectedReviewId
-      ? await getReviewStatus(selectedReviewId)
-      : null;
   return (
     <ReviewRoom
       runs={runs}

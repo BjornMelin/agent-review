@@ -29,6 +29,7 @@ The service store owns:
 - lifecycle events with per-review sequence numbers
 - artifact metadata, checksums, content types, and storage keys
 - generated artifact content for the current service implementation
+- redaction-safe run metrics for status/list, CLI, and Review Room summaries
 - status-transition audit rows
 - retention and deletion timestamps
 
