@@ -854,6 +854,30 @@ describe('review-types schemas', () => {
         },
       })
     ).toThrow();
+    expect(() =>
+      ReviewRunMetricsSchema.parse({
+        ...metrics,
+        resolvedModel: 'model body: private-marker',
+      })
+    ).toThrow();
+    expect(() =>
+      ReviewRunMetricsSchema.parse({
+        ...metrics,
+        correlation: {
+          ...metrics.correlation,
+          workflowRunId: 'workflow prompt=secret',
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      ReviewRunMetricsSchema.parse({
+        ...metrics,
+        runtime: {
+          ...metrics.runtime,
+          leaseOwner: 'scope key /repo/private',
+        },
+      })
+    ).toThrow();
   });
 
   it('rejects inverted line ranges at normalized and raw model boundaries', () => {

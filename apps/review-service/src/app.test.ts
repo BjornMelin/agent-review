@@ -2473,10 +2473,12 @@ describe('createReviewServiceApp', () => {
       provider: 'codexDelegate',
       executionMode: 'localTrusted',
       targetType: 'custom',
-      failureClass: 'unknown',
       artifactBytes: 0,
       cancelRequested: false,
     });
+    expect(
+      runLogs.find((record) => record.event === 'review.run.terminal')
+    ).not.toHaveProperty('failureClass');
 
     const serializedLogs = JSON.stringify(runLogs);
     expect(serializedLogs).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');

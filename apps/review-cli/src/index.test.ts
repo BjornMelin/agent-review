@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   fetchReviewArtifact,
+  listReviewRuns,
   ServiceClientError,
   startReview,
 } from './service-client.js';
@@ -686,6 +687,22 @@ describe('review-agent hosted service commands', () => {
       'invalid --status "bogus"; expected queued|running|completed|failed|cancelled'
     );
     expect(result.stderr).not.toContain('invalid_value');
+  });
+
+  it('rejects partial hosted list repository filters', async () => {
+    const config = {
+      baseUrl: 'https://review.example.test',
+      token: 'rat_test',
+    };
+
+    for (const options of [{ owner: 'octo-org' }, { name: 'agent-review' }]) {
+      expect(() => listReviewRuns(config, options)).toThrow(
+        new ServiceClientError(
+          'repository filter requires both owner and name',
+          2
+        )
+      );
+    }
   });
 
   it('times out one-shot hosted service requests', async () => {

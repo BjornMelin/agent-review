@@ -61,6 +61,12 @@ export type RedactedText = {
 const SECRET_REPLACEMENT = '[REDACTED_SECRET]';
 const BEARER_REPLACEMENT = 'Bearer [REDACTED]';
 const URL_CREDENTIAL_REPLACEMENT = '$1[REDACTED]@';
+const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
+const SafeObservableIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(DEFAULT_REVIEW_SECURITY_LIMITS.maxModelBytes)
+  .regex(SAFE_MODEL_ID_PATTERN);
 
 const BEARER_PATTERN = /\bBearer\s+[a-zA-Z0-9._~+/=-]+/gi;
 const SECRET_LIKE_PATTERNS = [
@@ -670,7 +676,7 @@ export const ReviewResultSchema = z.strictObject({
       mergeBaseSha: z.string().min(1).optional(),
       commitSha: z.string().min(1).optional(),
     }),
-    sandboxId: z.string().min(1).optional(),
+    sandboxId: SafeObservableIdentifierSchema.optional(),
     providerTelemetry: ProviderPolicyTelemetrySchema.optional(),
   }),
 });
@@ -701,9 +707,9 @@ export const RawModelOutputSchema = z.strictObject({
  */
 export const CorrelationIdsSchema = z.strictObject({
   reviewId: z.string().min(1),
-  workflowRunId: z.string().min(1).optional(),
-  sandboxId: z.string().min(1).optional(),
-  commandId: z.string().min(1).optional(),
+  workflowRunId: SafeObservableIdentifierSchema.optional(),
+  sandboxId: SafeObservableIdentifierSchema.optional(),
+  commandId: SafeObservableIdentifierSchema.optional(),
 });
 
 /**
@@ -725,7 +731,7 @@ export const ReviewRunSandboxMetricsSchema = z.strictObject({
  * Summarizes runtime lease state without exposing scope keys or host-local paths.
  */
 export const ReviewRunRuntimeMetricsSchema = z.strictObject({
-  leaseOwner: z.string().min(1).optional(),
+  leaseOwner: SafeObservableIdentifierSchema.optional(),
   leaseAcquiredAt: z.number().int().nonnegative().optional(),
   leaseHeartbeatAt: z.number().int().nonnegative().optional(),
   leaseExpiresAt: z.number().int().nonnegative().optional(),
@@ -746,11 +752,8 @@ export const ReviewRunMetricsSchema = z.strictObject({
   provider: ReviewProviderKindSchema,
   executionMode: ExecutionModeSchema,
   targetType: ReviewTargetTypeSchema,
-  requestedModel: boundedString(
-    'model',
-    DEFAULT_REVIEW_SECURITY_LIMITS.maxModelBytes
-  ).optional(),
-  resolvedModel: z.string().min(1).optional(),
+  requestedModel: SafeObservableIdentifierSchema.optional(),
+  resolvedModel: SafeObservableIdentifierSchema.optional(),
   correlation: CorrelationIdsSchema.omit({ commandId: true }),
   providerSummary: z
     .strictObject({
@@ -1089,8 +1092,8 @@ export const ReviewRunSummarySchema = z.strictObject({
   providerTelemetry: ProviderPolicyTelemetrySchema.optional(),
   metrics: ReviewRunMetricsSchema.optional(),
   detachedRunId: z.string().min(1).optional(),
-  workflowRunId: z.string().min(1).optional(),
-  sandboxId: z.string().min(1).optional(),
+  workflowRunId: SafeObservableIdentifierSchema.optional(),
+  sandboxId: SafeObservableIdentifierSchema.optional(),
   cancelRequestedAt: z.number().int().nonnegative().optional(),
   completedAt: z.number().int().nonnegative().optional(),
   createdAt: z.number().int().nonnegative(),
@@ -1337,8 +1340,8 @@ export const ReviewRunStoreRecordSchema = z.strictObject({
   completedAt: z.number().int().nonnegative().optional(),
   error: z.string().min(1).optional(),
   detachedRunId: z.string().min(1).optional(),
-  workflowRunId: z.string().min(1).optional(),
-  sandboxId: z.string().min(1).optional(),
+  workflowRunId: SafeObservableIdentifierSchema.optional(),
+  sandboxId: SafeObservableIdentifierSchema.optional(),
   metrics: ReviewRunMetricsSchema.optional(),
   lease: ReviewRunLeaseSchema.optional(),
   cancelRequestedAt: z.number().int().nonnegative().optional(),
@@ -2236,8 +2239,6 @@ function assertStringHasNoSensitiveText(
     throw new Error(`${label} contains secret-like value`);
   }
 }
-
-const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 
 function assertSafeModelIdentifier(model: string | undefined): void {
   if (model !== undefined && !SAFE_MODEL_ID_PATTERN.test(model)) {

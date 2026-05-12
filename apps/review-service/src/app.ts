@@ -403,11 +403,9 @@ function refreshReviewRunMetrics(record: ReviewRecord): void {
 function safeFailureClass(
   record: ReviewRecord
 ): ProviderFailureClass | undefined {
-  if (record.result?.result.metadata.providerTelemetry?.failureClass) {
-    return record.result.result.metadata.providerTelemetry.failureClass;
-  }
-  if (record.status === 'failed') {
-    return 'unknown';
+  const providerTelemetry = record.result?.result.metadata.providerTelemetry;
+  if (providerTelemetry) {
+    return providerTelemetry.failureClass ?? 'unknown';
   }
   if (record.status === 'cancelled') {
     return 'cancelled';

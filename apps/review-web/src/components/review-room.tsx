@@ -448,7 +448,7 @@ function DetailBody({
                   [
                     'Lease TTL',
                     formatOptionalDuration(
-                      runMetrics?.runtime.leaseTtlMs,
+                      runMetrics?.runtime?.leaseTtlMs,
                       'not leased'
                     ),
                   ],

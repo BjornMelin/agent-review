@@ -467,6 +467,12 @@ export function listReviewRuns(
   config: ReviewServiceConfig,
   options: ListReviewRunsOptions = {}
 ): Promise<ReviewRunListResponse> {
+  if ((options.owner && !options.name) || (!options.owner && options.name)) {
+    throw new ServiceClientError(
+      'repository filter requires both owner and name',
+      2
+    );
+  }
   const query = new URLSearchParams();
   if (options.limit !== undefined) {
     query.set('limit', String(options.limit));

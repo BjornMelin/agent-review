@@ -2225,16 +2225,11 @@ export function createDrizzleReviewStore(
     },
     async listActiveDetached(options = {}) {
       const rows = await db
-        .select({ reviewId: reviewRuns.reviewId })
+        .select()
         .from(reviewRuns)
         .where(activeDetachedRunsWherePredicate(options.repositories))
         .orderBy(desc(reviewRuns.updatedAt), desc(reviewRuns.reviewId));
-      const records = await Promise.all(
-        rows.map(async ({ reviewId }) => hydrate(reviewId))
-      );
-      return records.filter((record): record is ReviewRecord =>
-        Boolean(record)
-      );
+      return rows.map((row) => buildRecord(row, [], []));
     },
     async reserve(record, options) {
       assertReviewRecordWithLease(record);
