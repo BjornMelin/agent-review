@@ -321,8 +321,8 @@ export type ReviewPublicationStoreAdapter = {
 export type ReviewFindingTriageUpsert = {
   reviewId: string;
   fingerprint: string;
-  status: ReviewFindingTriageStatus;
-  note?: string;
+  status?: ReviewFindingTriageStatus;
+  note?: string | null;
   actor?: string;
   nowMs: number;
 };
@@ -382,6 +382,20 @@ function cloneReviewRunResult(result: ReviewRunResult): ReviewRunResult {
     cloned.sandboxAudit = structuredClone(result.sandboxAudit);
   }
   return cloned;
+}
+
+function normalizeFindingTriageNote(
+  inputNote: string | null | undefined,
+  previousNote: string | null | undefined
+): string | undefined {
+  if (inputNote === undefined) {
+    return previousNote ?? undefined;
+  }
+  if (inputNote === null) {
+    return undefined;
+  }
+  const trimmed = inputNote.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function cloneLifecycleEvent(event: LifecycleEvent): LifecycleEvent {
@@ -1053,11 +1067,12 @@ export function createInMemoryReviewFindingTriageStore(): ReviewFindingTriageSto
     async upsert(input) {
       const key = `${input.reviewId}:${input.fingerprint}`;
       const previous = records.get(key);
-      const note = input.note?.trim() ? input.note.trim() : undefined;
+      const status = input.status ?? previous?.status ?? 'open';
+      const note = normalizeFindingTriageNote(input.note, previous?.note);
       const record: ReviewFindingTriageRecord = {
         reviewId: input.reviewId,
         fingerprint: input.fingerprint,
-        status: input.status,
+        status,
         ...(note ? { note } : {}),
         ...(input.actor ? { actor: input.actor } : {}),
         createdAt: previous?.createdAt ?? input.nowMs,
@@ -1068,8 +1083,8 @@ export function createInMemoryReviewFindingTriageStore(): ReviewFindingTriageSto
         reviewId: input.reviewId,
         fingerprint: input.fingerprint,
         ...(previous ? { fromStatus: previous.status } : {}),
-        toStatus: input.status,
-        ...(note ? { note } : {}),
+        toStatus: status,
+        ...(input.note === undefined || !note ? {} : { note }),
         ...(input.actor ? { actor: input.actor } : {}),
         createdAt: input.nowMs,
       };
@@ -2110,6 +2125,7 @@ export function createDrizzleReviewPublicationStore(
  *
  * @param db - Drizzle PostgreSQL database connected with the review storage schema.
  * @returns A durable finding-triage store with append-only audit records.
+ * @throws Error - When a triage row cannot be inserted or updated inside the write transaction.
  */
 export function createDrizzleReviewFindingTriageStore(
   db: ReviewStorageDatabase
@@ -2155,14 +2171,15 @@ export function createDrizzleReviewFindingTriageStore(
       return db.transaction(
         async (tx) => {
           const updatedAt = new Date(input.nowMs);
-          const note = input.note?.trim() ? input.note.trim() : null;
+          const initialStatus = input.status ?? 'open';
+          const initialNote = normalizeFindingTriageNote(input.note, undefined);
           const [inserted] = await tx
             .insert(reviewFindingTriage)
             .values({
               reviewId: input.reviewId,
               fingerprint: input.fingerprint,
-              status: input.status,
-              note,
+              status: initialStatus,
+              note: initialNote ?? null,
               actor: input.actor ?? null,
               createdAt: updatedAt,
               updatedAt,
@@ -2188,11 +2205,13 @@ export function createDrizzleReviewFindingTriageStore(
                   eq(reviewFindingTriage.fingerprint, input.fingerprint)
                 )
               );
+            const status = input.status ?? previous?.status ?? 'open';
+            const note = normalizeFindingTriageNote(input.note, previous?.note);
             const [updated] = await tx
               .update(reviewFindingTriage)
               .set({
-                status: input.status,
-                note,
+                status,
+                note: note ?? null,
                 actor: input.actor ?? null,
                 updatedAt,
               })
@@ -2213,8 +2232,10 @@ export function createDrizzleReviewFindingTriageStore(
             reviewId: input.reviewId,
             fingerprint: input.fingerprint,
             ...(previous ? { fromStatus: previous.status } : {}),
-            toStatus: input.status,
-            ...(note ? { note } : {}),
+            toStatus: persisted.status,
+            ...(input.note === undefined || !persisted.note
+              ? {}
+              : { note: persisted.note }),
             ...(input.actor ? { actor: input.actor } : {}),
             createdAt: input.nowMs,
           };

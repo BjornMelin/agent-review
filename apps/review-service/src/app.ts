@@ -1831,16 +1831,12 @@ export function createReviewServiceApp(
         if (!hasFindingFingerprint(record, fingerprint)) {
           return jsonError(context, 'finding not found', 404);
         }
-        const previous = await findingTriageStore.get(reviewId, fingerprint);
-        const status = parsed.status ?? previous?.status ?? 'open';
-        const note =
-          parsed.note === null ? undefined : (parsed.note ?? previous?.note);
         const auth = getReviewAuthContext(context);
         const response = await findingTriageStore.upsert({
           reviewId,
           fingerprint,
-          status,
-          ...(note === undefined ? {} : { note }),
+          ...(parsed.status === undefined ? {} : { status: parsed.status }),
+          ...(parsed.note === undefined ? {} : { note: parsed.note }),
           ...(auth ? { actor: actorForAuth(auth) } : {}),
           nowMs: nowMs(),
         });

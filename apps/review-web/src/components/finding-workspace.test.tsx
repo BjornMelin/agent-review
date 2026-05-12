@@ -173,7 +173,7 @@ describe('FindingWorkspace', () => {
     expect(draft.value).toBe('unsaved reviewer note');
   });
 
-  it('clears unsaved note drafts when the review changes', async () => {
+  it('clears unsaved note and status drafts when the review changes', async () => {
     const { rerender } = render(
       <FindingWorkspace
         findings={[finding]}
@@ -195,7 +195,11 @@ describe('FindingWorkspace', () => {
     const draft = screen.getByLabelText(
       'Triage note for Unsafe publish'
     ) as HTMLTextAreaElement;
+    const stateSelect = screen.getByLabelText(
+      'Triage state for Unsafe publish'
+    ) as HTMLSelectElement;
 
+    await userEvent.selectOptions(stateSelect, 'accepted');
     await userEvent.clear(draft);
     await userEvent.type(draft, 'unsaved review one draft');
     rerender(
@@ -208,7 +212,7 @@ describe('FindingWorkspace', () => {
           {
             reviewId: 'review-2',
             fingerprint: 'finding-1',
-            status: 'open',
+            status: 'fixed',
             note: 'review two note',
             createdAt: 2,
             updatedAt: 2,
@@ -224,15 +228,24 @@ describe('FindingWorkspace', () => {
         ) as HTMLTextAreaElement
       ).value
     ).toBe('review two note');
+    expect(
+      (
+        screen.getByLabelText(
+          'Triage state for Unsafe publish'
+        ) as HTMLSelectElement
+      ).value
+    ).toBe('fixed');
   });
 
   it('rolls back optimistic triage state when the service rejects the write', async () => {
-    const fetchMock = vi.fn(async () => {
-      return new Response(JSON.stringify({ error: 'triage denied' }), {
-        status: 403,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        return new Response(JSON.stringify({ error: 'triage denied' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     render(
@@ -250,6 +263,11 @@ describe('FindingWorkspace', () => {
     );
     await userEvent.selectOptions(stateSelect, 'accepted');
 
+    expect(fetchMock).not.toHaveBeenCalled();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save triage for Unsafe publish' })
+    );
+
     expect((await screen.findByRole('alert')).textContent).toBe(
       'triage denied'
     );
@@ -265,6 +283,10 @@ describe('FindingWorkspace', () => {
         }),
       })
     );
+    const [, requestInit] = fetchMock.mock.calls[0] ?? [];
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject({
+      status: 'accepted',
+    });
     expect(refresh).not.toHaveBeenCalled();
   });
 
@@ -288,6 +310,11 @@ describe('FindingWorkspace', () => {
     ) as HTMLSelectElement;
     await userEvent.selectOptions(stateSelect, 'accepted');
 
+    expect(fetchMock).not.toHaveBeenCalled();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save triage for Unsafe publish' })
+    );
+
     expect(stateSelect.disabled).toBe(true);
     expect(
       (
@@ -299,7 +326,7 @@ describe('FindingWorkspace', () => {
     expect(
       (
         screen.getByRole('button', {
-          name: 'Save triage note for Unsafe publish',
+          name: 'Save triage for Unsafe publish',
         }) as HTMLButtonElement
       ).disabled
     ).toBe(true);

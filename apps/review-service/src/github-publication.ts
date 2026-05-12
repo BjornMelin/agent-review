@@ -381,7 +381,7 @@ async function resolvePublishTarget(
     authorization: NonNullable<ReviewRecord['authorization']>;
   },
   result: ReviewRunResult,
-  request: GitHubRequestClient
+  request?: GitHubRequestClient
 ): Promise<GitHubPublishTarget> {
   const repository = record.authorization.repository;
   const base = {
@@ -390,6 +390,12 @@ async function resolvePublishTarget(
     installationId: repository.installationId,
   };
   if (repository.pullRequestNumber) {
+    if (!request) {
+      throw new GitHubPublicationError(
+        502,
+        'pull request preview requires GitHub access'
+      );
+    }
     const reviewedCommitSha =
       repository.commitSha ?? result.diff.gitContext.commitSha ?? undefined;
     if (!reviewedCommitSha) {
@@ -1347,12 +1353,20 @@ export function createGitHubPublicationService(
       const authorizedRecord = record as PublicationContext['record'];
       const result = record.result;
       const repository = authorizedRecord.authorization.repository;
-      const installationToken = await options.installationTokenProvider({
-        installationId: repository.installationId,
-        repositoryIds: [repository.repositoryId],
-        permissions: PREVIEW_PERMISSIONS,
-      });
-      const request = requestFactory(installationToken.token);
+      let request: GitHubRequestClient | undefined;
+      if (repository.pullRequestNumber) {
+        const installationToken = await options.installationTokenProvider({
+          installationId: repository.installationId,
+          repositoryIds: [repository.repositoryId],
+          permissions: PREVIEW_PERMISSIONS,
+        });
+        request = requestFactory(installationToken.token);
+      }
+      const target = await resolvePublishTarget(
+        authorizedRecord,
+        result,
+        request
+      );
       const existingPublications = await options.publicationStore.list(
         record.reviewId
       );
@@ -1360,10 +1374,17 @@ export function createGitHubPublicationService(
         record: authorizedRecord,
         result,
         repository,
-        request,
+        request:
+          request ??
+          (async () => {
+            throw new GitHubPublicationError(
+              502,
+              'non-pull-request preview does not have a GitHub request client'
+            );
+          }),
         existing: buildExistingMap(existingPublications),
         existingPublications,
-        target: await resolvePublishTarget(authorizedRecord, result, request),
+        target,
         store: options.publicationStore,
         nowMs,
         mutationDelayMs: 0,

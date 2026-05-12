@@ -305,7 +305,11 @@ export function FindingWorkspace(
   const [stateScope, setStateScope] = useState(reviewId);
   const [records, setRecords] = useState(() => incomingRecords);
   const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
+  const [draftStatuses, setDraftStatuses] = useState<
+    Record<string, ReviewFindingTriageStatus>
+  >({});
   const dirtyNotesRef = useRef(new Set<string>());
+  const dirtyStatusesRef = useRef(new Set<string>());
   const reviewScopeRef = useRef(reviewId);
   const pendingRef = useRef(new Set<string>());
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
@@ -317,16 +321,19 @@ export function FindingWorkspace(
   const recordsForReview = stateScope === reviewId ? records : incomingRecords;
   const draftNotesForReview =
     stateScope === reviewId ? draftNotes : incomingDraftNotes;
+  const draftStatusesForReview = stateScope === reviewId ? draftStatuses : {};
   const pendingForReview = stateScope === reviewId ? pending : EMPTY_PENDING;
 
   useEffect(() => {
     if (reviewScopeRef.current !== reviewId) {
       reviewScopeRef.current = reviewId;
       dirtyNotesRef.current.clear();
+      dirtyStatusesRef.current.clear();
       pendingRef.current.clear();
       setStateScope(reviewId);
       setRecords(incomingRecords);
       setDraftNotes(incomingDraftNotes);
+      setDraftStatuses({});
       setPending(new Set());
       setError(null);
       return;
@@ -349,6 +356,18 @@ export function FindingWorkspace(
         if (
           !incomingRecords.has(fingerprint) &&
           !dirtyNotesRef.current.has(fingerprint)
+        ) {
+          delete merged[fingerprint];
+        }
+      }
+      return merged;
+    });
+    setDraftStatuses((current) => {
+      const merged = { ...current };
+      for (const fingerprint of Object.keys(merged)) {
+        if (
+          !incomingRecords.has(fingerprint) &&
+          !dirtyStatusesRef.current.has(fingerprint)
         ) {
           delete merged[fingerprint];
         }
@@ -509,12 +528,19 @@ export function FindingWorkspace(
           }
           return next;
         });
+        dirtyStatusesRef.current.delete(finding.fingerprint);
+        setDraftStatuses((current) => {
+          const next = { ...current };
+          delete next[finding.fingerprint];
+          return next;
+        });
         setError(message);
         return;
       }
       if (body && typeof body === 'object' && 'record' in body) {
         const record = body.record as ReviewFindingTriageRecord;
         dirtyNotesRef.current.delete(record.fingerprint);
+        dirtyStatusesRef.current.delete(record.fingerprint);
         setRecords((current) =>
           new Map(current).set(record.fingerprint, record)
         );
@@ -522,6 +548,11 @@ export function FindingWorkspace(
           ...current,
           [record.fingerprint]: record.note ?? '',
         }));
+        setDraftStatuses((current) => {
+          const next = { ...current };
+          delete next[record.fingerprint];
+          return next;
+        });
       }
       router.refresh();
     } catch (requestError) {
@@ -535,6 +566,12 @@ export function FindingWorkspace(
         } else {
           next.delete(finding.fingerprint);
         }
+        return next;
+      });
+      dirtyStatusesRef.current.delete(finding.fingerprint);
+      setDraftStatuses((current) => {
+        const next = { ...current };
+        delete next[finding.fingerprint];
         return next;
       });
       setError(
@@ -713,7 +750,10 @@ export function FindingWorkspace(
           <tbody>
             {visibleFindings.map((finding) => {
               const record = recordsForReview.get(finding.fingerprint);
-              const status = record?.status ?? 'open';
+              const status =
+                draftStatusesForReview[finding.fingerprint] ??
+                record?.status ??
+                'open';
               const publicationStatus = publicationStatusFor(
                 publicationStatuses,
                 finding
@@ -762,12 +802,14 @@ export function FindingWorkspace(
                       className="h-8 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-xs text-[var(--foreground)]"
                       disabled={pendingForReview.has(finding.fingerprint)}
                       value={status}
-                      onChange={(event) =>
-                        void saveTriage(
-                          finding,
-                          event.target.value as ReviewFindingTriageStatus
-                        )
-                      }
+                      onChange={(event) => {
+                        dirtyStatusesRef.current.add(finding.fingerprint);
+                        setDraftStatuses((current) => ({
+                          ...current,
+                          [finding.fingerprint]: event.target
+                            .value as ReviewFindingTriageStatus,
+                        }));
+                      }}
                     >
                       {TRIAGE_STATUSES.map((option) => (
                         <option key={option} value={option}>
@@ -804,7 +846,7 @@ export function FindingWorkspace(
                         type="button"
                         size="icon"
                         variant="secondary"
-                        aria-label={`Save triage note for ${finding.title}`}
+                        aria-label={`Save triage for ${finding.title}`}
                         disabled={pendingForReview.has(finding.fingerprint)}
                         onClick={() => void saveTriage(finding, status)}
                       >

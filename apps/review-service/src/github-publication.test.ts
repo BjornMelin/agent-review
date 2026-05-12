@@ -385,6 +385,55 @@ describe('createGitHubPublicationService', () => {
     await expect(publicationStore.list('review-1')).resolves.toHaveLength(1);
   });
 
+  it('previews non-pull-request targets without minting a GitHub token', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const installationTokenProvider = vi.fn(async () => {
+      throw new Error('token should not be minted');
+    });
+    const requestClient = vi.fn(async () => {
+      throw new Error('GitHub request should not run');
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider,
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+    const branchRepository = { ...repository };
+    delete branchRepository.pullRequestNumber;
+    const branchAuthorization: ReviewRunAuthorization = {
+      ...authorization,
+      repository: {
+        ...branchRepository,
+        ref: 'main',
+      },
+    };
+
+    const preview = await service.preview?.(
+      createRecord({ authorization: branchAuthorization })
+    );
+
+    expect(installationTokenProvider).not.toHaveBeenCalled();
+    expect(requestClient).not.toHaveBeenCalled();
+    expect(preview).toMatchObject({
+      reviewId: 'review-1',
+      target: {
+        commitSha: 'abcdef1',
+        ref: 'refs/heads/main',
+      },
+      summary: {
+        pullRequestCommentCount: 0,
+      },
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          channel: 'pullRequestComment',
+          action: 'skip',
+          message: 'review target is not a pull request',
+        }),
+      ]),
+    });
+  });
+
   it('reuploads SARIF until GitHub reports terminal success', async () => {
     const publicationStore = createInMemoryReviewPublicationStore();
     const calls: Array<{ route: string; options?: Record<string, unknown> }> =

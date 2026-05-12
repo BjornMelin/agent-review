@@ -571,6 +571,99 @@ describe('review storage', () => {
     });
   });
 
+  it('preserves existing triage fields across partial updates', async () => {
+    const memory = createInMemoryReviewFindingTriageStore();
+    await memory.upsert({
+      reviewId: 'review-1',
+      fingerprint: 'finding-1',
+      status: 'accepted',
+      note: 'needs owner',
+      nowMs: BASE_TIME_MS,
+    });
+    await memory.upsert({
+      reviewId: 'review-1',
+      fingerprint: 'finding-1',
+      status: 'fixed',
+      nowMs: BASE_TIME_MS + 1_000,
+    });
+    await memory.upsert({
+      reviewId: 'review-1',
+      fingerprint: 'finding-1',
+      note: 'owner verified',
+      nowMs: BASE_TIME_MS + 2_000,
+    });
+    await expect(memory.get('review-1', 'finding-1')).resolves.toMatchObject({
+      status: 'fixed',
+      note: 'owner verified',
+    });
+    const { audit } = await memory.list('review-1');
+    expect(audit.at(1)).toEqual(
+      expect.objectContaining({
+        fromStatus: 'accepted',
+        toStatus: 'fixed',
+      })
+    );
+    expect(audit.at(2)).toEqual(
+      expect.objectContaining({
+        fromStatus: 'fixed',
+        toStatus: 'fixed',
+        note: 'owner verified',
+      })
+    );
+
+    const request = createRequest();
+    await withTestStore(async ({ db, store }) => {
+      await store.set(
+        createRecord({
+          status: 'completed',
+          result: createReviewResult(request),
+        })
+      );
+      const triageStore = createDrizzleReviewFindingTriageStore(db);
+      await triageStore.upsert({
+        reviewId: 'review-1',
+        fingerprint: 'finding-1',
+        status: 'accepted',
+        note: 'needs owner',
+        nowMs: BASE_TIME_MS,
+      });
+      await Promise.all([
+        triageStore.upsert({
+          reviewId: 'review-1',
+          fingerprint: 'finding-1',
+          status: 'fixed',
+          nowMs: BASE_TIME_MS + 1_000,
+        }),
+        triageStore.upsert({
+          reviewId: 'review-1',
+          fingerprint: 'finding-1',
+          note: 'owner verified',
+          nowMs: BASE_TIME_MS + 2_000,
+        }),
+      ]);
+
+      await expect(
+        triageStore.get('review-1', 'finding-1')
+      ).resolves.toMatchObject({
+        status: 'fixed',
+        note: 'owner verified',
+      });
+      const durable = await triageStore.list('review-1');
+      expect(durable.audit).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fromStatus: 'accepted',
+            toStatus: 'fixed',
+          }),
+          expect.objectContaining({
+            toStatus: 'fixed',
+            note: 'owner verified',
+          }),
+        ])
+      );
+    });
+  });
+
   it('serializes concurrent durable finding triage audit transitions', async () => {
     const request = createRequest();
     await withTestStore(async ({ db, store }) => {
