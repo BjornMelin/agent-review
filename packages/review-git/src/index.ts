@@ -27,6 +27,9 @@ export {
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Git metadata describing how a diff was collected.
+ */
 export type GitContext = {
   mode: 'uncommitted' | 'baseBranch' | 'commit' | 'custom';
   baseRef?: string;
@@ -34,6 +37,9 @@ export type GitContext = {
   commitSha?: string;
 };
 
+/**
+ * Collected patch text, indexed diff chunks, changed lines, and git metadata.
+ */
 export type DiffContext = {
   patch: string;
   chunks: DiffChunk[];
@@ -126,6 +132,12 @@ async function runGit(
   }
 }
 
+/**
+ * Resolves HEAD for a repository when it exists.
+ *
+ * @param cwd - Repository working directory.
+ * @returns HEAD object ID, or null when the repository has no HEAD.
+ */
 export async function resolveHead(cwd: string): Promise<string | null> {
   const out = await runGit(cwd, ['rev-parse', '--verify', 'HEAD'], {
     allowExitCodes: [0, 128],
@@ -133,6 +145,13 @@ export async function resolveHead(cwd: string): Promise<string | null> {
   return out.length > 0 ? out : null;
 }
 
+/**
+ * Resolves a safe branch or ref name to an object ID.
+ *
+ * @param cwd - Repository working directory.
+ * @param branch - Safe branch or ref name to resolve.
+ * @returns Object ID for the ref, or null when it cannot be resolved.
+ */
 export async function resolveBranchRef(
   cwd: string,
   branch: string
@@ -148,6 +167,13 @@ export async function resolveBranchRef(
   return out.length > 0 ? out : null;
 }
 
+/**
+ * Resolves the upstream ref when it is ahead of the local branch.
+ *
+ * @param cwd - Repository working directory.
+ * @param branch - Safe local branch name.
+ * @returns Upstream ref name when it is ahead, otherwise null.
+ */
 export async function resolveUpstreamIfRemoteAhead(
   cwd: string,
   branch: string
@@ -188,6 +214,13 @@ export async function resolveUpstreamIfRemoteAhead(
   return upstream;
 }
 
+/**
+ * Finds the merge base between HEAD and a safe branch ref.
+ *
+ * @param cwd - Repository working directory.
+ * @param branch - Safe branch name to compare with HEAD.
+ * @returns Merge-base object ID, or null when unavailable.
+ */
 export async function mergeBaseWithHead(
   cwd: string,
   branch: string
@@ -602,6 +635,14 @@ async function buildUncommittedPatch(
   return patch;
 }
 
+/**
+ * Collects and indexes the diff context for one review target.
+ *
+ * @param cwd - Repository working directory.
+ * @param target - Review target to collect.
+ * @param options - Optional path and budget constraints.
+ * @returns Diff context with filtered patch, chunks, line index, and git metadata.
+ */
 export async function collectDiffForTarget(
   cwd: string,
   target: ReviewTarget,
@@ -714,6 +755,12 @@ export async function collectDiffForTarget(
   };
 }
 
+/**
+ * Collects the diff context for a review request with security defaults applied.
+ *
+ * @param request - Review request with target and optional diff constraints.
+ * @returns Diff context with filtered patch, chunks, line index, and git metadata.
+ */
 export async function collectDiffForReviewRequest(
   request: ReviewRequest
 ): Promise<DiffContext> {
