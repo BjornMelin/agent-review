@@ -116,6 +116,11 @@ type PublicationContext = {
   mutationDelayMs: number;
 };
 
+type OwnedPullRequestComment = {
+  comment: GitHubReviewComment;
+  marker: NonNullable<ReturnType<typeof parseMarker>>;
+};
+
 type GitHubPublishTarget = {
   owner: string;
   repo: string;
@@ -216,6 +221,31 @@ function storeKey(
   targetKey: string
 ): string {
   return `${channel}:${targetKey}`;
+}
+
+function createKeyedAsyncLock(): <T>(
+  key: string,
+  task: () => Promise<T>
+) => Promise<T> {
+  const tails = new Map<string, Promise<void>>();
+  return async (key, task) => {
+    const previous = tails.get(key) ?? Promise.resolve();
+    let releaseCurrent!: () => void;
+    const current = new Promise<void>((resolveCurrent) => {
+      releaseCurrent = resolveCurrent;
+    });
+    const next = previous.catch(() => undefined).then(() => current);
+    tails.set(key, next);
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      releaseCurrent();
+      if (tails.get(key) === next) {
+        tails.delete(key);
+      }
+    }
+  };
 }
 
 function buildExistingMap(
@@ -503,6 +533,36 @@ function safeRepoPathForFinding(
   return `unknown/${sha256(finding.fingerprint).slice(0, 16)}`;
 }
 
+function hasRecordedSarifProcessingFailure(
+  record: ReviewPublicationRecord
+): boolean {
+  const metadata = record.metadata as
+    | { errors?: unknown; processingStatus?: unknown }
+    | undefined;
+  return (
+    metadata?.processingStatus === 'failed' ||
+    (Array.isArray(metadata?.errors) && metadata.errors.length > 0)
+  );
+}
+
+function hasRecordedSarifProcessingSuccess(
+  record: ReviewPublicationRecord
+): boolean {
+  return (
+    (record.metadata as { processingStatus?: unknown } | undefined)
+      ?.processingStatus === 'complete'
+  );
+}
+
+function hasSarifProcessingFailure(
+  status: GitHubSarifStatusResponse | undefined
+): boolean {
+  return (
+    status?.processing_status === 'failed' ||
+    (Array.isArray(status?.errors) && status.errors.length > 0)
+  );
+}
+
 async function publishSarif(
   context: PublicationContext
 ): Promise<ReviewPublicationRecord> {
@@ -516,6 +576,24 @@ async function publishSarif(
   }
 
   const targetKey = `sarif:${context.target.commitSha}:${context.target.ref}`;
+  const previous = context.existing.get(storeKey('sarif', targetKey));
+  if (
+    previous?.status === 'published' &&
+    previous.externalId &&
+    hasRecordedSarifProcessingSuccess(previous) &&
+    !hasRecordedSarifProcessingFailure(previous)
+  ) {
+    return persistRecord(context, {
+      channel: 'sarif',
+      targetKey,
+      status: 'published',
+      externalId: previous.externalId,
+      externalUrl: previous.externalUrl,
+      message: 'reused SARIF upload',
+      metadata: previous.metadata,
+    });
+  }
+
   const sarifJson = renderSarifJson(context.result.result, {
     automationId: `agent-review/${context.record.reviewId}`,
     pathForFinding: (finding) =>
@@ -548,16 +626,25 @@ async function publishSarif(
     } catch {
       status = undefined;
     }
+    const processingFailed = hasSarifProcessingFailure(status);
     return await persistRecord(context, {
       channel: 'sarif',
       targetKey,
-      status: 'published',
+      status: processingFailed ? 'failed' : 'published',
       externalId: uploaded.data.id,
       externalUrl: uploaded.data.url,
       message: status?.processing_status ?? 'SARIF upload accepted',
+      ...(processingFailed
+        ? {
+            error: status?.errors?.join('; ') ?? 'SARIF processing failed',
+          }
+        : {}),
       metadata: {
         commitSha: context.target.commitSha,
         ref: context.target.ref,
+        ...(status?.processing_status
+          ? { processingStatus: status.processing_status }
+          : {}),
         ...(status?.analyses_url ? { analysesUrl: status.analyses_url } : {}),
         ...(status?.errors ? { errors: status.errors } : {}),
       },
@@ -696,7 +783,7 @@ async function listPullRequestComments(
     return [];
   }
   const comments: GitHubReviewComment[] = [];
-  for (let page = 1; page <= 10; page += 1) {
+  for (let page = 1; ; page += 1) {
     const response = await context.request<GitHubReviewComment[]>(
       'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments',
       {
@@ -720,15 +807,64 @@ function hasStoredCommentOwnership(
   marker: NonNullable<ReturnType<typeof parseMarker>>
 ): boolean {
   const externalId = String(comment.id);
-  return [...context.existing.values()].some(
+  const commentMarker = comment.body?.split('\n')[0];
+  const matchingRecords = [...context.existing.values()].filter(
     (record) =>
       record.channel === 'pullRequestComment' &&
       record.reviewId === context.record.reviewId &&
-      record.externalId === externalId &&
-      record.marker === comment.body?.split('\n')[0] &&
+      record.marker === commentMarker &&
+      parseMarker(record.marker)?.targetHash === marker.targetHash &&
       marker.fingerprint ===
         (record.metadata as { fingerprint?: unknown } | undefined)?.fingerprint
   );
+  if (matchingRecords.some((record) => record.externalId === externalId)) {
+    return true;
+  }
+  return (
+    comment.user?.type === 'Bot' &&
+    matchingRecords.some((record) => Boolean(record.externalId))
+  );
+}
+
+async function deleteOwnedPullRequestComment(
+  context: PublicationContext,
+  existing: OwnedPullRequestComment,
+  targetHash: string,
+  reason: 'duplicate' | 'obsolete'
+): Promise<ReviewPublicationRecord> {
+  const externalId = String(existing.comment.id);
+  try {
+    await waitBetweenMutations(context);
+    await context.request(
+      'DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}',
+      {
+        ...repoKey(context.repository),
+        comment_id: existing.comment.id,
+      }
+    );
+    return await persistRecord(context, {
+      channel: 'pullRequestComment',
+      targetKey: `pr-comment:${reason}:${targetHash}:${externalId}`,
+      status: 'skipped',
+      externalId,
+      externalUrl: existing.comment.html_url,
+      marker: existing.comment.body?.split('\n')[0],
+      message:
+        reason === 'duplicate'
+          ? 'deleted duplicate review-agent comment'
+          : 'deleted obsolete review-agent comment',
+    });
+  } catch (error) {
+    return persistRecord(context, {
+      channel: 'pullRequestComment',
+      targetKey: `pr-comment:${reason}-delete-failed:${targetHash}:${externalId}`,
+      status: 'failed',
+      externalId,
+      externalUrl: existing.comment.html_url,
+      error: githubErrorMessage(error),
+      metadata: { httpStatus: getErrorStatus(error) },
+    });
+  }
 }
 
 async function publishPullRequestComments(
@@ -760,20 +896,16 @@ async function publishPullRequestComments(
     await context.store.upsert(skipped);
   }
   const existingComments = await listPullRequestComments(context);
-  const existingByTargetHash = new Map<
-    string,
-    {
-      comment: GitHubReviewComment;
-      marker: NonNullable<ReturnType<typeof parseMarker>>;
-    }
-  >();
+  const existingByTargetHash = new Map<string, OwnedPullRequestComment[]>();
   for (const comment of existingComments) {
     const marker = parseMarker(comment.body);
     if (
       marker?.reviewId === context.record.reviewId &&
       hasStoredCommentOwnership(context, comment, marker)
     ) {
-      existingByTargetHash.set(marker.targetHash, { comment, marker });
+      const existing = existingByTargetHash.get(marker.targetHash) ?? [];
+      existing.push({ comment, marker });
+      existingByTargetHash.set(marker.targetHash, existing);
     }
   }
 
@@ -782,15 +914,16 @@ async function publishPullRequestComments(
     planned.comments.map((item) => item.targetHash)
   );
   for (const item of planned.comments) {
-    const existing = existingByTargetHash.get(item.targetHash);
+    const existing = existingByTargetHash.get(item.targetHash) ?? [];
+    const [canonical, ...duplicates] = existing;
     try {
       await waitBetweenMutations(context);
-      const response = existing
+      const response = canonical
         ? await context.request<GitHubReviewComment>(
             'PATCH /repos/{owner}/{repo}/pulls/comments/{comment_id}',
             {
               ...repoKey(context.repository),
-              comment_id: existing.comment.id,
+              comment_id: canonical.comment.id,
               body: item.body,
             }
           )
@@ -814,7 +947,7 @@ async function publishPullRequestComments(
           externalId: String(response.data.id),
           externalUrl: response.data.html_url,
           marker: item.marker,
-          message: existing
+          message: canonical
             ? 'updated pull request comment'
             : 'created pull request comment',
           metadata: {
@@ -824,6 +957,16 @@ async function publishPullRequestComments(
           },
         })
       );
+      for (const duplicate of duplicates) {
+        published.push(
+          await deleteOwnedPullRequestComment(
+            context,
+            duplicate,
+            item.targetHash,
+            'duplicate'
+          )
+        );
+      }
     } catch (error) {
       published.push(
         await persistRecord(context, {
@@ -846,37 +989,14 @@ async function publishPullRequestComments(
     if (plannedTargetHashes.has(targetHash)) {
       continue;
     }
-    try {
-      await waitBetweenMutations(context);
-      await context.request(
-        'DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}',
-        {
-          ...repoKey(context.repository),
-          comment_id: existing.comment.id,
-        }
-      );
+    for (const comment of existing) {
       published.push(
-        await persistRecord(context, {
-          channel: 'pullRequestComment',
-          targetKey: `pr-comment:dismissed:${targetHash}`,
-          status: 'skipped',
-          externalId: String(existing.comment.id),
-          externalUrl: existing.comment.html_url,
-          marker: existing.comment.body?.split('\n')[0],
-          message: 'deleted obsolete review-agent comment',
-        })
-      );
-    } catch (error) {
-      published.push(
-        await persistRecord(context, {
-          channel: 'pullRequestComment',
-          targetKey: `pr-comment:dismiss-failed:${targetHash}`,
-          status: 'failed',
-          externalId: String(existing.comment.id),
-          externalUrl: existing.comment.html_url,
-          error: githubErrorMessage(error),
-          metadata: { httpStatus: getErrorStatus(error) },
-        })
+        await deleteOwnedPullRequestComment(
+          context,
+          comment,
+          targetHash,
+          'obsolete'
+        )
       );
     }
   }
@@ -921,6 +1041,7 @@ export function createGitHubPublicationService(
     });
   const nowMs = options.nowMs ?? Date.now;
   const mutationDelayMs = options.mutationDelayMs ?? 0;
+  const withPublicationLock = createKeyedAsyncLock();
 
   return {
     async publish(record) {
@@ -933,41 +1054,41 @@ export function createGitHubPublicationService(
       if (record.status !== 'completed' || !record.result) {
         throw new GitHubPublicationError(409, 'review is not ready to publish');
       }
-      const repository = record.authorization.repository;
-      const installationToken = await options.installationTokenProvider({
-        installationId: repository.installationId,
-        repositoryIds: [repository.repositoryId],
-        permissions: PUBLICATION_PERMISSIONS,
+      const authorizedRecord = record as PublicationContext['record'];
+      const result = record.result;
+      return withPublicationLock(record.reviewId, async () => {
+        const repository = authorizedRecord.authorization.repository;
+        const installationToken = await options.installationTokenProvider({
+          installationId: repository.installationId,
+          repositoryIds: [repository.repositoryId],
+          permissions: PUBLICATION_PERMISSIONS,
+        });
+        const request = requestFactory(installationToken.token);
+        const existing = buildExistingMap(
+          await options.publicationStore.list(record.reviewId)
+        );
+        const context: PublicationContext = {
+          record: authorizedRecord,
+          result,
+          repository,
+          request,
+          existing,
+          target: await resolvePublishTarget(authorizedRecord, result, request),
+          store: options.publicationStore,
+          nowMs,
+          mutationDelayMs,
+        };
+        const publications = [
+          await publishCheckRun(context),
+          await publishSarif(context),
+          ...(await publishPullRequestComments(context)),
+        ];
+        return {
+          reviewId: record.reviewId,
+          status: responseStatusFor(publications),
+          publications,
+        };
       });
-      const request = requestFactory(installationToken.token);
-      const existing = buildExistingMap(
-        await options.publicationStore.list(record.reviewId)
-      );
-      const context: PublicationContext = {
-        record: record as PublicationContext['record'],
-        result: record.result,
-        repository,
-        request,
-        existing,
-        target: await resolvePublishTarget(
-          record as PublicationContext['record'],
-          record.result,
-          request
-        ),
-        store: options.publicationStore,
-        nowMs,
-        mutationDelayMs,
-      };
-      const publications = [
-        await publishCheckRun(context),
-        await publishSarif(context),
-        ...(await publishPullRequestComments(context)),
-      ];
-      return {
-        reviewId: record.reviewId,
-        status: responseStatusFor(publications),
-        publications,
-      };
     },
   };
 }

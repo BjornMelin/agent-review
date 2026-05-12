@@ -135,6 +135,14 @@ function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
+function plannedCommentTargetKey(): string {
+  return 'pr-comment:25:abcdef1:src/app.ts:10:finding-fingerprint';
+}
+
+function plannedCommentMarker(): string {
+  return `<!-- agent-review:review=review-1;target=${sha256(plannedCommentTargetKey()).slice(0, 16)};fingerprint=finding-fingerprint -->`;
+}
+
 describe('createGitHubPublicationService', () => {
   it('publishes check, SARIF, and pull request comments idempotently', async () => {
     const publicationStore = createInMemoryReviewPublicationStore();
@@ -283,12 +291,121 @@ describe('createGitHubPublicationService', () => {
     );
   });
 
+  it('reuploads SARIF until GitHub reports terminal success', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const calls: Array<{ route: string; options?: Record<string, unknown> }> =
+      [];
+    const commentBodies: string[] = [];
+    let sarifUploadCount = 0;
+    const requestClient = vi.fn(async (route, options) => {
+      calls.push({ route, options });
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/check-runs') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs') {
+        sarifUploadCount += 1;
+        return {
+          data: {
+            id: `sarif-${sarifUploadCount}`,
+            url: `https://api.github.com/sarif-${sarifUploadCount}`,
+          },
+        };
+      }
+      if (
+        route === 'GET /repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}'
+      ) {
+        return {
+          data: {
+            'sarif-1': { processing_status: 'pending' },
+            'sarif-2': {
+              processing_status: 'failed',
+              errors: ['invalid SARIF upload'],
+            },
+            'sarif-3': { processing_status: 'complete' },
+          }[String(options?.sarif_id)],
+        };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        return {
+          data:
+            commentBodies.length === 0
+              ? []
+              : [
+                  {
+                    id: 500,
+                    body: commentBodies.at(-1),
+                    html_url: 'https://github.com/comments/500',
+                    user: { login: 'review-agent[bot]', type: 'Bot' },
+                  },
+                ],
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        commentBodies.push(String(options?.body ?? ''));
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      if (route === 'PATCH /repos/{owner}/{repo}/pulls/comments/{comment_id}') {
+        commentBodies.push(String(options?.body ?? ''));
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const first = await service.publish(createRecord());
+    const second = await service.publish(createRecord());
+    const third = await service.publish(createRecord());
+
+    expect(first.status).toBe('published');
+    expect(second.status).toBe('partial');
+    expect(third.status).toBe('published');
+    expect(
+      calls.filter(
+        (call) =>
+          call.route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs'
+      )
+    ).toHaveLength(3);
+    await expect(publicationStore.list('review-1')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channel: 'sarif',
+          externalId: 'sarif-3',
+          status: 'published',
+        }),
+      ])
+    );
+  });
+
   it('ignores forged publication markers that are not owned by stored state', async () => {
     const publicationStore = createInMemoryReviewPublicationStore();
     const calls: Array<{ route: string; options?: Record<string, unknown> }> =
       [];
-    const targetKey = 'pr-comment:25:abcdef1:src/app.ts:10:finding-fingerprint';
-    const forgedMarker = `<!-- agent-review:review=review-1;target=${sha256(targetKey).slice(0, 16)};fingerprint=finding-fingerprint -->`;
+    const forgedMarker = plannedCommentMarker();
     const requestClient = vi.fn(async (route, options) => {
       calls.push({ route, options });
       if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
@@ -367,6 +484,296 @@ describe('createGitHubPublicationService', () => {
           'DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}'
       )
     ).toBe(false);
+  });
+
+  it('scans pull request comments until GitHub returns a short page', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const requestedPages: number[] = [];
+    const requestClient = vi.fn(async (route, options) => {
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/check-runs') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs') {
+        return {
+          data: { id: 'sarif-1', url: 'https://api.github.com/sarif-1' },
+        };
+      }
+      if (
+        route === 'GET /repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}'
+      ) {
+        return { data: { processing_status: 'complete' } };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        const page = Number(options?.page ?? 0);
+        requestedPages.push(page);
+        return {
+          data:
+            page <= 10
+              ? Array.from({ length: 100 }, (_, index) => ({
+                  id: page * 1_000 + index,
+                  body: 'unowned comment',
+                  html_url: `https://github.com/comments/${page}-${index}`,
+                }))
+              : [],
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    await service.publish(createRecord());
+
+    expect(requestedPages).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it('updates the canonical owned comment and deletes duplicate owned comments', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const marker = plannedCommentMarker();
+    await publicationStore.upsert({
+      publicationId: 'pub-comment-500',
+      reviewId: 'review-1',
+      channel: 'pullRequestComment',
+      targetKey: plannedCommentTargetKey(),
+      status: 'published',
+      externalId: '500',
+      externalUrl: 'https://github.com/comments/500',
+      marker,
+      metadata: { fingerprint: 'finding-fingerprint' },
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+    const calls: Array<{ route: string; options?: Record<string, unknown> }> =
+      [];
+    const requestClient = vi.fn(async (route, options) => {
+      calls.push({ route, options });
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/check-runs') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs') {
+        return {
+          data: { id: 'sarif-1', url: 'https://api.github.com/sarif-1' },
+        };
+      }
+      if (
+        route === 'GET /repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}'
+      ) {
+        return { data: { processing_status: 'complete' } };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        return {
+          data: [
+            {
+              id: 500,
+              body: `${marker}\ncanonical comment`,
+              html_url: 'https://github.com/comments/500',
+              user: { login: 'review-agent[bot]', type: 'Bot' },
+            },
+            {
+              id: 501,
+              body: `${marker}\nduplicate comment`,
+              html_url: 'https://github.com/comments/501',
+              user: { login: 'review-agent[bot]', type: 'Bot' },
+            },
+          ],
+        };
+      }
+      if (route === 'PATCH /repos/{owner}/{repo}/pulls/comments/{comment_id}') {
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      if (
+        route === 'DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}'
+      ) {
+        return { data: {} };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const response = await service.publish(createRecord());
+
+    expect(response.status).toBe('partial');
+    expect(
+      calls.filter(
+        (call) =>
+          call.route ===
+          'PATCH /repos/{owner}/{repo}/pulls/comments/{comment_id}'
+      )
+    ).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) =>
+          call.route ===
+          'DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        options: expect.objectContaining({ comment_id: 501 }),
+      }),
+    ]);
+  });
+
+  it('serializes concurrent publish calls for the same review', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    const calls: Array<{ route: string; options?: Record<string, unknown> }> =
+      [];
+    const commentBodies: string[] = [];
+    let releaseFirstCommentPost!: () => void;
+    let markFirstCommentPost!: () => void;
+    const firstCommentPostStarted = new Promise<void>((resolveStarted) => {
+      markFirstCommentPost = resolveStarted;
+    });
+    const firstCommentPostReleased = new Promise<void>((resolveReleased) => {
+      releaseFirstCommentPost = resolveReleased;
+    });
+    let commentPostCount = 0;
+    const requestClient = vi.fn(async (route, options) => {
+      calls.push({ route, options });
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+        return {
+          data: {
+            number: 25,
+            head: { sha: 'abcdef1' },
+            base: { repo: { id: 42, full_name: 'octo-org/agent-review' } },
+          },
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/check-runs') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}') {
+        return { data: { id: 100, html_url: 'https://github.com/checks/100' } };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs') {
+        return {
+          data: { id: 'sarif-1', url: 'https://api.github.com/sarif-1' },
+        };
+      }
+      if (
+        route === 'GET /repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}'
+      ) {
+        return { data: { processing_status: 'complete' } };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        return {
+          data:
+            commentBodies.length === 0
+              ? []
+              : [
+                  {
+                    id: 500,
+                    body: commentBodies.at(-1),
+                    html_url: 'https://github.com/comments/500',
+                  },
+                ],
+        };
+      }
+      if (route === 'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments') {
+        commentPostCount += 1;
+        if (commentPostCount === 1) {
+          markFirstCommentPost();
+          await firstCommentPostReleased;
+        }
+        commentBodies.push(String(options?.body ?? ''));
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      if (route === 'PATCH /repos/{owner}/{repo}/pulls/comments/{comment_id}') {
+        commentBodies.push(String(options?.body ?? ''));
+        return {
+          data: { id: 500, html_url: 'https://github.com/comments/500' },
+        };
+      }
+      throw new Error(`unexpected route ${route}`);
+    }) as unknown as GitHubRequestClient;
+    const service = createGitHubPublicationService({
+      installationTokenProvider: vi.fn(async () => ({
+        token: 'install-token',
+        expiresAt: 2_000,
+        permissions: {},
+      })),
+      publicationStore,
+      requestFactory: () => requestClient,
+      nowMs: () => 1_500,
+    });
+
+    const first = service.publish(createRecord());
+    await firstCommentPostStarted;
+    const second = service.publish(createRecord());
+    releaseFirstCommentPost();
+    const responses = await Promise.all([first, second]);
+
+    expect(responses.map((response) => response.status)).toEqual([
+      'published',
+      'published',
+    ]);
+    expect(
+      calls.filter(
+        (call) =>
+          call.route ===
+          'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments'
+      )
+    ).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) => call.route === 'POST /repos/{owner}/{repo}/check-runs'
+      )
+    ).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) =>
+          call.route === 'PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}'
+      )
+    ).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) =>
+          call.route === 'POST /repos/{owner}/{repo}/code-scanning/sarifs'
+      )
+    ).toHaveLength(1);
   });
 
   it('rejects stale pull request heads before GitHub write side effects', async () => {
