@@ -23,6 +23,7 @@ export type SarifReport = {
         }>;
       };
     };
+    automationDetails?: { id: string };
     results: Array<{
       ruleId: string;
       level: SarifLevel;
@@ -40,6 +41,16 @@ export type SarifReport = {
       };
     }>;
   }>;
+};
+
+/**
+ * Defines optional overrides used when rendering SARIF output.
+ */
+export type SarifRenderOptions = {
+  /** Maps a finding to the repository-relative path emitted in SARIF. */
+  pathForFinding?: (finding: ReviewFinding) => string;
+  /** Distinguishes one logical SARIF analysis category for GitHub code scanning. */
+  automationId?: string;
 };
 
 function normalizePriority(priority: ReviewFinding['priority']): number {
@@ -97,7 +108,17 @@ export function sortFindingsDeterministically(
   });
 }
 
-export function toSarif(result: ReviewResult): SarifReport {
+/**
+ * Converts a normalized review result into a SARIF 2.1.0 report.
+ *
+ * @param result - Normalized review result to render.
+ * @param options - Optional SARIF rendering overrides.
+ * @returns SARIF report object ready for JSON serialization.
+ */
+export function toSarif(
+  result: ReviewResult,
+  options: SarifRenderOptions = {}
+): SarifReport {
   const safeResult = redactReviewResult(result).result;
   const findings = sortFindingsDeterministically(safeResult.findings);
   const rulesById = new Map<
@@ -136,7 +157,9 @@ export function toSarif(result: ReviewResult): SarifReport {
         {
           physicalLocation: {
             artifactLocation: {
-              uri: finding.codeLocation.absoluteFilePath,
+              uri:
+                options.pathForFinding?.(finding) ??
+                finding.codeLocation.absoluteFilePath,
             },
             region: {
               startLine: finding.codeLocation.lineRange.start,
@@ -167,6 +190,9 @@ export function toSarif(result: ReviewResult): SarifReport {
             rules,
           },
         },
+        ...(options.automationId
+          ? { automationDetails: { id: options.automationId } }
+          : {}),
         results,
       },
     ],
@@ -233,6 +259,16 @@ export function renderJson(result: ReviewResult): string {
   );
 }
 
-export function renderSarifJson(result: ReviewResult): string {
-  return JSON.stringify(toSarif(result), null, 2);
+/**
+ * Renders a normalized review result as pretty-printed SARIF JSON.
+ *
+ * @param result - Normalized review result to render.
+ * @param options - Optional SARIF rendering overrides.
+ * @returns Pretty-printed SARIF JSON string.
+ */
+export function renderSarifJson(
+  result: ReviewResult,
+  options: SarifRenderOptions = {}
+): string {
+  return JSON.stringify(toSarif(result, options), null, 2);
 }

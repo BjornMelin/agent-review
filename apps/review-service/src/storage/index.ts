@@ -6,6 +6,7 @@ import {
   type OutputFormat,
   type ReviewAuthPrincipal,
   type ReviewAuthScope,
+  type ReviewPublicationRecord,
   type ReviewRepositoryAuthorization,
   type ReviewRequest,
   type ReviewRunAuthorization,
@@ -28,6 +29,7 @@ import {
   githubUsers,
   reviewArtifacts,
   reviewEvents,
+  reviewPublications,
   reviewRuns,
   reviewStatusTransitions,
   serviceTokens,
@@ -40,6 +42,7 @@ type ReviewStorageDatabase =
 type ReviewRunRow = typeof reviewRuns.$inferSelect;
 type ReviewEventRow = typeof reviewEvents.$inferSelect;
 type ReviewArtifactRow = typeof reviewArtifacts.$inferSelect;
+type ReviewPublicationRow = typeof reviewPublications.$inferSelect;
 type ServiceTokenRow = typeof serviceTokens.$inferSelect;
 type AuthAuditEventRow = typeof authAuditEvents.$inferSelect;
 type CleanupCandidate = {
@@ -242,6 +245,14 @@ export type ReviewStoreAdapter = {
   cleanup(options: ReviewStoreCleanupOptions): Promise<string[]>;
   entries(): Promise<Array<[string, ReviewRecord]>>;
   size(): Promise<number>;
+};
+
+/**
+ * Defines durable publication-state storage for outbound GitHub side effects.
+ */
+export type ReviewPublicationStoreAdapter = {
+  list(reviewId: string): Promise<ReviewPublicationRecord[]>;
+  upsert(record: ReviewPublicationRecord): Promise<void>;
 };
 
 /**
@@ -600,6 +611,51 @@ export function createInMemoryReviewStore(): ReviewStoreAdapter {
     },
     async size() {
       return records.size;
+    },
+  };
+}
+
+function clonePublicationRecord(
+  record: ReviewPublicationRecord
+): ReviewPublicationRecord {
+  return structuredClone(record);
+}
+
+function publicationIdentityKey(record: ReviewPublicationRecord): string {
+  return `${record.reviewId}:${record.channel}:${record.targetKey}`;
+}
+
+/**
+ * Creates an in-memory publication store for local tests and no-database development.
+ *
+ * @returns A copy-on-read publication store with deterministic upsert semantics.
+ */
+export function createInMemoryReviewPublicationStore(): ReviewPublicationStoreAdapter {
+  const records = new Map<string, ReviewPublicationRecord>();
+
+  return {
+    async list(reviewId) {
+      return [...records.values()]
+        .filter((record) => record.reviewId === reviewId)
+        .sort((left, right) => {
+          const channelCompare = left.channel.localeCompare(right.channel);
+          return channelCompare === 0
+            ? left.targetKey.localeCompare(right.targetKey)
+            : channelCompare;
+        })
+        .map(clonePublicationRecord);
+    },
+    async upsert(record) {
+      const key = publicationIdentityKey(record);
+      const previous = records.get(key);
+      records.set(
+        key,
+        clonePublicationRecord({
+          ...record,
+          publicationId: previous?.publicationId ?? record.publicationId,
+          createdAt: previous?.createdAt ?? record.createdAt,
+        })
+      );
     },
   };
 }
@@ -1371,6 +1427,93 @@ function authAuditEventValues(
   };
 }
 
+function publicationRecordFromRow(
+  row: ReviewPublicationRow
+): ReviewPublicationRecord {
+  return {
+    publicationId: row.publicationId,
+    reviewId: row.reviewId,
+    channel: row.channel,
+    targetKey: row.targetKey,
+    status: row.status,
+    ...(row.externalId ? { externalId: row.externalId } : {}),
+    ...(row.externalUrl ? { externalUrl: row.externalUrl } : {}),
+    ...(row.marker ? { marker: row.marker } : {}),
+    ...(row.message ? { message: row.message } : {}),
+    ...(row.error ? { error: row.error } : {}),
+    ...(row.metadata ? { metadata: row.metadata } : {}),
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+  };
+}
+
+function publicationValues(
+  record: ReviewPublicationRecord
+): typeof reviewPublications.$inferInsert {
+  return {
+    publicationId: record.publicationId,
+    reviewId: record.reviewId,
+    channel: record.channel,
+    targetKey: record.targetKey,
+    status: record.status,
+    externalId: record.externalId ?? null,
+    externalUrl: record.externalUrl ?? null,
+    marker: record.marker ?? null,
+    message: record.message ?? null,
+    error: record.error ?? null,
+    metadata: record.metadata ?? null,
+    createdAt: new Date(record.createdAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
+
+/**
+ * Creates a Drizzle-backed publication store for PostgreSQL-compatible databases.
+ *
+ * @param db - Drizzle PostgreSQL database connected with the review storage schema.
+ * @returns A durable publication store for GitHub publication state.
+ */
+export function createDrizzleReviewPublicationStore(
+  db: ReviewStorageDatabase
+): ReviewPublicationStoreAdapter {
+  return {
+    async list(reviewId) {
+      const rows = await db
+        .select()
+        .from(reviewPublications)
+        .where(eq(reviewPublications.reviewId, reviewId))
+        .orderBy(
+          asc(reviewPublications.channel),
+          asc(reviewPublications.targetKey)
+        );
+      return rows.map(publicationRecordFromRow);
+    },
+    async upsert(record) {
+      const values = publicationValues(record);
+      await db
+        .insert(reviewPublications)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [
+            reviewPublications.reviewId,
+            reviewPublications.channel,
+            reviewPublications.targetKey,
+          ],
+          set: {
+            status: values.status,
+            externalId: values.externalId,
+            externalUrl: values.externalUrl,
+            marker: values.marker,
+            message: values.message,
+            error: values.error,
+            metadata: values.metadata,
+            updatedAt: values.updatedAt,
+          },
+        });
+    },
+  };
+}
+
 /**
  * Creates a Drizzle-backed auth store for PostgreSQL-compatible databases.
  *
@@ -1557,6 +1700,34 @@ export function createPostgresReviewAuthStore(
 }
 
 /**
+ * Creates a durable publication store from a node-postgres pool or connection string.
+ *
+ * @param config - PostgreSQL connection string or pool configuration.
+ * @returns A closable publication store backed by Drizzle and node-postgres.
+ */
+export function createPostgresReviewPublicationStore(
+  config: string | PoolConfig
+): ReviewPublicationStoreAdapter & { close(): Promise<void> } {
+  const pool =
+    typeof config === 'string'
+      ? new pg.Pool({ connectionString: config })
+      : new pg.Pool(config);
+  pool.on('error', (error) => {
+    console.error(
+      '[review-service] PostgreSQL publication pool idle client error',
+      error
+    );
+  });
+  const db = drizzleNodePostgres(pool, { schema });
+  return {
+    ...createDrizzleReviewPublicationStore(db),
+    close() {
+      return pool.end();
+    },
+  };
+}
+
+/**
  * Creates the configured service store from process environment variables.
  *
  * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
@@ -1608,6 +1779,32 @@ export function createReviewAuthStoreFromEnv(
     return createInMemoryReviewAuthStore();
   }
   return createPostgresReviewAuthStore(databaseUrl);
+}
+
+/**
+ * Creates the configured publication store from process environment variables.
+ *
+ * @param env - Environment object containing `DATABASE_URL` or `POSTGRES_URL`.
+ * @param options - Runtime fallback policy.
+ * @returns A Postgres publication store when configured, otherwise an in-memory store.
+ * @throws Error - When no database URL is configured and in-memory fallback is disallowed.
+ */
+export function createReviewPublicationStoreFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { allowInMemoryFallback?: boolean } = {}
+): ReviewPublicationStoreAdapter {
+  const databaseUrl = env.DATABASE_URL ?? env.POSTGRES_URL;
+  if (!databaseUrl) {
+    const allowInMemoryFallback =
+      options.allowInMemoryFallback ?? env.NODE_ENV !== 'production';
+    if (!allowInMemoryFallback) {
+      throw new Error(
+        'DATABASE_URL or POSTGRES_URL is required for review-service publication storage in production'
+      );
+    }
+    return createInMemoryReviewPublicationStore();
+  }
+  return createPostgresReviewPublicationStore(databaseUrl);
 }
 
 /**

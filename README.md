@@ -10,6 +10,7 @@ The platform reviews code changes from git context and produces structured findi
 
 - CLI entrypoint for direct usage (`review-agent`)
 - HTTP service for inline or detached review execution
+- GitHub publication path for Checks, SARIF upload, and idempotent PR comments
 - Detached worker path with Workflow API orchestration and durable service state
 - Provider registry for Codex delegate and OpenAI-compatible model policy
 - Durable service storage with Drizzle/Postgres when a database URL is configured
@@ -109,6 +110,8 @@ pnpm --filter @review-agent/review-service db:migrate
 | `REVIEW_SERVICE_ALLOWED_CWD_ROOTS` | `apps/review-service` | Comma-separated host root allowlist for review working directories |
 | `REVIEW_SERVICE_HOSTED_REPOSITORY_ROOTS` | `apps/review-service` | Comma-separated checkout parent roots; defaults to `REVIEW_SERVICE_ALLOWED_CWD_ROOTS`; authenticated starts must run under `<root>/<owner>/<repo>` |
 | `GITHUB_API_BASE_URL` | `apps/review-service` | Optional GitHub API base URL override for Enterprise Server testing |
+| `GITHUB_APP_ID` | `apps/review-service` | Enables GitHub publication by identifying the GitHub App used to mint installation-scoped write tokens |
+| `GITHUB_APP_PRIVATE_KEY` | `apps/review-service` | GitHub App private key used for publication tokens; escaped `\n` sequences are normalized at startup |
 | `CODEX_BIN` | `packages/review-provider-codex` via provider registry | Override codex executable path (default `codex`) |
 | `AI_GATEWAY_API_KEY` | `packages/review-provider-openai` via provider registry | API key for gateway models |
 | `OPENROUTER_API_KEY` | `packages/review-provider-openai` via provider registry | API key for OpenRouter |

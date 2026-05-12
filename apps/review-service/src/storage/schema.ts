@@ -3,6 +3,9 @@ import type {
   OutputFormat,
   ReviewAuthPrincipal,
   ReviewAuthScope,
+  ReviewPublicationChannel,
+  ReviewPublicationRecord,
+  ReviewPublicationStatus,
   ReviewRepositoryAuthorization,
   ReviewRequest,
   ReviewRunAuthorization,
@@ -35,6 +38,20 @@ export const outputFormatEnum = pgEnum('review_output_format', [
   'sarif',
   'json',
   'markdown',
+]);
+
+/** Defines outbound GitHub publication side-effect channels. */
+export const reviewPublicationChannelEnum = pgEnum(
+  'review_publication_channel',
+  ['checkRun', 'sarif', 'pullRequestComment']
+);
+
+/** Defines terminal publication state for one GitHub side effect. */
+export const reviewPublicationStatusEnum = pgEnum('review_publication_status', [
+  'published',
+  'skipped',
+  'unsupported',
+  'failed',
 ]);
 
 /** Stores canonical review run records, retention markers, and event cursors. */
@@ -206,6 +223,46 @@ export const reviewStatusTransitions = pgTable(
       table.reviewId,
       table.createdAt
     ),
+  ]
+);
+
+/** Stores idempotency and outcome state for outbound GitHub publication writes. */
+export const reviewPublications = pgTable(
+  'review_publications',
+  {
+    publicationId: text('publication_id').primaryKey(),
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => reviewRuns.reviewId, { onDelete: 'cascade' }),
+    channel: reviewPublicationChannelEnum('channel')
+      .$type<ReviewPublicationChannel>()
+      .notNull(),
+    targetKey: text('target_key').notNull(),
+    status: reviewPublicationStatusEnum('status')
+      .$type<ReviewPublicationStatus>()
+      .notNull(),
+    externalId: text('external_id'),
+    externalUrl: text('external_url'),
+    marker: text('marker'),
+    message: text('message'),
+    error: text('error'),
+    metadata: jsonb('metadata').$type<ReviewPublicationRecord['metadata']>(),
+    createdAt: timestamp('created_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    updatedAt: timestamp('updated_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('review_publications_review_channel_target_idx').on(
+      table.reviewId,
+      table.channel,
+      table.targetKey
+    ),
+    index('review_publications_review_id_idx').on(table.reviewId),
   ]
 );
 
@@ -384,6 +441,7 @@ export const authAuditEvents = pgTable(
 export const reviewRunRelations = relations(reviewRuns, ({ many }) => ({
   artifacts: many(reviewArtifacts),
   events: many(reviewEvents),
+  publications: many(reviewPublications),
   statusTransitions: many(reviewStatusTransitions),
 }));
 
@@ -412,6 +470,17 @@ export const reviewStatusTransitionRelations = relations(
   ({ one }) => ({
     run: one(reviewRuns, {
       fields: [reviewStatusTransitions.reviewId],
+      references: [reviewRuns.reviewId],
+    }),
+  })
+);
+
+/** Declares publication-to-run relations for Drizzle relational queries. */
+export const reviewPublicationRelations = relations(
+  reviewPublications,
+  ({ one }) => ({
+    run: one(reviewRuns, {
+      fields: [reviewPublications.reviewId],
       references: [reviewRuns.reviewId],
     }),
   })

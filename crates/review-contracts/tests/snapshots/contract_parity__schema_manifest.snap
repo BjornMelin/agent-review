@@ -20,6 +20,8 @@ schemas:
   - reviewEventCursor -> review-event-cursor.schema.json
   - reviewEventStoreRecord -> review-event-store-record.schema.json
   - reviewFinding -> review-finding.schema.json
+  - reviewPublicationRecord -> review-publication-record.schema.json
+  - reviewPublishResponse -> review-publish-response.schema.json
   - reviewRepositorySelection -> review-repository-selection.schema.json
   - reviewRequest -> review-request.schema.json
   - reviewResult -> review-result.schema.json

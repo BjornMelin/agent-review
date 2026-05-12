@@ -6,3 +6,7 @@ export * from './app.js';
  * Re-exports hosted authentication and authorization utilities.
  */
 export * from './auth.js';
+/**
+ * Re-exports GitHub publication service utilities.
+ */
+export * from './github-publication.js';

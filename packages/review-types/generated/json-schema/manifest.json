@@ -56,6 +56,14 @@
       "file": "review-finding.schema.json"
     },
     {
+      "name": "reviewPublicationRecord",
+      "file": "review-publication-record.schema.json"
+    },
+    {
+      "name": "reviewPublishResponse",
+      "file": "review-publish-response.schema.json"
+    },
+    {
       "name": "reviewRepositorySelection",
       "file": "review-repository-selection.schema.json"
     },

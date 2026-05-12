@@ -180,9 +180,13 @@ The review service uses `review-types` for request parsing and response DTOs.
 - `ReviewStartResponseSchema`: start response with `reviewId`, run `status`,
   optional `detachedRunId`, and optional `result`.
 - `ReviewStatusResponseSchema`: status response with timestamps, optional
-  `error`, and optional `result`.
+  `error`, optional `result`, and optional durable publication records.
 - `ReviewCancelResponseSchema`: cancel response with `reviewId`, run `status`,
   and optional `cancelled=false` for conflict responses.
+- `ReviewPublicationRecordSchema`: durable per-channel publication state for
+  outbound GitHub side effects.
+- `ReviewPublishResponseSchema`: publish response with aggregate status and
+  per-channel publication records.
 - `ReviewErrorResponseSchema`: canonical `{ error }` response body.
 
 `ReviewRunStatusSchema` is the single run-status owner:
