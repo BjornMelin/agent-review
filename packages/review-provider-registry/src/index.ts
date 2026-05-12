@@ -15,19 +15,40 @@ import type {
 } from '@review-agent/review-types';
 import { redactErrorMessage } from '@review-agent/review-types';
 
+/**
+ * Names the CLI provider routes accepted by provider-facing commands.
+ */
 export type CliProviderRoute = 'codex' | 'gateway' | 'openrouter';
+
+/**
+ * Names provider filters accepted by doctor checks.
+ */
 export type DoctorProviderFilter = CliProviderRoute | 'all';
+
+/**
+ * Names OpenAI-compatible route families backed by the shared provider adapter.
+ */
 export type OpenAICompatibleRoute = 'gateway' | 'openrouter';
+
+/**
+ * Maps each review provider kind to the provider implementation used at runtime.
+ */
 export type ReviewProviderRegistry = Record<
   ReviewRequest['provider'],
   ReviewProvider
 >;
 
+/**
+ * Configures all providers exposed by the review provider registry.
+ */
 export type ReviewProviderRegistryOptions = {
   codex?: CodexProviderOptions;
   openaiCompatible?: OpenAICompatibleRegistryOptions;
 };
 
+/**
+ * Configures gateway and OpenRouter credentials plus endpoint overrides.
+ */
 export type OpenAICompatibleRegistryOptions = {
   defaultModelId?: string;
   gatewayApiKey?: string;
@@ -37,11 +58,17 @@ export type OpenAICompatibleRegistryOptions = {
   openRouterHeaders?: Record<string, string>;
 };
 
+/**
+ * Captures the normalized provider and model routed from CLI flags.
+ */
 export type ProviderModelSelection = {
   provider: ReviewRequest['provider'];
   model: string | undefined;
 };
 
+/**
+ * Describes one sanitized provider doctor check result.
+ */
 export type DoctorCheck = {
   name: string;
   ok: boolean;
@@ -49,6 +76,9 @@ export type DoctorCheck = {
   remediation?: string;
 };
 
+/**
+ * Describes one allowlisted provider model and its policy metadata.
+ */
 export type ModelEntry = {
   id: string;
   provider: OpenAICompatibleRoute;
@@ -81,6 +111,9 @@ const OPENAI_COMPATIBLE_CAPABILITIES: ReviewProviderCapabilities = {
   streaming: false,
 };
 
+/**
+ * Versions the provider policy catalog emitted in telemetry and model listings.
+ */
 export const MODEL_POLICY_VERSION = 'provider-policy.v1';
 
 const DEFAULT_MODEL_POLICY = {
@@ -94,11 +127,17 @@ const DEFAULT_MODEL_POLICY = {
   disallowPromptTraining: true,
 } as const;
 
+/**
+ * Maps each OpenAI-compatible route to its default allowlisted model.
+ */
 export const DEFAULT_MODEL_BY_ROUTE: Record<OpenAICompatibleRoute, string> = {
   gateway: 'gateway:openai/gpt-5',
   openrouter: 'openrouter:openai/gpt-5',
 };
 
+/**
+ * Lists the allowlisted models and routing policy exposed to CLI and provider code.
+ */
 export const MODEL_CATALOG: readonly ModelEntry[] = [
   {
     provider: 'gateway',
@@ -213,6 +252,12 @@ function providerSlugForModel(model: string): string {
   return model.split('/')[0] ?? model;
 }
 
+/**
+ * Splits a routed OpenAI-compatible model ID into route and provider model parts.
+ *
+ * @param modelId - Model ID in `<route>:<provider-model>` form.
+ * @returns The parsed route and provider model ID.
+ */
 export function parseOpenAICompatibleModelId(modelId: string): {
   route: OpenAICompatibleRoute;
   model: string;
@@ -238,6 +283,13 @@ export function parseOpenAICompatibleModelId(modelId: string): {
   };
 }
 
+/**
+ * Normalizes CLI model input into a catalog-checked routed model ID.
+ *
+ * @param route - OpenAI-compatible route selected by the caller.
+ * @param model - Optional raw model value supplied by the user.
+ * @returns A routed model ID that exists in the allowlist catalog.
+ */
 export function normalizeOpenAICompatibleModelId(
   route: OpenAICompatibleRoute,
   model: string | undefined
@@ -332,6 +384,13 @@ function buildOpenAICompatibleRoutes(
   return [gatewayRoute, openRouterRoute];
 }
 
+/**
+ * Resolves CLI provider flags into the canonical runtime provider and model selection.
+ *
+ * @param provider - CLI provider route requested by the user.
+ * @param model - Optional model override supplied by the user.
+ * @returns The runtime provider kind and normalized model selection.
+ */
 export function normalizeCliProviderModel(
   provider: CliProviderRoute,
   model: string | undefined
@@ -355,6 +414,12 @@ export function normalizeCliProviderModel(
   }
 }
 
+/**
+ * Creates the complete review provider registry used by CLI and service execution.
+ *
+ * @param options - Optional provider-specific configuration and credentials.
+ * @returns Runtime provider implementations keyed by review provider kind.
+ */
 export function createReviewProviders(
   options: ReviewProviderRegistryOptions = {}
 ): ReviewProviderRegistry {
@@ -371,6 +436,11 @@ export function createReviewProviders(
   };
 }
 
+/**
+ * Returns a defensive copy of the allowlisted provider model catalog.
+ *
+ * @returns Model catalog entries with cloned nested policy metadata.
+ */
 export function listModelCatalog(): ModelEntry[] {
   return MODEL_CATALOG.map((model) => ({
     ...model,
@@ -382,6 +452,12 @@ export function listModelCatalog(): ModelEntry[] {
   }));
 }
 
+/**
+ * Runs non-secret provider availability and configuration diagnostics.
+ *
+ * @param providers - Provider registry to inspect, defaulting to the configured runtime registry.
+ * @returns Sanitized doctor checks for provider availability and route diagnostics.
+ */
 export async function runProviderDoctorChecks(
   providers: Partial<ReviewProviderRegistry> = createReviewProviders()
 ): Promise<DoctorCheck[]> {
@@ -435,6 +511,13 @@ export async function runProviderDoctorChecks(
   return checks;
 }
 
+/**
+ * Filters provider doctor checks to the selected CLI provider surface.
+ *
+ * @param checks - Doctor checks returned by provider diagnostics.
+ * @param provider - Provider filter requested by the user.
+ * @returns Checks matching the selected provider route.
+ */
 export function filterDoctorChecks(
   checks: DoctorCheck[],
   provider: DoctorProviderFilter

@@ -26,6 +26,9 @@ export type OpenAICompatibleProviderOptions = {
   routes: readonly OpenAICompatibleRouteConfig[];
 };
 
+/**
+ * Defines a Vercel AI Gateway route and its optional endpoint overrides.
+ */
 export type GatewayRouteConfig = {
   id: string;
   kind: 'gateway';
@@ -35,6 +38,9 @@ export type GatewayRouteConfig = {
   baseURL?: string | undefined;
 };
 
+/**
+ * Defines an OpenAI-compatible chat route for provider-hosted model APIs.
+ */
 export type OpenAICompatibleChatRouteConfig = {
   id: string;
   kind: 'openaiCompatibleChat';
@@ -46,6 +52,9 @@ export type OpenAICompatibleChatRouteConfig = {
   supportsStructuredOutputs?: boolean | undefined;
 };
 
+/**
+ * Describes a provider route that can resolve allowlisted routed model IDs.
+ */
 export type OpenAICompatibleRouteConfig =
   | GatewayRouteConfig
   | OpenAICompatibleChatRouteConfig;
@@ -328,6 +337,9 @@ function attemptLatencyMs(startedAt: number): number {
   return Math.max(0, Math.round(performance.now() - startedAt));
 }
 
+/**
+ * Runs structured reviews through policy-checked OpenAI-compatible model routes.
+ */
 export class OpenAICompatibleReviewProvider implements ReviewProvider {
   id = 'openaiCompatible' as const;
   private readonly defaultModelId: string | undefined;
@@ -692,6 +704,12 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
   }
 }
 
+/**
+ * Creates the OpenAI-compatible review provider from a route and policy registry.
+ *
+ * @param options - Route factories, policy catalog, capabilities, and optional default model.
+ * @returns A review provider that enforces the configured model policies.
+ */
 export function createOpenAICompatibleReviewProvider(
   options: OpenAICompatibleProviderOptions
 ): ReviewProvider {
