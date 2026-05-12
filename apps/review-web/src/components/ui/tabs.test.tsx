@@ -2,21 +2,27 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './tabs';
 
+function moduleSiblingFilePath(path: string): string {
+  const siblingUrl = new URL(path, import.meta.url);
+  if (siblingUrl.protocol === 'file:') {
+    return fileURLToPath(siblingUrl);
+  }
+
+  return join(process.cwd(), siblingUrl.pathname.replace(/^\/+/, ''));
+}
+
 describe('Tabs', () => {
   it('declares a client boundary for Radix event handlers', async () => {
-    const source = await readFile(
-      join(process.cwd(), 'src/components/ui/tabs.tsx'),
-      {
-        encoding: 'utf8',
-      }
-    );
+    const tabsFilePath = moduleSiblingFilePath('./tabs.tsx');
+    const source = await readFile(tabsFilePath, { encoding: 'utf8' });
 
-    expect(source.trimStart().startsWith("'use client';")).toBe(true);
+    expect(source).toMatch(/^\s*['"]use client['"];?/);
   });
 
   it('switches panels when a trigger is selected', async () => {

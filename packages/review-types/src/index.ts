@@ -592,6 +592,9 @@ export const ProviderRetentionPolicySchema = z.enum([
   'byokUnverified',
 ]);
 
+/**
+ * Captures provider-reported token and cost totals without raw provider payloads.
+ */
 export const ProviderUsageSchema = z.strictObject({
   status: z.enum(['reported', 'unknown']),
   inputTokens: z.number().int().nonnegative().optional(),
@@ -603,6 +606,10 @@ export const ProviderUsageSchema = z.strictObject({
   marketCostUsd: z.number().nonnegative().optional(),
 });
 
+/**
+ * Records one routed provider attempt, including sanitized status, latency, and
+ * optional usage evidence.
+ */
 export const ProviderAttemptTelemetrySchema = z.strictObject({
   route: z.string().min(1),
   model: z.string().min(1),

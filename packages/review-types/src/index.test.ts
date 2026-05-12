@@ -378,6 +378,35 @@ describe('review-types schemas', () => {
     expect(
       redactReviewResult(result).result.metadata.providerTelemetry
     ).toEqual(providerTelemetry);
+
+    const redactionProbeTelemetry = ProviderPolicyTelemetrySchema.parse({
+      ...providerTelemetry,
+      attempts: [
+        {
+          ...providerTelemetry.attempts[0]!,
+          errorCode: 'Bearer abc.def.ghi',
+          generationId: 'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456',
+        },
+      ],
+    });
+    const redactionProbe = ReviewResultSchema.parse({
+      ...result,
+      metadata: {
+        ...result.metadata,
+        providerTelemetry: redactionProbeTelemetry,
+      },
+    });
+    const redactedTelemetry =
+      redactReviewResult(redactionProbe).result.metadata.providerTelemetry;
+
+    expect(redactedTelemetry?.attempts[0]?.generationId).toBe(
+      'OPENAI_API_KEY=[REDACTED_SECRET]'
+    );
+    expect(redactedTelemetry?.attempts[0]?.errorCode).toBe('Bearer [REDACTED]');
+    expect(JSON.stringify(redactedTelemetry)).not.toContain(
+      'sk-abcdefghijklmnopqrstuvwxyz123456'
+    );
+    expect(redactedTelemetry?.usage.costUsd).toBe(0.001);
   });
 
   it('validates hosted repository authorization metadata', () => {

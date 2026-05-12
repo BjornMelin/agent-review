@@ -428,6 +428,36 @@ describe('openai-compatible provider contract', () => {
     expect(generateTextMock).not.toHaveBeenCalled();
   });
 
+  it('includes rubric text in provider input budget enforcement', async () => {
+    const provider = makeProvider({
+      gatewayApiKey: 'test-gateway-key',
+      modelPolicies: [
+        makePolicy('gateway:openai/gpt-5', {
+          maxInputChars: 130,
+        }),
+      ],
+      defaultModelId: 'gateway:openai/gpt-5',
+    });
+
+    await expect(
+      provider.run({
+        request: {
+          cwd: process.cwd(),
+          target: { type: 'uncommittedChanges' },
+          provider: 'openaiCompatible',
+          executionMode: 'localTrusted',
+          outputFormats: ['json'],
+        },
+        resolvedPrompt: 'prompt',
+        rubric: 'rubric '.repeat(20),
+        normalizedDiffChunks: [
+          { file: 'file.ts', patch: 'diff --git a/file.ts b/file.ts' },
+        ],
+      })
+    ).rejects.toThrow(/rendered input has/);
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
   it('records explicit fallback evidence when a policy fallback succeeds', async () => {
     generateTextMock
       .mockRejectedValueOnce(

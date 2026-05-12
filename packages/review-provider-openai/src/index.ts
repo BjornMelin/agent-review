@@ -46,6 +46,10 @@ export type OpenAICompatibleRouteConfig =
   | GatewayRouteConfig
   | OpenAICompatibleChatRouteConfig;
 
+/**
+ * Captures the allowlisted routing, fallback, budget, timeout, and retention
+ * controls for one Gateway or OpenRouter model.
+ */
 export type OpenAICompatibleModelPolicy = {
   id: string;
   route: string;
@@ -493,9 +497,10 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
       throw new Error(parsed.detail);
     }
     const prompt = buildReviewInput(input);
-    if (prompt.length > parsed.policy.maxInputChars) {
+    const renderedInputChars = prompt.length + input.rubric.length;
+    if (renderedInputChars > parsed.policy.maxInputChars) {
       throw new Error(
-        `provider input budget exceeded for ${parsed.routedModelId}; prompt has ${prompt.length} characters and policy allows ${parsed.policy.maxInputChars}.`
+        `provider input budget exceeded for ${parsed.routedModelId}; rendered input has ${renderedInputChars} characters and policy allows ${parsed.policy.maxInputChars}.`
       );
     }
 
@@ -617,6 +622,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
         };
       } catch (error) {
         const failureClass = classifyProviderError(error);
+        const retryable = retryableFor(error);
         lastFailureClass = failureClass;
         providerAttempts.push({
           route: attempt.route.id,
@@ -625,9 +631,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
           latencyMs: attemptLatencyMs(startedAt),
           failureClass,
           errorCode: safeErrorCode(error),
-          ...(retryableFor(error) === undefined
-            ? {}
-            : { retryable: retryableFor(error) as boolean }),
+          ...(retryable === undefined ? {} : { retryable }),
         });
         if (failureClass === 'cancelled') {
           throw error;
