@@ -621,6 +621,10 @@ function clonePublicationRecord(
   return structuredClone(record);
 }
 
+function publicationIdentityKey(record: ReviewPublicationRecord): string {
+  return `${record.reviewId}:${record.channel}:${record.targetKey}`;
+}
+
 /**
  * Creates an in-memory publication store for local tests and no-database development.
  *
@@ -642,7 +646,16 @@ export function createInMemoryReviewPublicationStore(): ReviewPublicationStoreAd
         .map(clonePublicationRecord);
     },
     async upsert(record) {
-      records.set(record.publicationId, clonePublicationRecord(record));
+      const key = publicationIdentityKey(record);
+      const previous = records.get(key);
+      records.set(
+        key,
+        clonePublicationRecord({
+          ...record,
+          publicationId: previous?.publicationId ?? record.publicationId,
+          createdAt: previous?.createdAt ?? record.createdAt,
+        })
+      );
     },
   };
 }
@@ -1487,7 +1500,6 @@ export function createDrizzleReviewPublicationStore(
             reviewPublications.targetKey,
           ],
           set: {
-            publicationId: values.publicationId,
             status: values.status,
             externalId: values.externalId,
             externalUrl: values.externalUrl,

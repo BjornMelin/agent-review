@@ -352,7 +352,7 @@ describe('review storage', () => {
         updatedAt: BASE_TIME_MS,
       });
       await publicationStore.upsert({
-        publicationId: 'publication-1',
+        publicationId: 'publication-2',
         reviewId: 'review-1',
         channel: 'checkRun',
         targetKey: 'check-run:abcdef1',
@@ -400,6 +400,40 @@ describe('review storage', () => {
 
     await expect(publicationStore.list('review-1')).resolves.toEqual([
       expect.objectContaining({ status: 'unsupported' }),
+    ]);
+  });
+
+  it('matches durable publication identity semantics in memory', async () => {
+    const publicationStore = createInMemoryReviewPublicationStore();
+    await publicationStore.upsert({
+      publicationId: 'publication-1',
+      reviewId: 'review-1',
+      channel: 'checkRun',
+      targetKey: 'check-run:abcdef1',
+      status: 'published',
+      externalId: '100',
+      createdAt: BASE_TIME_MS,
+      updatedAt: BASE_TIME_MS,
+    });
+    await publicationStore.upsert({
+      publicationId: 'publication-2',
+      reviewId: 'review-1',
+      channel: 'checkRun',
+      targetKey: 'check-run:abcdef1',
+      status: 'failed',
+      error: 'replacement',
+      createdAt: BASE_TIME_MS + 1,
+      updatedAt: BASE_TIME_MS + 1,
+    });
+
+    await expect(publicationStore.list('review-1')).resolves.toEqual([
+      expect.objectContaining({
+        publicationId: 'publication-1',
+        status: 'failed',
+        error: 'replacement',
+        createdAt: BASE_TIME_MS,
+        updatedAt: BASE_TIME_MS + 1,
+      }),
     ]);
   });
 

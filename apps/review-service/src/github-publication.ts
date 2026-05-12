@@ -29,27 +29,65 @@ type GitHubApiResponse<TData> = {
   status?: number;
 };
 
+/**
+ * Executes an authenticated GitHub REST request.
+ *
+ * @param route - Octokit route template for the GitHub endpoint.
+ * @param options - Route parameters and request body fields.
+ * @returns GitHub response data and optional HTTP status metadata.
+ */
 export type GitHubRequestClient = <TData>(
   route: string,
   options?: Record<string, unknown>
 ) => Promise<GitHubApiResponse<TData>>;
 
+/**
+ * Creates a GitHub request client for one installation token.
+ *
+ * @param token - GitHub installation access token used for authorization.
+ * @returns Request client bound to the provided token.
+ */
 export type GitHubRequestFactory = (token: string) => GitHubRequestClient;
 
+/**
+ * Mints repository-scoped GitHub App installation tokens for publication.
+ *
+ * @param input - Installation, repository, and permission constraints.
+ * @returns Narrowed GitHub App installation token.
+ */
 export type GitHubInstallationTokenProvider = (
   input: GitHubInstallationTokenRequest
 ) => Promise<GitHubInstallationToken>;
 
+/**
+ * Publishes a completed review record to external publication targets.
+ */
 export type ReviewPublicationService = {
+  /**
+   * Publishes one completed review record.
+   *
+   * @param record - Completed review record with repository authorization.
+   * @returns Aggregate publication response and per-channel publication records.
+   */
   publish(record: ReviewRecord): Promise<ReviewPublishResponse>;
 };
 
+/**
+ * Signals a safe HTTP status and message for rejected GitHub publication work.
+ */
 export class GitHubPublicationError extends Error {
-  constructor(
-    readonly status: 400 | 409 | 502,
-    message: string
-  ) {
+  /** HTTP status that the service route may expose for this safe error. */
+  readonly status: 400 | 409 | 502;
+
+  /**
+   * Creates a safe publication error.
+   *
+   * @param status - HTTP status to return for the publication failure.
+   * @param message - Safe error message to expose to API clients.
+   */
+  constructor(status: 400 | 409 | 502, message: string) {
     super(message);
+    this.status = status;
     this.name = 'GitHubPublicationError';
   }
 }
@@ -191,15 +229,21 @@ function buildExistingMap(
   );
 }
 
+function escapeGitHubMarkdownHtml(input: string): string {
+  const entities: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+  };
+  return input.replace(/[&<>]/g, (character) => entities[character] ?? '');
+}
+
 function safeMarkdown(input: string): string {
   const redacted = redactSensitiveText(input).text;
-  return redacted
-    .replaceAll('@', '@ ')
-    .replaceAll('<!--', '&lt;!--')
-    .replaceAll('-->', '--&gt;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .slice(0, PUBLISH_MARKDOWN_LIMIT);
+  return escapeGitHubMarkdownHtml(redacted.replaceAll('@', '@ ')).slice(
+    0,
+    PUBLISH_MARKDOWN_LIMIT
+  );
 }
 
 function priorityLabel(finding: ReviewFinding): string {
@@ -670,6 +714,23 @@ async function listPullRequestComments(
   return comments;
 }
 
+function hasStoredCommentOwnership(
+  context: PublicationContext,
+  comment: GitHubReviewComment,
+  marker: NonNullable<ReturnType<typeof parseMarker>>
+): boolean {
+  const externalId = String(comment.id);
+  return [...context.existing.values()].some(
+    (record) =>
+      record.channel === 'pullRequestComment' &&
+      record.reviewId === context.record.reviewId &&
+      record.externalId === externalId &&
+      record.marker === comment.body?.split('\n')[0] &&
+      marker.fingerprint ===
+        (record.metadata as { fingerprint?: unknown } | undefined)?.fingerprint
+  );
+}
+
 async function publishPullRequestComments(
   context: PublicationContext
 ): Promise<ReviewPublicationRecord[]> {
@@ -708,7 +769,10 @@ async function publishPullRequestComments(
   >();
   for (const comment of existingComments) {
     const marker = parseMarker(comment.body);
-    if (marker?.reviewId === context.record.reviewId) {
+    if (
+      marker?.reviewId === context.record.reviewId &&
+      hasStoredCommentOwnership(context, comment, marker)
+    ) {
       existingByTargetHash.set(marker.targetHash, { comment, marker });
     }
   }

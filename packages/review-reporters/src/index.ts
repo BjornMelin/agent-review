@@ -43,8 +43,13 @@ export type SarifReport = {
   }>;
 };
 
+/**
+ * Defines optional overrides used when rendering SARIF output.
+ */
 export type SarifRenderOptions = {
+  /** Maps a finding to the repository-relative path emitted in SARIF. */
   pathForFinding?: (finding: ReviewFinding) => string;
+  /** Distinguishes one logical SARIF analysis category for GitHub code scanning. */
   automationId?: string;
 };
 
@@ -103,6 +108,13 @@ export function sortFindingsDeterministically(
   });
 }
 
+/**
+ * Converts a normalized review result into a SARIF 2.1.0 report.
+ *
+ * @param result - Normalized review result to render.
+ * @param options - Optional SARIF rendering overrides.
+ * @returns SARIF report object ready for JSON serialization.
+ */
 export function toSarif(
   result: ReviewResult,
   options: SarifRenderOptions = {}
@@ -247,6 +259,13 @@ export function renderJson(result: ReviewResult): string {
   );
 }
 
+/**
+ * Renders a normalized review result as pretty-printed SARIF JSON.
+ *
+ * @param result - Normalized review result to render.
+ * @param options - Optional SARIF rendering overrides.
+ * @returns Pretty-printed SARIF JSON string.
+ */
 export function renderSarifJson(
   result: ReviewResult,
   options: SarifRenderOptions = {}
