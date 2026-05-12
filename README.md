@@ -45,6 +45,9 @@ crates/
   review-git-diff/
 docs/
   architecture/
+  deployment/
+  operations/
+  release/
 ```
 
 ## Prerequisites
@@ -56,6 +59,10 @@ docs/
 - Optional: `codex` CLI for `codexDelegate` provider
 
 ## Quickstart
+
+The local quickstart validates the full workspace and builds the shipped
+artifacts. It does not require hosted service auth, Postgres, Workflow, Vercel
+Sandbox, or provider API keys.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -145,6 +152,12 @@ publish preview, publish, and cancel service endpoints through server-side data
 loading and token-safe route handlers. Deployment notes are in
 [docs/deployment/review-web.md](docs/deployment/review-web.md).
 
+Review Room is an operations console, not a marketing shell. Its first screen is
+a dense run list with status, provider/model, repository, timing, sandbox,
+workflow, artifact, and metrics cues. Run detail pages show lifecycle replay,
+findings with triage state/notes, artifact links, publish preview/evidence, and
+publish/cancel controls.
+
 ## Environment Variables
 
 | Variable | Used By | Purpose |
@@ -201,13 +214,20 @@ Root scripts:
 - `bash scripts/repro-check.sh`
 
 CI workflow: `.github/workflows/ci.yml` installs Node/pnpm and stable Rust, then
-runs install, format, lint, typecheck, test, Rust helper gates, and build.
+runs the branch-protection `check` aggregator across static checks, generated
+contracts, Rust gates, TypeScript typecheck/tests/builds, Rust diff-index
+benchmarks, Review Room build, and dependency security audit. The separate
+`Vercel Preview` workflow smoke-tests deployed Review Room previews when Vercel
+emits a preview deployment signal.
 
 ## Documentation
 
 - Docs index: [docs/README.md](docs/README.md)
 - Product requirements: [docs/PRD.md](docs/PRD.md)
+- Review service deployment: [docs/deployment/review-service.md](docs/deployment/review-service.md)
 - Review Room deployment: [docs/deployment/review-web.md](docs/deployment/review-web.md)
+- Operator runbooks: [docs/operations/operator-runbooks.md](docs/operations/operator-runbooks.md)
+- Observability runbook: [docs/operations/observability.md](docs/operations/observability.md)
 - Architecture requirements: [docs/architecture/requirements.md](docs/architecture/requirements.md)
 - Architecture specs: [docs/architecture/spec/](docs/architecture/spec/)
 - Architecture decisions: [docs/architecture/adr/](docs/architecture/adr/)

@@ -4,6 +4,11 @@ Tracking issue: https://github.com/BjornMelin/agent-review/issues/4
 
 ## Scope
 
+This ledger records the May 2026 dependency modernization wave. It is historical
+evidence, not the current package-policy source of truth. Current dependency
+build-script policy lives in `pnpm-workspace.yaml`; current CI and advisory
+policy lives in [CI Hardening Runbook](./ci-hardening.md).
+
 This modernization moves the monorepo to the current compatible dependency
 baseline, removes unused dependency edges, and aligns runtime/tooling contracts
 with current upstream support:
@@ -37,9 +42,11 @@ with current upstream support:
   pulled unused framework adapters and CLI dependencies into the worker graph.
 - pnpm overrides are limited to patched transitive versions needed to resolve
   advisories in `devalue`, `picomatch`, `postcss`, `undici`, and `vite`.
-- pnpm build-script policy allows only the native/toolchain packages still
-  present in the dependency graph: `@biomejs/biome`, `cbor-extract`, and
-  `esbuild`.
+- At the time of the modernization PR, pnpm build-script policy allowed only
+  the native/toolchain packages then present in the dependency graph:
+  `@biomejs/biome`, `cbor-extract`, and `esbuild`. Current policy has since
+  expanded for Review Room image/browser tooling and must be read from
+  `pnpm-workspace.yaml`.
 
 ## Verification
 
@@ -54,5 +61,8 @@ with current upstream support:
 - HTTP smoke: `POST /v1/review/start` with `executionMode=remoteSandbox`,
   detached delivery, and a custom target
 
-There is no rendered web frontend or shadcn component surface in this repo, so
-browser visual verification is not applicable for this modernization.
+At the time of this modernization PR, there was no rendered web frontend or
+shadcn component surface in the repo, so browser visual verification was not
+applicable to that modernization. Current Review Room UI changes require the
+browser and preview smoke gates documented in
+[Release Checklist](./release-checklist.md).

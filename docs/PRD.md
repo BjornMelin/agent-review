@@ -49,7 +49,9 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Next.js Review Room with dense hosted run list, detail, lifecycle timeline,
   finding table, triage filters/state/notes, artifact links, provider/model
   metadata, run metrics, publication preview/evidence, and server-side
-  publish/cancel controls
+  publish/cancel controls. The UI is an operations console: the run list is the
+  first screen, and run detail pages are optimized for triage, artifact access,
+  lifecycle replay, and controlled GitHub publication.
 - Optional Convex metadata mirror writes
 
 ## Out of Scope (Current Implementation)
@@ -65,6 +67,7 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Review authoring flows beyond the existing CLI/API start and submit paths
 - Rust service rewrites, native primary CLI rewrites, Ratatui TUIs, and Tauri
   desktop applications
+- Customer billing, tenant administration, and external self-serve onboarding
 
 ## Primary Users
 
@@ -82,6 +85,9 @@ Engineering teams need repeatable, machine-readable code review output that can 
 - Detached runs can be started, polled, and cancelled through service APIs.
 - Hosted run lists and run details can be loaded through Review Room without
   exposing bearer tokens to the browser.
+- Operators can identify failed, backpressured, cancelled, sandboxed, and
+  publication-ready runs from durable summaries without reading raw provider
+  output or private repository material from logs.
 - Cancellation responses only report terminal success after the runtime reports
   `cancelled`; capacity exhaustion returns retryable `429` errors instead of
   accepting unbounded work.

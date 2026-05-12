@@ -58,10 +58,12 @@ change before committing.
 - npm advisories: `pnpm audit --audit-level high --prod`.
 - Cargo advisories: `cargo audit --deny warnings`.
 
-The Rust lane installs `cargo-audit` at the pinned script version when the
-command is missing. Advisory ignores are not allowed inline in workflow YAML;
-any accepted advisory exception must be documented with issue links, affected
-packages, scope, and expiration.
+The Rust lane enforces the pinned `cargo-audit` version in
+`scripts/security-audit.sh`. If the command is missing or its parsed version
+does not match the pin, the script installs the pinned version with
+`cargo install --locked --force`. Advisory ignores are not allowed inline in
+workflow YAML; any accepted advisory exception must be documented with issue
+links, affected packages, scope, and expiration.
 
 ## Vercel Preview Smoke
 

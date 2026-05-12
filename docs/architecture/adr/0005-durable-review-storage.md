@@ -3,6 +3,14 @@
 - Status: Accepted
 - Date: 2026-05-11
 
+## Amendment - 2026-05-12
+
+Follow-up roadmap issues have attached auth ownership, Review Room views,
+GitHub publication state, finding triage, and run observability metrics to the
+same durable store. This ADR remains the storage decision record; current table
+ownership and route contracts are in
+[Review Service API](../spec/review-service-api.md).
+
 ## Context
 
 The review service started with a process-local store for run status, lifecycle
@@ -60,8 +68,9 @@ queryable run, event, or artifact state.
 - Artifact metadata can be inspected without parsing generated artifact bodies.
 - Storage tests exercise real SQL semantics without requiring hosted
   infrastructure.
-- The service can later attach auth ownership, Review Room views, retention
-  jobs, and GitHub publishing state to the same run record.
+- The service can attach auth ownership, Review Room views, retention jobs,
+  GitHub publishing state, finding triage, and observability metrics to the same
+  run record.
 
 ### Negative
 

@@ -3,6 +3,13 @@
 - Status: Accepted
 - Date: 2026-03-01
 
+## Amendment - 2026-05-12
+
+The current topology also includes `apps/review-web` as the Next.js Review Room
+operations surface. This ADR remains the original topology decision; the
+canonical current application/package map is
+[System Overview](../spec/system-overview.md).
+
 ## Context
 
 The platform must support local developer workflows and service-based orchestration while sharing strict review contracts and avoiding duplicated core logic.
@@ -14,6 +21,7 @@ Use a multi-app, shared-package monorepo topology:
 - CLI app for direct local/CI usage
 - Service app for HTTP orchestration and streaming
 - Worker app for detached execution
+- Web app for hosted Review Room operations
 - Shared packages for schemas, core orchestration, providers, git diff, reporting, sandbox policy, and optional metadata mirroring
 
 ## Consequences

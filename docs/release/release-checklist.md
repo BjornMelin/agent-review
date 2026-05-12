@@ -98,5 +98,8 @@ that break and rerun the clean gate.
 ## Documentation and Handoff
 
 1. Update architecture docs for any behavior changes.
-2. Confirm `.agents/plans/2026-03-01-review-agent-platform-final-spec.md` checklist is fully checked.
-3. Capture release notes (version, notable changes, known constraints).
+2. Confirm [docs/README.md](../README.md), operator runbooks, deployment docs,
+   release docs, specs, and ADR links route readers to the current source of
+   truth instead of historical `.agents/plans/*` files.
+3. Capture release notes (version, notable changes, known constraints,
+   validation evidence, deployment evidence, and residual risks).

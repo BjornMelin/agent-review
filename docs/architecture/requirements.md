@@ -88,6 +88,18 @@ state.
 
 When configured with `CONVEX_URL`, system shall attempt non-blocking metadata mirror writes for completed reviews.
 
+### FR-11 Review Room Operations Surface
+
+System shall expose a Review Room web surface that lets authorized operators:
+
+- list hosted runs by status and repository context
+- inspect run detail, metrics, lifecycle events, findings, and artifacts
+- update finding triage state and notes through service-authorized route
+  handlers
+- preview and publish completed review output to GitHub
+- cancel nonterminal hosted runs without exposing service bearer tokens to
+  browser JavaScript
+
 ## Non-Functional Requirements
 
 ### NFR-1 Strict Typing and Validation
@@ -114,14 +126,20 @@ Remote sandbox execution shall enforce:
 ### NFR-4 Operational Simplicity
 
 - Single monorepo build/test/lint entrypoints
-- No required external persistence for baseline operation
+- No required external persistence for local baseline operation; production
+  durable deployments require Postgres/Drizzle unless volatile memory is
+  explicitly selected.
 - Hosted service status/list surfaces expose redaction-safe run metrics for
   duration, queue time, provider usage, sandbox consumption, artifact bytes, and
   correlation without requiring operators to inspect raw logs.
 
 ### NFR-5 CI Compatibility
 
-CI pipeline shall run install, format check, lint, typecheck, test, and build on pull requests and pushes to main.
+CI pipeline shall run named branch-protection lanes for static checks,
+generated-contract drift/Rust DTO parity, Rust gates, TypeScript
+typecheck/tests/builds, dependency security audit, and the stable `check`
+aggregator on pull requests and pushes to main. Vercel preview smoke shall run
+when a preview deployment signal is emitted.
 
 ### NFR-6 Hosted Review Security Gates
 
