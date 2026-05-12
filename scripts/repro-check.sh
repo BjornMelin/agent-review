@@ -40,10 +40,19 @@ run_build() {
   echo "[repro] Cleaning dist directories before ${label}"
   for root in "${WORKSPACE_ROOTS[@]}"; do
     find "$root" -type d -name dist -prune -exec rm -rf {} +
+    while IFS= read -r -d '' next_dir; do
+      find "$next_dir" -mindepth 1 -maxdepth 1 ! -name cache -exec rm -rf {} +
+    done < <(find "$root" -type d -name .next -print0)
+    find "$root" -type f -name tsconfig.tsbuildinfo -delete
   done
 
+  echo "[repro] Building review-types contract package (${label})"
+  pnpm --filter @review-agent/review-types build
+
   echo "[repro] Building workspace (${label})"
-  pnpm turbo run build --force
+  REVIEW_WEB_BUILD_ID="${REVIEW_WEB_BUILD_ID:-local-repro}" \
+    NEXT_SERVER_ACTIONS_ENCRYPTION_KEY="${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}" \
+    pnpm turbo run build --force
 }
 
 hash_dist_tree() {
@@ -51,7 +60,14 @@ hash_dist_tree() {
   while IFS= read -r -d '' file; do
     files+=("$file");
   done < <(
-    find "${WORKSPACE_ROOTS[@]}" -type f -print0 | sort -z
+    # Next trace files contain timing diagnostics, not deployable app code.
+    find "${WORKSPACE_ROOTS[@]}" \
+      \( -path '*/dist/*' -o -path '*/.next/*' \) \
+      -type f \
+      ! -path '*/.next/cache/*' \
+      ! -path '*/.next/trace' \
+      ! -path '*/.next/trace-build' \
+      -print0 | sort -z
   )
 
   if ((${#files[@]} == 0)); then

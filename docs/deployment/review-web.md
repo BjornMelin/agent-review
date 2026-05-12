@@ -28,6 +28,7 @@ hosted-service client, not a second review engine.
 | `REVIEW_WEB_SERVICE_URL` | Recommended | Base URL for the hosted review service. Falls back to `REVIEW_AGENT_SERVICE_URL`, then `REVIEW_SERVICE_URL`, then `http://localhost:3042`. |
 | `REVIEW_WEB_SERVICE_TOKEN` | Required when service auth is enabled | Scoped bearer token used by server-side service calls. Falls back to `REVIEW_AGENT_SERVICE_TOKEN`, then `REVIEW_SERVICE_TOKEN`. |
 | `REVIEW_WEB_ACCESS_TOKEN` | Required in production/preview | Browser-origin access gate checked before Review Room pages or proxy routes use the server-side service token. Accepted through Basic auth, bearer auth, or `x-review-room-access-token`. |
+| `REVIEW_WEB_BUILD_ID` | Optional | Overrides the deterministic Next.js build ID. When unset, Review Room uses `VERCEL_GIT_COMMIT_SHA`, then `GITHUB_SHA`, then `local`. |
 
 The service URL rejects credentials, query strings, fragments, non-HTTP(S)
 schemes, and plaintext remote HTTP before a service token is attached. HTTP is
@@ -61,6 +62,8 @@ the service. Production service startup rejects disabled auth.
   and share it only through the deployment's intended access channel. For human
   browser use, Basic auth with any username and this token as the password is
   supported.
+- Let Vercel provide `VERCEL_GIT_COMMIT_SHA` for stable build IDs, or set
+  `REVIEW_WEB_BUILD_ID` explicitly for non-Vercel promotion pipelines.
 - Keep Review Room metadata `noindex` until customer-facing auth, tenancy, and
   domain policy are finalized.
 - Do not expose the review service token to client components, edge config, log
