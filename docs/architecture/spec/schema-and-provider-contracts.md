@@ -370,9 +370,12 @@ defaults.
 ### Codex Delegate Provider
 
 - Invokes external `codex` binary (`CODEX_BIN` override supported).
-- Uses `@review-agent/review-runner` to invoke `codex review` with
-  target-derived args, process-group timeout enforcement, temporary last-message
-  capture, redaction, and cleanup.
+- Uses `@review-agent/review-runner` to invoke
+  `codex exec -o {tempDir}/last-message.txt review ...` with target-derived
+  args, process-group timeout enforcement, temporary last-message capture,
+  redaction, and cleanup.
+- Custom instruction targets are passed after `--` so prompt text cannot be
+  parsed as Codex CLI flags.
 - Returns parsed JSON when possible; otherwise text fallback.
 
 ### OpenAI-Compatible Provider

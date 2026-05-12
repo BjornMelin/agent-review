@@ -54,7 +54,7 @@ function targetToArgs(target: ReviewTarget): string[] {
       return args;
     }
     case 'custom':
-      return [target.instructions];
+      return ['--', target.instructions];
     default:
       throw new Error(`unsupported review target: ${JSON.stringify(target)}`);
   }
@@ -206,13 +206,14 @@ export class CodexDelegateProvider implements ReviewProvider {
 
   async run(input: ReviewProviderRunInput): Promise<ReviewProviderRunOutput> {
     const args = [
-      '--output-last-message',
+      'exec',
+      '-o',
       `${TEMP_DIR_PLACEHOLDER}/last-message.txt`,
       'review',
       ...targetToArgs(input.request.target),
     ];
     if (input.request.model) {
-      args.unshift('--model', input.request.model);
+      args.splice(1, 0, '--model', input.request.model);
     }
 
     const output = await runCommand(

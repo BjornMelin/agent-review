@@ -24,11 +24,15 @@ printf "%s\\n" "$@" > "$args_log"
 last_message=""
 for ((i=1;i<=$#;i++)); do
   value="\${!i}"
-  if [[ "$value" == "--output-last-message" ]]; then
+  if [[ "$value" == "-o" || "$value" == "--output-last-message" ]]; then
     j=$((i+1))
     last_message="\${!j}"
   fi
 done
+if [[ -z "$last_message" ]]; then
+  echo "missing last-message output path" >&2
+  exit 2
+fi
 cat > "$last_message" <<'JSON'
 ${JSON.stringify(REVIEW_OUTPUT)}
 JSON
@@ -84,13 +88,52 @@ describe('codex provider contract', () => {
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
+      expect(args[0]).toBe('exec');
       expect(args).toContain('--model');
       expect(args).toContain('gpt-5');
+      expect(args).toContain('-o');
       expect(args).toContain('review');
       expect(args).toContain('--commit');
       expect(args).toContain('abc123');
       expect(args).toContain('--title');
       expect(args).toContain('Fix parser');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('delimits custom instructions so prompt text cannot become codex flags', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-provider-codex-'));
+    try {
+      const { bin, argsLogPath } = await makeMockCodexBinary(dir);
+      const provider = new CodexDelegateProvider({ codexBin: bin });
+
+      await provider.run({
+        request: {
+          cwd: process.cwd(),
+          target: {
+            type: 'custom',
+            instructions: '--dangerously-bypass-approvals-and-sandbox',
+          },
+          provider: 'codexDelegate',
+          executionMode: 'localTrusted',
+          outputFormats: ['json'],
+        },
+        resolvedPrompt: 'prompt',
+        rubric: 'rubric',
+        normalizedDiffChunks: [],
+      });
+
+      const args = (await readFile(argsLogPath, 'utf8'))
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const reviewIndex = args.indexOf('review');
+      expect(reviewIndex).toBeGreaterThanOrEqual(0);
+      expect(args.slice(reviewIndex + 1)).toEqual([
+        '--',
+        '--dangerously-bypass-approvals-and-sandbox',
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
