@@ -3,6 +3,20 @@
 CLI package: `@review-agent/review-cli`  
 Binary name: `review-agent`
 
+## Distribution Contract
+
+`apps/review-cli/package.json` is the sole CLI version authority. The runtime
+imports that manifest for `review-agent --version`, and the release workflow
+requires the pushed tag to equal `v<manifest version>`.
+
+Release archives require Node.js 24 or newer and contain one native pair of
+production-profile Rust helpers. Supported v0.1 targets are
+`linux-x64-gnu`, `linux-arm64-gnu`, `macos-x64`, `macos-arm64`, and
+`windows-x64`. Linux artifacts require glibc 2.39 or newer and target Ubuntu
+24.04-equivalent hosts, including Ubuntu 24.04 WSL. Older glibc releases, musl
+Linux, and Windows arm64 are not supported. The archive and checksum contract is documented in
+[CLI Distribution](../../release/cli-distribution.md).
+
 ## Commands
 
 ## `review-agent run`

@@ -7,6 +7,7 @@ This directory contains canonical product and architecture documentation for the
 - [PRD](./PRD.md)
 - [Architecture Requirements](./architecture/requirements.md)
 - [Release Checklist](./release/release-checklist.md)
+- [CLI Distribution](./release/cli-distribution.md)
 
 ## Release Docs
 
@@ -67,6 +68,7 @@ Implementation contracts are defined in code and mirrored here:
   `apps/review-web/src/lib/review-service.ts`
 - Detached execution: `apps/review-worker/src/index.ts`
 - CI and preview deployment gates: `.github/workflows/ci.yml`,
-  `.github/workflows/vercel-preview.yml`, and `scripts/*`
+  `.github/workflows/release-cli.yml`, `.github/workflows/vercel-preview.yml`,
+  and `scripts/*`
 - Operator procedures: `docs/operations/operator-runbooks.md` and
   `docs/operations/observability.md`

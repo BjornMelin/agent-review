@@ -15,6 +15,7 @@ issue closeout.
 4. `pnpm check`
 5. `pnpm build`
 6. `bash scripts/repro-check.sh`
+7. `pnpm ci:cli-release`
 
 ## CI Evidence
 
@@ -26,8 +27,9 @@ that feed it are documented in the
 2. `Generated contracts`
 3. `Rust gates`
 4. `Typecheck, tests, and builds`
-5. `Dependency security audit`
-6. `Vercel preview smoke` when a Vercel preview deployment signal is emitted
+5. `CLI release artifact`
+6. `Dependency security audit`
+7. `Vercel preview smoke` when a Vercel preview deployment signal is emitted
 
 Before merging contract or Rust changes, verify the generated-schema drift gate
 and the relevant Cargo gate fail on an intentional temporary break, then revert
@@ -94,6 +96,13 @@ that break and rerun the clean gate.
 
 1. Ensure SARIF/JSON/Markdown artifacts are deterministic over repeated runs.
 2. Ensure reproducibility script reports matching build hashes.
+3. Ensure `pnpm ci:cli-release` produces identical archive hashes on repeated
+   creation, verifies `RELEASE_MANIFEST.json`, and passes packaged CLI exit-code
+   fixtures from a clean external directory.
+4. Before pushing `v<version>`, confirm the tag exactly matches the canonical
+   `apps/review-cli/package.json` version. After the workflow succeeds, download
+   every native archive and external manifest plus `SHA256SUMS`, then verify the
+   published checksums.
 
 ## Documentation and Handoff
 

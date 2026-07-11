@@ -58,6 +58,35 @@ docs/
 - git (required for diff collection)
 - Optional: `codex` CLI for `codexDelegate` provider
 
+## Install the CLI
+
+CLI releases are self-contained archives with production JavaScript,
+production-profile Rust helpers, launchers, a strict file manifest, and SHA-256
+checksums for both the archive and its separately published manifest. Node.js
+24 or newer and git remain host prerequisites.
+
+```bash
+version=v0.1.0
+target=linux-x64-gnu
+artifact="review-agent-${version}-${target}.tar.gz"
+
+gh release download "$version" \
+  --repo BjornMelin/agent-review \
+  --pattern "$artifact" \
+  --pattern "$artifact.sha256"
+sha256sum -c "$artifact.sha256"
+tar -xzf "$artifact"
+export PATH="$PWD/review-agent-${version}-${target}/bin:$PATH"
+review-agent --version
+```
+
+Native v0.1 archives support glibc 2.39+ Linux (`x64`, `arm64`), macOS
+(`x64`, `arm64`), and Windows (`x64`). The Linux contract targets Ubuntu 24.04
+or an equivalent runtime, including Ubuntu 24.04 WSL. Windows arm64, musl Linux,
+and older glibc releases are not supported.
+See [CLI Distribution](docs/release/cli-distribution.md) for the full matrix,
+Windows installation, archive contract, and release procedure.
+
 ## Quickstart
 
 The local quickstart validates the full workspace and builds the shipped
@@ -73,6 +102,9 @@ pnpm build
 ## Local Usage
 
 ### CLI
+
+The package manifest at `apps/review-cli/package.json` is the canonical CLI
+version source used by both `review-agent --version` and tag validation.
 
 Run the CLI in dev mode:
 
@@ -92,6 +124,23 @@ data. The model catalog is an allowlist. It includes the default marker,
 fallback order, maximum input characters, maximum output tokens, per-attempt
 timeout, attempt budget, retention class, ZDR requirement, and prompt-training
 policy for each `gateway:*` and `openrouter:*` model.
+
+Review artifacts are machine-readable with `--format json --output <path>`.
+Automation can rely on these process exit codes:
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | No findings cross the configured threshold. |
+| `1` | Findings exist at or above the configured threshold. |
+| `2` | Usage, target, schema, provider selection, or format is invalid. |
+| `3` | Authentication, token, or API-key readiness failed. |
+| `4` | Provider, command, sandbox, service, or other runtime execution failed. |
+
+The ready-to-copy GitHub Actions example preserves the JSON report, classifies
+codes `0`, `1`, and `2`–`4`, then re-emits the original result after artifact
+upload: [examples/github-actions/review-agent.yml](examples/github-actions/review-agent.yml).
+The example skips fork and Dependabot pull requests because GitHub does not pass
+ordinary Actions secrets to those workflows by default.
 
 Run provider checks:
 
@@ -210,13 +259,15 @@ Root scripts:
 - `pnpm test`
 - `pnpm rust:check`
 - `pnpm git:benchmark`
+- `pnpm ci:cli-release`
 - `pnpm check`
 - `bash scripts/repro-check.sh`
 
 CI workflow: `.github/workflows/ci.yml` installs Node/pnpm and stable Rust, then
 runs the branch-protection `check` aggregator across static checks, generated
 contracts, Rust gates, TypeScript typecheck/tests/builds, Rust diff-index
-benchmarks, Review Room build, and dependency security audit. The separate
+benchmarks, a deterministic installable CLI artifact, Review Room build, and
+dependency security audit. The separate
 `Vercel Preview` workflow smoke-tests deployed Review Room previews when Vercel
 emits a preview deployment signal.
 
