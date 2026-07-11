@@ -193,6 +193,42 @@ function runDoctor(provider: 'gateway' | 'openrouter') {
   );
 }
 
+describe('review-agent release metadata', () => {
+  it('reads the CLI version from its package manifest', async () => {
+    const packageMetadata = JSON.parse(
+      await readFile(join(repoRoot, 'apps/review-cli/package.json'), 'utf8')
+    ) as { version: string };
+    const result = await runCli(['--version']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(packageMetadata.version);
+  });
+
+  it.each([
+    {
+      args: ['unknown-command'],
+      message: 'unknown command',
+      name: 'unknown commands',
+    },
+    {
+      args: ['status'],
+      message: 'missing required argument',
+      name: 'missing command arguments',
+    },
+    {
+      args: ['completion', 'powershell'],
+      message: 'unsupported shell',
+      name: 'invalid completion shells',
+    },
+  ])('maps $name to usage exit code 2', async ({ args, message }) => {
+    const result = await runCli(args);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+    expect(result.stderr).not.toContain('at main');
+  });
+});
+
 describe('review-agent doctor provider filtering', () => {
   it('prints provider policy details in the model catalog', () => {
     const result = spawnSync('tsx', [cliPath, 'models', '--json'], {
