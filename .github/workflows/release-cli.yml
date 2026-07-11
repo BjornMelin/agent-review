@@ -1,0 +1,172 @@
+name: Release CLI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/release-cli.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "LICENSE"
+      - "README.md"
+      - "apps/review-cli/**"
+      - "crates/**"
+      - "docs/architecture/spec/cli-contract.md"
+      - "docs/release/cli-distribution.md"
+      - "examples/github-actions/**"
+      - "package.json"
+      - "packages/review-*/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "scripts/cli-release-*"
+      - "scripts/fixtures/mock-codex.mjs"
+      - "scripts/package-cli-release.mjs"
+      - "scripts/verify-cli-release.mjs"
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require release tags to point at merged main history
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64-gnu
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64-gnu
+          - runner: macos-15-intel
+            target: macos-x64
+          - runner: macos-15
+            target: macos-arm64
+          - runner: windows-2025
+            target: windows-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.0.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build and verify native release archive
+        run: >-
+          pnpm release:cli:archive --out-dir release
+          --expected-target ${{ matrix.target }} --verify
+      - name: Upload native release archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-agent-cli-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download native release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: review-agent-cli-*
+          path: release
+          merge-multiple: true
+      - name: Verify and combine checksums
+        working-directory: release
+        run: |
+          set -euo pipefail
+          for checksum in *.sha256; do
+            sha256sum -c "$checksum"
+          done
+          cat ./*.sha256 | LC_ALL=C sort > SHA256SUMS
+      - name: Create or resume draft, verify assets, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          expected_assets=$(mktemp)
+          find release -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$expected_assets"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft \
+              --verify-tag --generate-notes --title "Review Agent $tag"
+            is_draft=true
+          fi
+
+          verify_readback() {
+            local readback
+            readback=$(mktemp -d)
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$readback"
+            while IFS= read -r asset; do
+              cmp "release/$asset" "$readback/$asset"
+            done < "$expected_assets"
+          }
+
+          if [[ "$is_draft" != "true" ]]; then
+            actual_assets=$(mktemp)
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | LC_ALL=C sort > "$actual_assets"
+            diff -u "$expected_assets" "$actual_assets"
+            verify_readback
+            echo "Published release already matches every locally verified asset."
+            exit 0
+          fi
+
+          gh release upload "$tag" release/* --repo "$GITHUB_REPOSITORY" --clobber
+          actual_assets=$(mktemp)
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | LC_ALL=C sort > "$actual_assets"
+          while IFS= read -r extra_asset; do
+            [[ -n "$extra_asset" ]] || continue
+            gh release delete-asset "$tag" "$extra_asset" \
+              --repo "$GITHUB_REPOSITORY" --yes
+          done < <(comm -13 "$expected_assets" "$actual_assets")
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | LC_ALL=C sort > "$actual_assets"
+          diff -u "$expected_assets" "$actual_assets"
+          verify_readback
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
