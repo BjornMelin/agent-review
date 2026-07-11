@@ -37,3 +37,6 @@ typify = { version = "0.6.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[profile.release]
+strip = "symbols"

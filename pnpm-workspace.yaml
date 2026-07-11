@@ -1,6 +1,9 @@
 packages:
   - apps/*
   - packages/*
+injectWorkspacePackages: true
+syncInjectedDepsAfterScripts:
+  - build
 allowBuilds:
   '@biomejs/biome': true
   agent-browser: true

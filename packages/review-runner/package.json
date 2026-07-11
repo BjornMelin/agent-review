@@ -2,9 +2,15 @@
   "name": "@review-agent/review-runner",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist/bin/**",
+    "dist/index.d.ts",
+    "dist/index.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

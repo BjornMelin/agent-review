@@ -7,11 +7,23 @@ const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const binaryName =
   process.platform === 'win32' ? 'review-runner.exe' : 'review-runner';
+const rustProfile = process.env.REVIEW_AGENT_RUST_PROFILE ?? 'debug';
+if (rustProfile !== 'debug' && rustProfile !== 'release') {
+  throw new Error(
+    'REVIEW_AGENT_RUST_PROFILE must be either "debug" or "release"'
+  );
+}
 const targetDir = process.env.CARGO_TARGET_DIR
   ? resolve(repoRoot, process.env.CARGO_TARGET_DIR)
   : join(repoRoot, 'target');
-const sourceBinary = join(targetDir, 'debug', binaryName);
+const sourceBinary = join(targetDir, rustProfile, binaryName);
 const packagedBinary = join(packageRoot, 'dist', 'bin', binaryName);
+const stalePackagedBinary = join(
+  packageRoot,
+  'dist',
+  'bin',
+  process.platform === 'win32' ? 'review-runner' : 'review-runner.exe'
+);
 const helperEnvAllowlist = [
   'PATH',
   'HOME',
@@ -32,9 +44,9 @@ const helperEnvAllowlist = [
   'ALL_PROXY',
   'all_proxy',
   'CARGO_HOME',
+  'CARGO_ENCODED_RUSTFLAGS',
   'RUSTUP_HOME',
   'CARGO_TARGET_DIR',
-  'RUSTC_WRAPPER',
   'RUSTFLAGS',
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
@@ -56,17 +68,17 @@ function helperEnv() {
 }
 
 function runCargoBuild() {
+  const args = ['build', '--quiet', '--locked', '-p', 'review-runner'];
+  if (rustProfile === 'release') {
+    args.push('--release');
+  }
   return new Promise((resolveBuild, reject) => {
-    const child = spawn(
-      'cargo',
-      ['build', '--quiet', '--locked', '-p', 'review-runner'],
-      {
-        cwd: repoRoot,
-        env: helperEnv(),
-        shell: process.platform === 'win32',
-        stdio: 'inherit',
-      }
-    );
+    const child = spawn('cargo', args, {
+      cwd: repoRoot,
+      env: helperEnv(),
+      shell: process.platform === 'win32',
+      stdio: 'inherit',
+    });
 
     child.on('error', reject);
     child.on('exit', (code, signal) => {
@@ -85,6 +97,7 @@ function runCargoBuild() {
 
 async function copyPackagedBinary() {
   await mkdir(join(packageRoot, 'dist', 'bin'), { recursive: true });
+  await rm(stalePackagedBinary, { force: true });
   const tempBinary = `${packagedBinary}.${process.pid}.${Date.now()}.tmp`;
   await copyFile(sourceBinary, tempBinary);
   if (process.platform !== 'win32') {

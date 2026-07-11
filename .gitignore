@@ -59,6 +59,7 @@ coverage/
 # Agent tooling
 .agents/
 dogfood-output/
+/release/
 skills-lock.json
 
 # opensrc - source code for packages
