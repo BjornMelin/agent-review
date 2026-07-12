@@ -9,6 +9,7 @@ import {
   assertNoReleaseBuildLeaks,
   assertReleaseAllowlist,
   collectTree,
+  removePackageManagerMetadata,
   resolveReleaseTarget,
 } from './cli-release-utils.mjs';
 
@@ -188,6 +189,28 @@ test('rejects package-manager workspace metadata in a release', async () => {
         }),
       /unexpected=\[pnpm-lock\.yaml, pnpm-workspace\.yaml\]/
     );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('removes package-manager metadata and nested shims at every depth', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'review-agent-cleanup-'));
+  try {
+    await Promise.all([
+      writeFixtureFile(temporaryRoot, 'pnpm-lock.yaml'),
+      writeFixtureFile(temporaryRoot, 'node_modules/.modules.yaml'),
+      writeFixtureFile(
+        temporaryRoot,
+        'node_modules/esbuild/node_modules/.bin/esbuild.CMD'
+      ),
+      writeFixtureFile(temporaryRoot, 'node_modules/esbuild/index.js'),
+    ]);
+
+    await removePackageManagerMetadata(temporaryRoot);
+
+    const paths = (await collectTree(temporaryRoot)).map((entry) => entry.path);
+    assert.deepEqual(paths, ['node_modules/esbuild/index.js']);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

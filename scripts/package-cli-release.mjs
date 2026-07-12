@@ -32,6 +32,7 @@ import {
   RELEASE_MANIFEST_NAME,
   RELEASE_MANIFEST_SCHEMA,
   RUNTIME_PACKAGE_MANIFEST_FIELDS,
+  removePackageManagerMetadata,
   sha256File,
 } from './cli-release-utils.mjs';
 
@@ -522,24 +523,10 @@ async function main() {
       { env: buildEnv }
     );
 
-    // pnpm deploy includes workspace metadata to support injected workspace
-    // dependencies. It is build input, not part of the standalone runtime.
-    await Promise.all([
-      rm(join(stagingRoot, 'pnpm-lock.yaml'), { force: true }),
-      rm(join(stagingRoot, 'pnpm-workspace.yaml'), { force: true }),
-      rm(join(stagingRoot, 'node_modules', '.bin'), {
-        force: true,
-        recursive: true,
-      }),
-      rm(join(stagingRoot, 'node_modules', '.modules.yaml'), { force: true }),
-      rm(join(stagingRoot, 'node_modules', '.pnpm'), {
-        force: true,
-        recursive: true,
-      }),
-      rm(join(stagingRoot, 'node_modules', '.pnpm-workspace-state-v1.json'), {
-        force: true,
-      }),
-    ]);
+    // pnpm deploy includes workspace state and can generate nested .bin shims
+    // during platform-specific lifecycle scripts. They are build inputs, not
+    // part of the standalone runtime.
+    await removePackageManagerMetadata(stagingRoot);
     await rewriteRuntimePackageManifests(stagingRoot);
 
     const license = await readFile(join(repoRoot, 'LICENSE'));

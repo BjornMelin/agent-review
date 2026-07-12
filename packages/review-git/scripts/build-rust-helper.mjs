@@ -76,7 +76,6 @@ function runCargoBuild() {
     const child = spawn('cargo', args, {
       cwd: repoRoot,
       env: helperEnv(),
-      shell: process.platform === 'win32',
       stdio: 'inherit',
     });
 

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, readdir, readFile, readlink } from 'node:fs/promises';
+import { lstat, readdir, readFile, readlink, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const RELEASE_MANIFEST_SCHEMA = 'review-agent.release-manifest.v1';
@@ -111,6 +111,27 @@ const PACKAGE_MANAGER_METADATA_NAMES = new Set([
 
 function posixPath(path) {
   return sep === '/' ? path : path.split(sep).join('/');
+}
+
+/** Remove pnpm workspace state and generated shims at any dependency depth. */
+export async function removePackageManagerMetadata(root) {
+  const entries = await readdir(root, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(root, entry.name);
+      if (
+        entry.name === '.bin' ||
+        entry.name === '.pnpm' ||
+        PACKAGE_MANAGER_METADATA_NAMES.has(entry.name)
+      ) {
+        await rm(path, { force: true, recursive: true });
+        return;
+      }
+      if (entry.isDirectory()) {
+        await removePackageManagerMetadata(path);
+      }
+    })
+  );
 }
 
 function compareDottedVersions(left, right) {

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   LifecycleEvent,
@@ -16,6 +16,57 @@ import {
 import { makeProvider, makeRepo } from './test-helpers.js';
 
 describe('runReview', () => {
+  it('canonicalizes a symlinked local cwd before diff and provider work', async () => {
+    const repo = await makeRepo();
+    const alias = `${repo.cwd}-alias`;
+    try {
+      await symlink(
+        repo.cwd,
+        alias,
+        process.platform === 'win32' ? 'junction' : 'dir'
+      );
+      const canonicalCwd = await realpath(repo.cwd);
+      const raw = {
+        findings: [
+          {
+            title: 'Canonical-path fixture',
+            body: 'The provider reports the physical repository path.',
+            confidence_score: 0.99,
+            priority: 1,
+            code_location: {
+              absolute_file_path: join(canonicalCwd, 'file.ts'),
+              line_range: { start: 1, end: 1 },
+            },
+          },
+        ],
+        overall_correctness: 'patch is incorrect',
+        overall_explanation: 'Canonical path accepted.',
+        overall_confidence_score: 0.99,
+      };
+
+      const review = await runReview(
+        {
+          cwd: alias,
+          target: { type: 'uncommittedChanges' },
+          provider: 'codexDelegate',
+          outputFormats: ['json'],
+        },
+        {
+          providers: {
+            codexDelegate: makeProvider(raw, 'codexDelegate'),
+            openaiCompatible: makeProvider(raw, 'openaiCompatible'),
+          },
+        }
+      );
+
+      expect(review.request.cwd).toBe(canonicalCwd);
+      expect(review.result.findings).toHaveLength(1);
+    } finally {
+      await rm(alias, { force: true, recursive: true });
+      await repo.cleanup();
+    }
+  });
+
   it('runs and emits artifacts', async () => {
     const repo = await makeRepo();
     try {
