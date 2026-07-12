@@ -52,7 +52,14 @@ type GitExecOptions = {
   maxBufferBytes?: number;
 };
 
-/** Git for Windows rejects Node's `\\.\nul`, but accepts the native `NUL` device. */
+/**
+ * Returns the null-device spelling accepted by Git on the requested platform.
+ *
+ * Git for Windows rejects Node's `\\.\nul`, but accepts the native `NUL` device.
+ *
+ * @param platform - Platform whose Git process will receive the path.
+ * @returns A Git-compatible null-device path.
+ */
 export function gitConfigGlobalPath(
   platform: NodeJS.Platform = process.platform
 ): string {
