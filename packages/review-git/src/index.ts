@@ -55,6 +55,7 @@ type GitExecOptions = {
 /**
  * Returns the null-device spelling accepted by Git on the requested platform.
  *
+ * @remarks
  * Git for Windows rejects Node's `\\.\nul`, but accepts the native `NUL` device.
  *
  * @param platform - Platform whose Git process will receive the path.

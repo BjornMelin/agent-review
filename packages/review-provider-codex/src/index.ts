@@ -39,7 +39,13 @@ const CODEX_ENV_ALLOWLIST = [
   'SSL_CERT_DIR',
   'NODE_EXTRA_CA_CERTS',
 ] as const;
-
+const WINDOWS_RUNTIME_ENV_ALLOWLIST = [
+  'SystemRoot',
+  'WINDIR',
+  'ComSpec',
+  'TEMP',
+  'TMP',
+] as const;
 function targetToArgs(target: ReviewTarget): string[] {
   switch (target.type) {
     case 'uncommittedChanges':
@@ -75,12 +81,30 @@ function commandText(output: CommandRunOutput): string {
   ).text;
 }
 
-function codexEnv(): Record<string, string> {
+/**
+ * Builds the minimal environment required to launch the Codex CLI.
+ *
+ * @param platform - Platform on which the delegated process will run.
+ * @param environment - Parent environment from which allowed values are read.
+ * @returns An environment containing provider credentials and required runtime values.
+ */
+export function codexEnv(
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of CODEX_ENV_ALLOWLIST) {
-    const value = process.env[key];
+    const value = environment[key];
     if (value) {
       env[key] = value;
+    }
+  }
+  if (platform === 'win32') {
+    for (const key of WINDOWS_RUNTIME_ENV_ALLOWLIST) {
+      const value = environment[key];
+      if (value) {
+        env[key] = value;
+      }
     }
   }
   return env;
