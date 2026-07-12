@@ -52,9 +52,16 @@ type GitExecOptions = {
   maxBufferBytes?: number;
 };
 
+/** Git for Windows rejects Node's `\\.\nul`, but accepts the native `NUL` device. */
+export function gitConfigGlobalPath(
+  platform: NodeJS.Platform = process.platform
+): string {
+  return platform === 'win32' ? 'NUL' : devNull;
+}
+
 const SAFE_GIT_ENV = {
   GIT_CONFIG_NOSYSTEM: '1',
-  GIT_CONFIG_GLOBAL: devNull,
+  GIT_CONFIG_GLOBAL: gitConfigGlobalPath(),
   GIT_EXTERNAL_DIFF: '',
   GIT_OPTIONAL_LOCKS: '0',
   GIT_PAGER: 'cat',

@@ -113,6 +113,10 @@ function posixPath(path) {
   return sep === '/' ? path : path.split(sep).join('/');
 }
 
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 /** Remove pnpm workspace state and generated shims at any dependency depth. */
 export async function removePackageManagerMetadata(root) {
   const entries = await readdir(root, { withFileTypes: true });
@@ -135,6 +139,12 @@ export async function removePackageManagerMetadata(root) {
 }
 
 function compareDottedVersions(left, right) {
+  const dottedVersionPattern = /^\d+(?:\.\d+)*$/;
+  for (const version of [left, right]) {
+    if (typeof version !== 'string' || !dottedVersionPattern.test(version)) {
+      throw new Error(`invalid dotted version: ${String(version)}`);
+    }
+  }
   const leftParts = left.split('.').map(Number);
   const rightParts = right.split('.').map(Number);
   const length = Math.max(leftParts.length, rightParts.length);
@@ -207,7 +217,7 @@ export async function collectTree(root, options = {}) {
 
   async function walk(directory) {
     const children = await readdir(directory, { withFileTypes: true });
-    children.sort((left, right) => left.name.localeCompare(right.name));
+    children.sort((left, right) => compareCodeUnits(left.name, right.name));
     for (const child of children) {
       const absolutePath = `${directory}/${child.name}`;
       const relativePath = posixPath(relative(root, absolutePath));
@@ -260,12 +270,16 @@ export async function collectTree(root, options = {}) {
   }
 
   await walk(root);
-  return entries.sort((left, right) => left.path.localeCompare(right.path));
+  return entries.sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 function assertExactNames(actual, expected, label) {
-  const unexpected = [...actual].filter((name) => !expected.has(name));
-  const missing = [...expected].filter((name) => !actual.has(name));
+  const unexpected = [...actual]
+    .filter((name) => !expected.has(name))
+    .sort(compareCodeUnits);
+  const missing = [...expected]
+    .filter((name) => !actual.has(name))
+    .sort(compareCodeUnits);
   if (unexpected.length > 0 || missing.length > 0) {
     throw new Error(
       `${label} allowlist mismatch; unexpected=[${unexpected.join(

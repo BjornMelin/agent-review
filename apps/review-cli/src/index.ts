@@ -604,6 +604,7 @@ async function runAction(
 }
 
 async function main(): Promise<void> {
+  // Configure this before every command registration so subcommands inherit it.
   program
     .exitOverride()
     .name('review-agent')

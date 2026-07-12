@@ -86,9 +86,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build and verify native release archive
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
         run: >-
           pnpm release:cli:archive --out-dir release
-          --expected-target ${{ matrix.target }} --verify
+          --expected-target "$RELEASE_TARGET" --verify
       - name: Upload native release archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -104,6 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # Required to create or resume the release and replace its draft assets.
       contents: write
     steps:
       - name: Download native release archives

@@ -122,12 +122,40 @@ async function verifyChecksum(path, checksumPath) {
   return hash;
 }
 
+function windowsBatchInvocation(command, args, environment) {
+  const commandKey = 'REVIEW_AGENT_VERIFY_COMMAND';
+  // Keep values out of the literal command string so cmd.exe preserves metacharacters.
+  const env = { ...environment, [commandKey]: command };
+  const argumentReferences = args.map((argument, index) => {
+    const key = `REVIEW_AGENT_VERIFY_ARG_${index}`;
+    env[key] = argument;
+    return `"%${key}%"`;
+  });
+  const commandLine = `""%${commandKey}%"${
+    argumentReferences.length > 0 ? ` ${argumentReferences.join(' ')}` : ''
+  }"`;
+  return {
+    args: ['/d', '/s', '/v:off', '/c', commandLine],
+    command: process.env.ComSpec ?? 'cmd.exe',
+    env,
+    windowsVerbatimArguments: true,
+  };
+}
+
 async function runCapture(command, args, options = {}) {
   return await new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, {
+    const invocation = options.windowsBatch
+      ? windowsBatchInvocation(command, args, options.env ?? process.env)
+      : {
+          args,
+          command,
+          env: options.env ?? process.env,
+          windowsVerbatimArguments: false,
+        };
+    const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
-      env: options.env ?? process.env,
-      shell: options.shell ?? false,
+      env: invocation.env,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -142,7 +170,7 @@ async function runCapture(command, args, options = {}) {
       stderr += chunk;
     });
     child.on('error', reject);
-    child.on('exit', (code, signal) => {
+    child.on('close', (code, signal) => {
       if (signal) {
         reject(new Error(`${command} terminated by ${signal}`));
         return;
@@ -240,7 +268,7 @@ async function runReviewFixture({
     {
       cwd: fixtureRoot,
       env: { ...sanitizedRuntimeEnv(process.env), CODEX_BIN: codexBin },
-      shell: process.platform === 'win32',
+      windowsBatch: process.platform === 'win32',
     }
   );
   if (result.code !== expectedCode) {
@@ -419,7 +447,7 @@ async function main() {
       const launcherResult = await requireSuccess(launcher, ['--version'], {
         cwd: externalRoot,
         env: sanitizedRuntimeEnv(process.env),
-        shell: process.platform === 'win32',
+        windowsBatch: process.platform === 'win32',
       });
       if (launcherResult.stdout.trim() !== manifest.version) {
         throw new Error(
@@ -430,7 +458,7 @@ async function main() {
       const modelResult = await requireSuccess(launcher, ['models', '--json'], {
         cwd: externalRoot,
         env: sanitizedRuntimeEnv(process.env),
-        shell: process.platform === 'win32',
+        windowsBatch: process.platform === 'win32',
       });
       const models = JSON.parse(modelResult.stdout);
       if (!Array.isArray(models) || models.length === 0) {

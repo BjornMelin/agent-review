@@ -125,6 +125,15 @@ test('rejects musl and unknown native targets', () => {
     () => resolveReleaseTarget({ arch: 'arm64', platform: 'win32' }),
     /unsupported release host/
   );
+  assert.throws(
+    () =>
+      resolveReleaseTarget({
+        arch: 'x64',
+        glibcVersionRuntime: '2.x',
+        platform: 'linux',
+      }),
+    /invalid dotted version: 2\.x/
+  );
 });
 
 test('rejects absolute and relative release symlinks that escape the archive root', async () => {
@@ -147,6 +156,21 @@ test('rejects absolute and relative release symlinks that escape the archive roo
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
+  }
+});
+
+test('sorts release entries by locale-independent code units', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'review-agent-order-'));
+  try {
+    await Promise.all([
+      writeFixtureFile(temporaryRoot, 'a.txt'),
+      writeFixtureFile(temporaryRoot, 'Z.txt'),
+    ]);
+
+    const paths = (await collectTree(temporaryRoot)).map((entry) => entry.path);
+    assert.deepEqual(paths, ['Z.txt', 'a.txt']);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 
@@ -188,6 +212,30 @@ test('rejects package-manager workspace metadata in a release', async () => {
           target: 'linux-x64-gnu',
         }),
       /unexpected=\[pnpm-lock\.yaml, pnpm-workspace\.yaml\]/
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('sorts release allowlist diagnostics by code units', async () => {
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), 'review-agent-allowlist-')
+  );
+  try {
+    await writeReleaseFixture(temporaryRoot);
+    await Promise.all([
+      writeFixtureFile(temporaryRoot, 'z-extra'),
+      writeFixtureFile(temporaryRoot, 'A-extra'),
+    ]);
+
+    await assert.rejects(
+      () =>
+        assertReleaseAllowlist(temporaryRoot, {
+          beforeManifest: true,
+          target: 'linux-x64-gnu',
+        }),
+      /unexpected=\[A-extra, z-extra\]/
     );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

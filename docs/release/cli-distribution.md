@@ -73,12 +73,15 @@ Linux x64 example:
 version=v0.1.0
 target=linux-x64-gnu
 artifact="review-agent-${version}-${target}.tar.gz"
+manifest="${artifact%.tar.gz}.manifest.json"
 
 gh release download "$version" \
   --repo BjornMelin/agent-review \
   --pattern "$artifact" \
-  --pattern "$artifact.sha256"
-sha256sum -c "$artifact.sha256"
+  --pattern "$artifact.sha256" \
+  --pattern "$manifest" \
+  --pattern "$manifest.sha256"
+sha256sum -c "$artifact.sha256" "$manifest.sha256"
 tar -xzf "$artifact"
 export PATH="$PWD/review-agent-${version}-${target}/bin:$PATH"
 review-agent --version
@@ -86,16 +89,20 @@ review-agent models --json
 ```
 
 On macOS, use the matching `macos-*` target and verify with
-`shasum -a 256 -c <artifact>.sha256`. On Windows PowerShell:
+`shasum -a 256 -c "$artifact.sha256" "$manifest.sha256"`. On Windows
+PowerShell:
 
 ```powershell
 $Version = "v0.1.0"
 $Target = "windows-x64"
 $Artifact = "review-agent-$Version-$Target.tar.gz"
-gh release download $Version --repo BjornMelin/agent-review --pattern $Artifact --pattern "$Artifact.sha256"
-$Expected = (Get-Content "$Artifact.sha256").Split(" ")[0]
-$Actual = (Get-FileHash $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($Actual -ne $Expected) { throw "SHA-256 mismatch" }
+$Manifest = $Artifact -replace '\.tar\.gz$', '.manifest.json'
+gh release download $Version --repo BjornMelin/agent-review --pattern $Artifact --pattern "$Artifact.sha256" --pattern $Manifest --pattern "$Manifest.sha256"
+foreach ($File in @($Artifact, $Manifest)) {
+  $Expected = (Get-Content "${File}.sha256").Split(" ")[0]
+  $Actual = (Get-FileHash $File -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($Actual -ne $Expected) { throw "SHA-256 mismatch for $File" }
+}
 tar -xzf $Artifact
 & ".\review-agent-$Version-$Target\bin\review-agent.cmd" --version
 ```
