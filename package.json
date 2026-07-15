@@ -30,8 +30,8 @@
     "@types/node": "^24.12.3",
     "agent-browser": "0.27.0",
     "tar": "7.5.19",
-    "turbo": "^2.9.12",
+    "turbo": "^2.10.5",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.10"
   }
 }
