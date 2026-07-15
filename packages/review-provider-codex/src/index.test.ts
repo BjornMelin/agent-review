@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ReviewProviderCommandRunError } from '@review-agent/review-types';
 import { describe, expect, it } from 'vitest';
-import { CodexDelegateProvider } from './index.js';
+import { CodexDelegateProvider, codexEnv } from './index.js';
 
 const REVIEW_OUTPUT = {
   findings: [],
@@ -55,6 +55,28 @@ exit 2
 }
 
 describe('codex provider contract', () => {
+  it('preserves Windows runtime variables after runner environment isolation', () => {
+    const environment = {
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PATH: 'C:\\tools',
+      SystemRoot: 'C:\\Windows',
+      TEMP: 'C:\\Temp',
+      TMP: 'C:\\Tmp',
+      UNRELATED: 'excluded',
+      WINDIR: 'C:\\Windows',
+    };
+
+    expect(codexEnv('win32', environment)).toEqual({
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PATH: 'C:\\tools',
+      SystemRoot: 'C:\\Windows',
+      TEMP: 'C:\\Temp',
+      TMP: 'C:\\Tmp',
+      WINDIR: 'C:\\Windows',
+    });
+    expect(codexEnv('linux', environment)).toEqual({ PATH: 'C:\\tools' });
+  });
+
   it('maps targets to codex review args and parses last message json', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'review-provider-codex-'));
     try {

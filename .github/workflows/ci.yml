@@ -107,6 +107,35 @@ jobs:
       - name: Build workspace
         run: pnpm build
 
+  cli-release:
+    name: CLI release artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.0.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build and verify deterministic CLI release artifact
+        run: pnpm ci:cli-release
+      - name: Upload verified CLI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-agent-cli-linux-x64-gnu
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+
   security-audit:
     name: Dependency security audit
     runs-on: ubuntu-latest
@@ -132,7 +161,7 @@ jobs:
   check:
     name: check
     runs-on: ubuntu-latest
-    needs: [static, contracts, rust, test-build, security-audit]
+    needs: [static, contracts, rust, test-build, cli-release, security-audit]
     if: ${{ always() }}
     steps:
       - name: Require every CI lane to pass
@@ -141,6 +170,7 @@ jobs:
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
           RUST_RESULT: ${{ needs.rust.result }}
           TEST_BUILD_RESULT: ${{ needs.test-build.result }}
+          CLI_RELEASE_RESULT: ${{ needs.cli-release.result }}
           SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
         run: |
           set -euo pipefail
@@ -149,6 +179,7 @@ jobs:
             "$CONTRACTS_RESULT" \
             "$RUST_RESULT" \
             "$TEST_BUILD_RESULT" \
+            "$CLI_RELEASE_RESULT" \
             "$SECURITY_AUDIT_RESULT"; do
             if [[ "$result" != "success" ]]; then
               echo "A required CI lane finished with result: $result" >&2

@@ -24,9 +24,10 @@ Turborepo, with a root Cargo workspace for narrow Rust helpers.
 - `crates/review-contracts`: Rust DTO generation from committed
   `packages/review-types` JSON Schema artifacts. This is parity
   infrastructure only; it must not become a competing schema source of truth.
-- `crates/review-git-diff`: Rust candidate helper for diff parser/index
-  parity and benchmarks. This is not on the production call path until the
-  corpus and performance gates justify a hard cut.
+- `crates/review-git-diff`: Production Rust helper for diff parsing and
+  changed-line indexing, packaged through `packages/review-git`.
+- `crates/review-runner`: Production Rust helper for bounded command execution,
+  packaged through `packages/review-runner`.
 
 ## Verification Commands
 
@@ -37,7 +38,9 @@ Use root scripts unless a task is package-local:
 - `pnpm test`
 - `pnpm rust:check`
 - `pnpm build`
-- `pnpm check` (runs lint + typecheck + test + Rust gates)
+- `pnpm run check` (runs lint + typecheck + test + Rust gates)
+- `pnpm ci:cli-release` for CLI, native-helper, package-manifest, or release
+  tooling changes
 
 Rust-specific closeout for Rust changes:
 

@@ -1,0 +1,85 @@
+# Copy this file to .github/workflows/review-agent.yml in the consuming repo.
+name: Review Agent
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    # Provider secrets are unavailable to fork PRs and Dependabot by default.
+    if: >-
+      ${{
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]'
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install pinned Review Agent release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_AGENT_VERSION: v0.1.0
+          REVIEW_AGENT_TARGET: linux-x64-gnu
+        run: |
+          set -euo pipefail
+          artifact="review-agent-${REVIEW_AGENT_VERSION}-${REVIEW_AGENT_TARGET}.tar.gz"
+          gh release download "$REVIEW_AGENT_VERSION" \
+            --repo BjornMelin/agent-review \
+            --pattern "$artifact" \
+            --pattern "$artifact.sha256"
+          sha256sum -c "$artifact.sha256"
+          tar -xzf "$artifact"
+          echo "$PWD/review-agent-${REVIEW_AGENT_VERSION}-${REVIEW_AGENT_TARGET}/bin" >> "$GITHUB_PATH"
+      - name: Fetch pull request base
+        run: git fetch --no-tags origin "$GITHUB_BASE_REF"
+      - name: Run review and capture its contract exit code
+        id: review
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+        run: |
+          set +e
+          review-agent run \
+            --base "origin/$GITHUB_BASE_REF" \
+            --provider gateway \
+            --severity-threshold p1 \
+            --format json \
+            --output review-agent.json \
+            --quiet
+          review_exit=$?
+          set -e
+
+          case "$review_exit" in
+            0) echo "Review passed: no P0/P1 findings." ;;
+            1) echo "Review threshold failed: P0/P1 findings were emitted." ;;
+            2|3|4) echo "Review could not complete (operational code $review_exit)." ;;
+            *) echo "Unexpected review-agent exit code: $review_exit" >&2 ; review_exit=4 ;;
+          esac
+          echo "exit_code=$review_exit" >> "$GITHUB_OUTPUT"
+      - name: Upload machine-readable review
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-agent-json
+          path: review-agent.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Re-emit review result
+        if: ${{ always() }}
+        env:
+          REVIEW_AGENT_EXIT_CODE: ${{ steps.review.outputs.exit_code }}
+        run: |
+          code="${REVIEW_AGENT_EXIT_CODE:-4}"
+          case "$code" in
+            0|1|2|3|4) exit "$code" ;;
+            *) echo "Invalid captured exit code: $code" >&2 ; exit 4 ;;
+          esac

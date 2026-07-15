@@ -71,7 +71,9 @@ and `cancelled`. Command events include `started`, `failedToStart`,
 The Rust runner clears the inherited process environment before spawning a
 child. Callers must pass an explicit env allowlist for command resolution and
 provider auth. The Codex provider passes only path/home/config/auth material
-needed by the Codex CLI, not the service process environment.
+needed by the Codex CLI, not the service process environment. On Windows, that
+allowlist also includes `SystemRoot`, `WINDIR`, `ComSpec`, `TEMP`, and `TMP`,
+which Node and native process startup require before the Codex CLI can run.
 The Node adapter also starts the Rust helper with a filtered helper environment
 and uses graceful termination before hard-kill fallback so the helper can cancel
 and reap delegated process groups.

@@ -1,9 +1,9 @@
 # CI Hardening Runbook
 
 This runbook defines the required CI lanes for every roadmap PR. The stable
-branch-protection check proves TypeScript, Rust, generated contracts, and
-dependency advisory posture. Vercel preview smoke adds deployment evidence when
-Vercel emits a preview signal.
+branch-protection check proves TypeScript, Rust, generated contracts, the
+installable CLI archive, and dependency advisory posture. Vercel preview smoke
+adds deployment evidence when Vercel emits a preview signal.
 
 ## Required GitHub Checks
 
@@ -15,6 +15,7 @@ The `CI` workflow exposes these named lanes:
 | `Generated contracts` | Regenerate committed JSON Schema artifacts, fail on drift, then prove Rust DTO parity. | `pnpm ci:contracts` |
 | `Rust gates` | Check formatting, clippy, and tests across the Cargo workspace. | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, `cargo test --workspace --all-targets --all-features --locked` |
 | `Typecheck, tests, and builds` | Prove TypeScript contracts, Vitest suites, Rust diff/index benchmark, Review Room build, and workspace build. | `pnpm typecheck`, `pnpm test`, `pnpm git:benchmark`, `pnpm --filter @review-agent/review-web build`, `pnpm build` |
+| `CLI release artifact` | Build production-profile native helpers, deploy only package `files` allowlists, create the archive twice, verify identical hashes, extract in a clean directory, and prove success/threshold exit fixtures. | `pnpm ci:cli-release` |
 | `Dependency security audit` | Fail on high-severity production npm advisories and RustSec advisory warnings. | `pnpm ci:security` |
 | `check` | Branch-protection aggregator requiring every lane above to succeed. | GitHub Actions `needs` result assertion |
 
@@ -27,6 +28,12 @@ upstream release and recording the reason in the PR.
 
 `actions/checkout` uses `persist-credentials: false` in CI lanes so package
 scripts cannot reuse the workflow token.
+
+The path-scoped `Release CLI` workflow runs the supported native matrix on pull
+requests and by manual dispatch. A tag repeats the matrix, combines per-asset
+SHA-256 files into `SHA256SUMS`, verifies draft assets by readback, and publishes
+only after every target passes. The CLI package manifest is the version
+authority; a mismatched tag fails before publication.
 
 ## Generated Contract Drift
 

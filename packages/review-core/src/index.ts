@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import {
   collectDiffForReviewRequest,
   type DiffContext,
@@ -573,10 +574,14 @@ export async function runReview(
   bridge?: MirrorWriteBridge
 ): Promise<ReviewRunResult> {
   const limits = resolveReviewSecurityLimits(options.limits);
-  const request = withReviewRequestSecurityDefaults(
+  const parsedRequest = withReviewRequestSecurityDefaults(
     parseReviewRequest(input),
     limits
   );
+  const request =
+    parsedRequest.executionMode === 'localTrusted'
+      ? { ...parsedRequest, cwd: await realpath(parsedRequest.cwd) }
+      : parsedRequest;
   throwIfCancelled(options.signal);
   const reviewId = randomUUID();
   const now = options.now ?? (() => new Date());

@@ -8,7 +8,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import {
   collectDiffForTarget,
   ensureRustDiffIndexBinary,
+  gitConfigGlobalPath,
   mergeBaseWithHead,
   resolveBranchRef,
 } from './index.js';
@@ -32,6 +33,15 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
   });
   return stdout.trim();
 }
+
+describe('gitConfigGlobalPath', () => {
+  it('uses the Git-compatible Windows null device', () => {
+    expect(gitConfigGlobalPath('win32')).toBe('NUL');
+    expect(gitConfigGlobalPath()).toBe(
+      process.platform === 'win32' ? 'NUL' : devNull
+    );
+  });
+});
 
 describe('mergeBaseWithHead', () => {
   it('returns merge base with local branch', async () => {

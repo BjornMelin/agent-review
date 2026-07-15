@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { ConvexMetadataBridge } from '@review-agent/review-convex-bridge';
 import { computeExitCode, runReview } from '@review-agent/review-core';
 import {
   createReviewProviders,
@@ -24,7 +23,8 @@ import {
   ReviewStartRequestSchema,
   type ReviewTarget,
 } from '@review-agent/review-types';
-import { program } from 'commander';
+import { CommanderError, program } from 'commander';
+import packageMetadata from '../package.json' with { type: 'json' };
 import {
   cancelReview,
   fetchReviewArtifact,
@@ -309,7 +309,7 @@ function mapErrorToExitCode(error: unknown): number {
     return 4;
   }
   if (
-    /target|usage|invalid|schema|format|--provider|model id|model route/i.test(
+    /target|usage|invalid|schema|format|shell|--provider|model id|model route/i.test(
       message
     )
   ) {
@@ -407,7 +407,11 @@ async function runCommand(options: RunCliOptions): Promise<number> {
   const outputFormats = request.outputFormats;
 
   const providers = createReviewProviders();
-  const bridge = options.convexMirror ? new ConvexMetadataBridge() : undefined;
+  const bridge = options.convexMirror
+    ? new (
+        await import('@review-agent/review-convex-bridge')
+      ).ConvexMetadataBridge()
+    : undefined;
   const onEvent = options.quiet
     ? undefined
     : (event: LifecycleEvent) => {
@@ -600,10 +604,12 @@ async function runAction(
 }
 
 async function main(): Promise<void> {
+  // Configure this before every command registration so subcommands inherit it.
   program
+    .exitOverride()
     .name('review-agent')
     .description('Codex-grade review agent CLI')
-    .version('0.1.0');
+    .version(packageMetadata.version);
 
   addRepositoryOptions(
     addServiceOptions(addReviewRequestOptions(program.command('run')))
@@ -743,7 +749,16 @@ async function main(): Promise<void> {
       process.stdout.write(script);
     });
 
-  await program.parseAsync(process.argv);
+  try {
+    await program.parseAsync(process.argv);
+  } catch (error) {
+    if (error instanceof CommanderError) {
+      process.exitCode = error.exitCode === 0 ? 0 : 2;
+      return;
+    }
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = mapErrorToExitCode(error);
+  }
 }
 
 await main();

@@ -18,10 +18,10 @@
     "@review-agent/review-provider-registry": "workspace:*",
     "@review-agent/review-sandbox-vercel": "workspace:*",
     "@review-agent/review-types": "workspace:*",
-    "@workflow/core": "4.2.4"
+    "@workflow/core": "4.6.0"
   },
   "devDependencies": {
-    "tsx": "4.21.0"
+    "tsx": "4.23.1"
   },
   "exports": {
     ".": {
