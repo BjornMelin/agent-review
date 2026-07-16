@@ -152,24 +152,23 @@ describe('openai-compatible provider contract', () => {
       output: RAW_OUTPUT,
       usage: {
         inputTokens: 25,
-        inputTokenDetails: { cacheReadTokens: 4 },
+        inputTokenDetails: {
+          noCacheTokens: 21,
+          cacheReadTokens: 4,
+          cacheWriteTokens: undefined,
+        },
         outputTokens: 12,
-        outputTokenDetails: { reasoningTokens: 2 },
+        outputTokenDetails: { textTokens: 10, reasoningTokens: 2 },
         totalTokens: 37,
       },
-      totalUsage: {
-        inputTokens: 25,
-        inputTokenDetails: { cacheReadTokens: 4 },
-        outputTokens: 12,
-        outputTokenDetails: { reasoningTokens: 2 },
-        totalTokens: 37,
-      },
-      providerMetadata: {
-        gateway: {
-          routing: { finalProvider: 'openai' },
-          cost: '0.00012',
-          marketCost: '0.00012',
-          generationId: 'gen_test',
+      finalStep: {
+        providerMetadata: {
+          gateway: {
+            routing: { finalProvider: 'openai' },
+            cost: '0.00012',
+            marketCost: '0.00012',
+            generationId: 'gen_test',
+          },
         },
       },
     });
@@ -197,7 +196,13 @@ describe('openai-compatible provider contract', () => {
     expect(generateTextMock).toHaveBeenCalledTimes(1);
     expect(generateTextMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        instructions: 'rubric',
         maxOutputTokens: 4096,
+        telemetry: {
+          isEnabled: false,
+          recordInputs: false,
+          recordOutputs: false,
+        },
         timeout: {
           totalMs: 120_000,
           stepMs: 120_000,
@@ -209,6 +214,7 @@ describe('openai-compatible provider contract', () => {
         }),
       })
     );
+    expect(generateTextMock.mock.calls[0]?.[0]).not.toHaveProperty('system');
     expect(result.raw).toEqual(RAW_OUTPUT);
     expect(result.text).toContain('overall_correctness');
     expect(result.providerTelemetry).toMatchObject({
@@ -234,8 +240,21 @@ describe('openai-compatible provider contract', () => {
   it('applies gateway provider options for custom gateway route ids', async () => {
     generateTextMock.mockResolvedValue({
       output: RAW_OUTPUT,
-      usage: { totalTokens: 1 },
-      providerMetadata: {},
+      usage: {
+        inputTokens: undefined,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokens: undefined,
+        outputTokenDetails: {
+          textTokens: undefined,
+          reasoningTokens: undefined,
+        },
+        totalTokens: 1,
+      },
+      finalStep: { providerMetadata: {} },
     });
     const provider = makeProvider({
       defaultModelId: 'review-gateway:openai/gpt-5',
@@ -553,15 +572,24 @@ describe('openai-compatible provider contract', () => {
         output: RAW_OUTPUT,
         usage: {
           inputTokens: 10,
-          inputTokenDetails: {},
+          inputTokenDetails: {
+            noCacheTokens: 10,
+            cacheReadTokens: undefined,
+            cacheWriteTokens: undefined,
+          },
           outputTokens: 5,
-          outputTokenDetails: {},
+          outputTokenDetails: {
+            textTokens: 5,
+            reasoningTokens: undefined,
+          },
           totalTokens: 15,
         },
-        providerMetadata: {
-          gateway: {
-            routing: { finalProvider: 'anthropic' },
-            generationId: 'gen_fallback',
+        finalStep: {
+          providerMetadata: {
+            gateway: {
+              routing: { finalProvider: 'anthropic' },
+              generationId: 'gen_fallback',
+            },
           },
         },
       });
@@ -693,14 +721,23 @@ describe('openai-compatible provider contract', () => {
         output: RAW_OUTPUT,
         usage: {
           inputTokens: 10,
-          inputTokenDetails: {},
+          inputTokenDetails: {
+            noCacheTokens: 10,
+            cacheReadTokens: undefined,
+            cacheWriteTokens: undefined,
+          },
           outputTokens: 5,
-          outputTokenDetails: {},
+          outputTokenDetails: {
+            textTokens: 5,
+            reasoningTokens: undefined,
+          },
           totalTokens: 15,
         },
-        providerMetadata: {
-          gateway: {
-            routing: { finalProvider: 'anthropic' },
+        finalStep: {
+          providerMetadata: {
+            gateway: {
+              routing: { finalProvider: 'anthropic' },
+            },
           },
         },
       });

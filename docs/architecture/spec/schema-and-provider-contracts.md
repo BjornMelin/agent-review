@@ -386,8 +386,11 @@ defaults.
 - Accepted provider prefixes:
   - `gateway`
   - `openrouter`
-- Uses AI SDK structured output (`Output.object`) with `RawModelOutputSchema`.
-- Uses AI SDK Gateway `createGateway` for `gateway:*` model routing.
+- Uses AI SDK 7 structured output (`Output.object`) with
+  `RawModelOutputSchema`; Gateway and OpenAI-compatible routes use Provider V4
+  language models.
+- Uses AI SDK Gateway `createGateway` for `gateway:*` model routing and sends the
+  trusted rubric through the canonical top-level `instructions` option.
 - Passes Gateway provider options from registry policy: provider `only`/`order`
   restrictions, `zeroDataRetention` when required, and
   `disallowPromptTraining` when enabled. These follow AI SDK Gateway provider
@@ -400,9 +403,12 @@ defaults.
 - Fails before SDK execution when the rendered prompt exceeds the model
   policy's `maxInputChars`; passes `maxOutputTokens` and policy timeout
   settings to `generateText`.
-- Records AI SDK usage and Gateway metadata when exposed, including
-  `providerMetadata.gateway.routing.finalProvider`,
-  `providerMetadata.gateway.generationId`, `cost`, and `marketCost`.
+- Records canonical aggregate AI SDK `usage` and final-step Gateway metadata when
+  exposed, including `finalStep.providerMetadata.gateway.routing.finalProvider`,
+  `finalStep.providerMetadata.gateway.generationId`, `cost`, and `marketCost`.
+- Opts every AI SDK generation out of SDK telemetry. Review telemetry is emitted
+  only through the redaction-safe provider policy contract; prompt, rubric, diff,
+  and raw provider output content are excluded.
 - Environment variables:
   - `AI_GATEWAY_API_KEY`
   - `OPENROUTER_API_KEY`
