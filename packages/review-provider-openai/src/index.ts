@@ -14,7 +14,14 @@ import {
   type ReviewProviderRunOutput,
   type ReviewProviderValidationInput,
 } from '@review-agent/review-types';
-import { generateText, Output } from 'ai';
+import {
+  generateText,
+  type LanguageModel,
+  type LanguageModelUsage,
+  Output,
+  type ProviderMetadata,
+  type TelemetryOptions,
+} from 'ai';
 
 /**
  * Configures the OpenAI-compatible provider registry for route factories, model policies, and defaults.
@@ -81,8 +88,7 @@ export type OpenAICompatibleModelPolicy = {
   >;
 };
 
-type TextModel = Parameters<typeof generateText>[0]['model'];
-type LanguageModelFactory = (modelId: string) => TextModel;
+type LanguageModelFactory = (modelId: string) => LanguageModel;
 type ResolvedRouteConfig = OpenAICompatibleRouteConfig & {
   apiKey: string | undefined;
 };
@@ -95,6 +101,16 @@ type ParsedModelPolicy = {
 type ProviderFallbackErrorOptions = {
   providerAttempts: readonly ProviderAttemptTelemetry[];
   lastFailureClass: ProviderFailureClass;
+};
+
+const PRIVATE_REVIEW_TELEMETRY = {
+  isEnabled: false,
+  recordInputs: false,
+  recordOutputs: false,
+} as const satisfies TelemetryOptions & {
+  readonly isEnabled: false;
+  readonly recordInputs: false;
+  readonly recordOutputs: false;
 };
 
 function cloneProviderAttemptTelemetry(
@@ -248,7 +264,9 @@ function extractGatewayMetadata(
   return isRecord(gateway) ? gateway : undefined;
 }
 
-function extractFinalProvider(providerMetadata: unknown): string | undefined {
+function extractFinalProvider(
+  providerMetadata: ProviderMetadata | undefined
+): string | undefined {
   const gateway = extractGatewayMetadata(providerMetadata);
   const routing = gateway && isRecord(gateway.routing) ? gateway.routing : {};
   const finalProvider = routing.finalProvider ?? routing.resolvedProvider;
@@ -257,34 +275,31 @@ function extractFinalProvider(providerMetadata: unknown): string | undefined {
     : undefined;
 }
 
-function extractGenerationId(providerMetadata: unknown): string | undefined {
+function extractGenerationId(
+  providerMetadata: ProviderMetadata | undefined
+): string | undefined {
   const gateway = extractGatewayMetadata(providerMetadata);
   return typeof gateway?.generationId === 'string' && gateway.generationId
     ? gateway.generationId
     : undefined;
 }
 
-function extractProviderUsage(result: unknown): ProviderUsage {
-  const resultRecord = isRecord(result) ? result : {};
-  const usage = isRecord(resultRecord.totalUsage)
-    ? resultRecord.totalUsage
-    : isRecord(resultRecord.usage)
-      ? resultRecord.usage
-      : {};
-  const gateway = extractGatewayMetadata(resultRecord.providerMetadata);
+function extractProviderUsage(
+  usage: LanguageModelUsage,
+  providerMetadata: ProviderMetadata | undefined
+): ProviderUsage {
+  const gateway = extractGatewayMetadata(providerMetadata);
   const costUsd = optionalNumber(gateway?.cost);
   const marketCostUsd = optionalNumber(gateway?.marketCost);
   const inputTokens = optionalInteger(usage.inputTokens);
   const outputTokens = optionalInteger(usage.outputTokens);
   const totalTokens = optionalInteger(usage.totalTokens);
-  const outputTokenDetails = isRecord(usage.outputTokenDetails)
-    ? usage.outputTokenDetails
-    : {};
-  const inputTokenDetails = isRecord(usage.inputTokenDetails)
-    ? usage.inputTokenDetails
-    : {};
-  const reasoningTokens = optionalInteger(outputTokenDetails.reasoningTokens);
-  const cachedInputTokens = optionalInteger(inputTokenDetails.cacheReadTokens);
+  const reasoningTokens = optionalInteger(
+    usage.outputTokenDetails.reasoningTokens
+  );
+  const cachedInputTokens = optionalInteger(
+    usage.inputTokenDetails.cacheReadTokens
+  );
   const usageReported =
     inputTokens !== undefined ||
     outputTokens !== undefined ||
@@ -307,16 +322,16 @@ function extractProviderUsage(result: unknown): ProviderUsage {
 function buildGatewayProviderOptions(
   route: ResolvedRouteConfig,
   policy: OpenAICompatibleModelPolicy
-): { gateway: GatewayProviderOptions } | undefined {
+) {
   if (route.kind !== 'gateway') {
     return undefined;
   }
-  const gateway: GatewayProviderOptions = {
+  const gateway = {
     ...(policy.gateway ?? {}),
     zeroDataRetention: policy.zdrRequired,
     disallowPromptTraining: policy.disallowPromptTraining,
     tags: ['review-agent', `policy:${policy.policyVersion}`],
-  };
+  } satisfies GatewayProviderOptions;
   return { gateway };
 }
 
@@ -610,8 +625,9 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
         );
         const result = await generateText({
           model: provider(attempt.modelId),
-          system: input.rubric,
+          instructions: input.rubric,
           prompt,
+          telemetry: PRIVATE_REVIEW_TELEMETRY,
           maxOutputTokens: attempt.policy.maxOutputTokens,
           timeout: {
             totalMs: attempt.policy.timeoutMs,
@@ -620,9 +636,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           ...(providerOptions
             ? {
-                providerOptions: providerOptions as Parameters<
-                  typeof generateText
-                >[0]['providerOptions'] & {},
+                providerOptions,
               }
             : {}),
           output: Output.object({
@@ -631,9 +645,10 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
             description: 'Structured review findings and correctness verdict',
           }),
         });
-        const usage = extractProviderUsage(result);
-        const finalProvider = extractFinalProvider(result.providerMetadata);
-        const generationId = extractGenerationId(result.providerMetadata);
+        const providerMetadata = result.finalStep.providerMetadata;
+        const usage = extractProviderUsage(result.usage, providerMetadata);
+        const finalProvider = extractFinalProvider(providerMetadata);
+        const generationId = extractGenerationId(providerMetadata);
         const latencyMs = attemptLatencyMs(startedAt);
         providerAttempts.push({
           route: attempt.route.id,

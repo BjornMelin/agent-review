@@ -19,6 +19,8 @@ durable and platform log surfaces.
   <https://vercel.com/changelog/logs-filtering-for-vercel-workflows-now-available>
 - Vercel Sandbox SDK reference:
   <https://vercel.com/docs/vercel-sandbox/sdk-reference>
+- AI SDK telemetry:
+  <https://ai-sdk.dev/docs/ai-sdk-core/telemetry>
 
 ## Durable Metrics
 
@@ -52,6 +54,19 @@ Prohibited fields:
   secrets, host paths, cwd, prompt text, diffs, files, stack traces, or other
   private payload markers fall back to generic text such as
   `review run failed`, `detached run failed`, or `detached start failed`.
+
+## AI SDK Telemetry Boundary
+
+The OpenAI-compatible provider opts every generation out of AI SDK telemetry
+with a module-private, compiler-checked policy. AI SDK 7 dispatches every call
+to registered telemetry integrations by default, with input and output recording
+enabled by default; review prompts, rubrics, diffs, and raw provider output must
+never enter that channel.
+
+The provider's own `ProviderPolicyTelemetry` remains the canonical observable
+surface for model, routing, fallback, latency, token, and cost summaries. Enabling
+AI SDK telemetry requires a separate privacy review and a trusted integration
+that cannot receive private review content.
 
 ## Structured Logs
 
