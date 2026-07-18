@@ -57,8 +57,9 @@ policy are accepted in a new implementation issue.
   for committed `review-types` JSON Schema artifacts.
 - `review-git-diff`: production stdin/stdout diff-index helper. It validates
   the generated `ReviewRequest` contract, parses unified git patches, applies
-  include/exclude and byte/file budgets, and returns normalized chunks plus the
-  changed-line index.
+  include/exclude and byte/file budgets, and returns generated normalized chunk
+  DTOs. The TypeScript adapter derives the joined patch and changed-line index
+  from those validated chunks.
 - `review-runner`: production stdin/stdout command runner. It validates the
   generated `CommandRunInput`/`CommandRunOutput` contracts, creates optional
   temporary directories, enforces process-group cancellation/timeouts/output

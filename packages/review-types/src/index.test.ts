@@ -7,6 +7,7 @@ import {
   CommandRunInputSchema,
   CommandRunOutputSchema,
   DEFAULT_REVIEW_SECURITY_LIMITS,
+  DiffIndexOutputSchema,
   isTerminalReviewRunStatus,
   OutputFormatSchema,
   ProviderPolicyTelemetrySchema,
@@ -791,6 +792,45 @@ describe('review-types schemas', () => {
       commandId: 'codex-review',
       status: 'completed',
     });
+  });
+
+  it('validates native diff-index output contracts', () => {
+    const output = {
+      chunks: [
+        {
+          file: 'src/app.ts',
+          absoluteFilePath: '/tmp/repo/src/app.ts',
+          patch: 'diff --git a/src/app.ts b/src/app.ts',
+          changedLines: [1],
+        },
+      ],
+    };
+
+    expect(DiffIndexOutputSchema.parse(output)).toEqual(output);
+
+    for (const invalidOutput of [
+      { ...output, patch: output.chunks[0]?.patch },
+      { ...output, changedLineIndex: [] },
+      {
+        ...output,
+        chunks: [{ ...output.chunks[0], changedLines: [0] }],
+      },
+      {
+        ...output,
+        chunks: [{ ...output.chunks[0], unexpected: true }],
+      },
+      {
+        ...output,
+        changedLineIndex: [
+          {
+            absoluteFilePath: '/tmp/repo/src/app.ts',
+            changedLines: [Number.MAX_SAFE_INTEGER + 1],
+          },
+        ],
+      },
+    ]) {
+      expect(() => DiffIndexOutputSchema.parse(invalidOutput)).toThrow();
+    }
   });
 
   it('validates redaction-safe run metrics', () => {

@@ -41,8 +41,9 @@ The root Cargo workspace and `crates/review-contracts` provide that generation
 and parity gate before any Rust helper behavior is allowed to ship.
 `crates/review-git-diff` is the first admitted helper: TypeScript still owns Git
 CLI collection, while Rust validates the generated `ReviewRequest`, performs
-diff parse/filter/index work, and returns the normalized helper output over a
-stdin/stdout JSON contract.
+diff parse/filter work, and returns generated normalized chunk DTOs over a
+stdin/stdout JSON contract. TypeScript derives joined patch and changed-line
+index views from those validated chunks.
 `crates/review-runner` is the second admitted helper: TypeScript still owns
 provider orchestration, while Rust validates generated `CommandRunInput`,
 supervises cancellable process groups with bounded output and temporary file

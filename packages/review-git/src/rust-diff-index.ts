@@ -3,7 +3,13 @@ import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import type { ReviewRequest } from '@review-agent/review-types';
+import {
+  type DiffChunk,
+  DiffIndexOutputSchema,
+  type ReviewRequest,
+} from '@review-agent/review-types';
+
+export type { DiffChunk } from '@review-agent/review-types';
 
 const execFileAsync = promisify(execFile);
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -35,20 +41,6 @@ const maxStderrBytes = parsePositiveIntegerEnv(
 let buildPromise: Promise<string> | undefined;
 
 /**
- * Represents a parsed and filtered chunk of a git diff for a specific file.
- */
-export type DiffChunk = {
-  /** Repository-relative path for the changed file. */
-  file: string;
-  /** Absolute path for the changed file. */
-  absoluteFilePath: string;
-  /** Per-file unified diff patch text. */
-  patch: string;
-  /** Sorted one-based changed line numbers in the target file. */
-  changedLines: number[];
-};
-
-/**
  * Diff filter options sourced from the canonical review request contract.
  */
 export type DiffIndexOptions = Pick<
@@ -62,12 +54,6 @@ export type DiffIndexResult = {
   changedLineIndex: Map<string, Set<number>>;
 };
 
-type RustDiffIndexOutput = {
-  patch: string;
-  chunks: DiffChunk[];
-  changedLineIndex: Array<[string, number[]]>;
-};
-
 function parsePositiveIntegerEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) {
@@ -77,14 +63,29 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function decodeChangedLineIndex(
-  entries: Array<[string, number[]]>
-): Map<string, Set<number>> {
+function deriveChangedLineIndex(chunks: DiffChunk[]): Map<string, Set<number>> {
   const index = new Map<string, Set<number>>();
-  for (const [absoluteFilePath, lines] of entries) {
-    index.set(resolve(absoluteFilePath), new Set(lines));
+  for (const chunk of chunks) {
+    const absoluteFilePath = resolve(chunk.absoluteFilePath);
+    const changedLines = index.get(absoluteFilePath) ?? new Set<number>();
+    for (const line of chunk.changedLines) {
+      changedLines.add(line);
+    }
+    index.set(absoluteFilePath, changedLines);
   }
   return index;
+}
+
+/**
+ * Validates native helper output and derives the public diff context fields from chunks.
+ */
+function decodeDiffIndexOutput(input: unknown): DiffIndexResult {
+  const output = DiffIndexOutputSchema.parse(input);
+  return {
+    patch: output.chunks.map((chunk) => chunk.patch).join('\n'),
+    chunks: output.chunks,
+    changedLineIndex: deriveChangedLineIndex(output.chunks),
+  };
 }
 
 function encodeDiffIndexRequest(request: ReviewRequest, patch: string): string {
@@ -256,12 +257,7 @@ export async function indexDiffForReviewRequest(
     ['index'],
     encodeDiffIndexRequest(request, patch)
   );
-  const output = JSON.parse(stdout) as RustDiffIndexOutput;
-  return {
-    patch: output.patch,
-    chunks: output.chunks,
-    changedLineIndex: decodeChangedLineIndex(output.changedLineIndex),
-  };
+  return decodeDiffIndexOutput(JSON.parse(stdout));
 }
 
 /**

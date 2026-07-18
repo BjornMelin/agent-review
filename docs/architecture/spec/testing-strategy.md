@@ -118,10 +118,15 @@ narrow `review-git-diff index` stdin/stdout JSON contract:
 - input: `{ request, patch }`, where `request` is validated through generated
   `ReviewRequest` DTO parsing and `patch` is unified git diff text collected by
   TypeScript.
-- output: `{ patch, chunks, changedLineIndex }`, where `patch` is the filtered
-  per-file patch text, `chunks` are normalized diff chunks, and
-  `changedLineIndex` is an array of absolute-path/line-list tuples converted
-  back to the TypeScript `Map<string, Set<number>>` shape.
+- output: `{ chunks }`, where each normalized chunk owns its file paths, patch,
+  and one-based changed lines. TypeScript derives the joined patch and
+  `Map<string, Set<number>>` from this single validated source.
+
+`DiffIndexOutputSchema` is generated into the Rust parity crate. The native
+helper constructs and serializes its generated DTO directly, and the TypeScript
+adapter validates parsed JSON before deriving the public diff context. Contract
+and adapter tests reject legacy independent patch/index fields, malformed
+chunks, and invalid one-based line values.
 
 The legacy TypeScript parser is retained only as `packages/review-git`
 test-support baseline code for parity checks; production `review-git` no longer

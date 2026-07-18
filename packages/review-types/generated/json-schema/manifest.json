@@ -12,6 +12,10 @@
       "file": "command-run-output.schema.json"
     },
     {
+      "name": "diffIndexOutput",
+      "file": "diff-index-output.schema.json"
+    },
+    {
       "name": "lifecycleEvent",
       "file": "lifecycle-event.schema.json"
     },

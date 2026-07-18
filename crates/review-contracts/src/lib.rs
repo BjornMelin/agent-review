@@ -37,6 +37,9 @@ const COMMAND_RUN_INPUT_SCHEMA: &str = include_str!(
 const COMMAND_RUN_OUTPUT_SCHEMA: &str = include_str!(
     "../../../packages/review-types/generated/json-schema/command-run-output.schema.json"
 );
+const DIFF_INDEX_OUTPUT_SCHEMA: &str = include_str!(
+    "../../../packages/review-types/generated/json-schema/diff-index-output.schema.json"
+);
 const SANDBOX_AUDIT_SCHEMA: &str =
     include_str!("../../../packages/review-types/generated/json-schema/sandbox-audit.schema.json");
 
@@ -52,6 +55,8 @@ static REVIEW_RESULT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> 
 static COMMAND_RUN_INPUT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> =
     OnceLock::new();
 static COMMAND_RUN_OUTPUT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> =
+    OnceLock::new();
+static DIFF_INDEX_OUTPUT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> =
     OnceLock::new();
 static SANDBOX_AUDIT_VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
 
@@ -149,6 +154,16 @@ pub fn parse_command_run_output(input: &Value) -> Result<CommandRunOutput, Contr
         "CommandRunOutput",
         COMMAND_RUN_OUTPUT_SCHEMA,
         &COMMAND_RUN_OUTPUT_VALIDATOR,
+        input,
+    )
+}
+
+/// Validate and parse a `DiffIndexOutput` JSON value through the committed schema.
+pub fn parse_diff_index_output(input: &Value) -> Result<DiffIndexOutput, ContractParseError> {
+    parse_contract(
+        "DiffIndexOutput",
+        DIFF_INDEX_OUTPUT_SCHEMA,
+        &DIFF_INDEX_OUTPUT_VALIDATOR,
         input,
     )
 }

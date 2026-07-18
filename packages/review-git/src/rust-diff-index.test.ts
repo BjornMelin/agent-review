@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   afterAll,
@@ -12,11 +12,21 @@ import {
   vi,
 } from 'vitest';
 
-const output = JSON.stringify({
-  patch: '',
-  chunks: [],
-  changedLineIndex: [],
-});
+const output = JSON.stringify({ chunks: [] });
+const chunks = [
+  {
+    file: 'src/app.ts',
+    absoluteFilePath: '/repo/src/app.ts',
+    patch: 'diff --git a/src/app.ts b/src/app.ts',
+    changedLines: [1, 3],
+  },
+  {
+    file: 'src/app.ts',
+    absoluteFilePath: '/repo/src/app.ts',
+    patch: '@@ -2 +2 @@',
+    changedLines: [2, 3],
+  },
+];
 const request = {
   cwd: '/repo',
   target: { type: 'uncommittedChanges' as const },
@@ -45,7 +55,7 @@ describe('Rust diff-index output limits', () => {
       scriptPath,
       'import { writeSync } from "node:fs";\n' +
         'writeSync(2, process.env.REVIEW_GIT_TEST_STDERR ?? "");\n' +
-        `writeSync(1, ${JSON.stringify(output)});\n` +
+        `writeSync(1, process.env.REVIEW_GIT_TEST_STDOUT ?? ${JSON.stringify(output)});\n` +
         'process.exit(0);\n'
     );
     helperImport = pathToFileURL(scriptPath).href;
@@ -74,6 +84,36 @@ describe('Rust diff-index output limits', () => {
       changedLineIndex: new Map(),
     });
     expect(byteLength).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives patch and changed-line ownership from helper chunks', async () => {
+    const helperOutput = JSON.stringify({ chunks });
+    vi.stubEnv('REVIEW_GIT_TEST_STDOUT', helperOutput);
+    const helper = await loadHelper(Buffer.byteLength(helperOutput), 1);
+
+    const result = await helper.indexDiffForReviewRequest(request, '');
+
+    expect(result.patch).toBe(`${chunks[0]?.patch}\n${chunks[1]?.patch}`);
+    expect(result.chunks).toEqual(chunks);
+    expect(
+      [
+        ...(result.changedLineIndex.get(resolve('/repo/src/app.ts')) ?? []),
+      ].sort((left, right) => left - right)
+    ).toEqual([1, 2, 3]);
+  });
+
+  it('rejects independently supplied patch and index fields', async () => {
+    const malformedOutput = JSON.stringify({
+      chunks,
+      patch: '',
+      changedLineIndex: [],
+    });
+    vi.stubEnv('REVIEW_GIT_TEST_STDOUT', malformedOutput);
+    const helper = await loadHelper(Buffer.byteLength(malformedOutput), 1);
+
+    await expect(helper.indexDiffForReviewRequest(request, '')).rejects.toThrow(
+      /Unrecognized keys/
+    );
   });
 
   it('rejects stdout that exceeds its byte cap', async () => {
