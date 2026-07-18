@@ -210,15 +210,10 @@ fn generated_command_run_dtos_round_trip_runner_contracts() {
 #[test]
 fn generated_diff_index_output_dto_round_trips_native_contract() {
     let output = json!({
-        "patch": "diff --git a/src/app.ts b/src/app.ts",
         "chunks": [{
             "file": "src/app.ts",
             "absoluteFilePath": "/tmp/repo/src/app.ts",
             "patch": "diff --git a/src/app.ts b/src/app.ts",
-            "changedLines": [1]
-        }],
-        "changedLineIndex": [{
-            "absoluteFilePath": "/tmp/repo/src/app.ts",
             "changedLines": [1]
         }]
     });
@@ -235,19 +230,20 @@ fn generated_diff_index_output_dto_round_trips_native_contract() {
 fn validated_diff_index_output_rejects_legacy_and_invalid_shapes() {
     for invalid_output in [
         json!({
-            "patch": "",
             "chunks": [],
-            "changedLineIndex": [["/tmp/repo/src/app.ts", [1]]]
+            "patch": ""
         }),
         json!({
-            "patch": "diff --git a/src/app.ts b/src/app.ts",
+            "chunks": [],
+            "changedLineIndex": []
+        }),
+        json!({
             "chunks": [{
                 "file": "src/app.ts",
                 "absoluteFilePath": "/tmp/repo/src/app.ts",
                 "patch": "diff --git a/src/app.ts b/src/app.ts",
                 "changedLines": [0]
-            }],
-            "changedLineIndex": []
+            }]
         }),
     ] {
         assert_invalid_json(parse_diff_index_output(&invalid_output));

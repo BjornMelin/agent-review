@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   type DiffChunk,
-  type DiffIndexOutput,
   DiffIndexOutputSchema,
   type ReviewRequest,
 } from '@review-agent/review-types';
@@ -64,14 +63,29 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function decodeChangedLineIndex(
-  entries: DiffIndexOutput['changedLineIndex']
-): Map<string, Set<number>> {
+function deriveChangedLineIndex(chunks: DiffChunk[]): Map<string, Set<number>> {
   const index = new Map<string, Set<number>>();
-  for (const entry of entries) {
-    index.set(resolve(entry.absoluteFilePath), new Set(entry.changedLines));
+  for (const chunk of chunks) {
+    const absoluteFilePath = resolve(chunk.absoluteFilePath);
+    const changedLines = index.get(absoluteFilePath) ?? new Set<number>();
+    for (const line of chunk.changedLines) {
+      changedLines.add(line);
+    }
+    index.set(absoluteFilePath, changedLines);
   }
   return index;
+}
+
+/**
+ * Validates native helper output and derives the public diff context fields from chunks.
+ */
+function decodeDiffIndexOutput(input: unknown): DiffIndexResult {
+  const output = DiffIndexOutputSchema.parse(input);
+  return {
+    patch: output.chunks.map((chunk) => chunk.patch).join('\n'),
+    chunks: output.chunks,
+    changedLineIndex: deriveChangedLineIndex(output.chunks),
+  };
 }
 
 function encodeDiffIndexRequest(request: ReviewRequest, patch: string): string {
@@ -243,12 +257,7 @@ export async function indexDiffForReviewRequest(
     ['index'],
     encodeDiffIndexRequest(request, patch)
   );
-  const output = DiffIndexOutputSchema.parse(JSON.parse(stdout));
-  return {
-    patch: output.patch,
-    chunks: output.chunks,
-    changedLineIndex: decodeChangedLineIndex(output.changedLineIndex),
-  };
+  return decodeDiffIndexOutput(JSON.parse(stdout));
 }
 
 /**

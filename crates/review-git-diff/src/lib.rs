@@ -3,17 +3,21 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use review_agent_contracts::{ContractParseError, ReviewRequest, parse_review_request};
-use serde::{Deserialize, Serialize};
+use review_agent_contracts::{
+    ContractParseError, DiffIndexOutput, DiffIndexOutputChunksItem, ReviewRequest,
+    parse_review_request,
+};
+use serde::Deserialize;
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiffChunk {
-    pub file: String,
-    pub absolute_file_path: String,
-    pub patch: String,
-    pub changed_lines: Vec<usize>,
+const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedDiffChunk {
+    file: String,
+    absolute_file_path: String,
+    patch: String,
+    changed_lines: Vec<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,21 +25,6 @@ pub struct DiffChunk {
 pub struct DiffIndexInput {
     pub request: Value,
     pub patch: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChangedLineIndexEntry {
-    pub absolute_file_path: String,
-    pub changed_lines: Vec<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiffIndexOutput {
-    pub patch: String,
-    pub chunks: Vec<DiffChunk>,
-    pub changed_line_index: Vec<ChangedLineIndexEntry>,
 }
 
 #[derive(Debug)]
@@ -48,6 +37,9 @@ pub enum DiffIndexError {
     InvalidLimit {
         field: &'static str,
         value: i64,
+    },
+    InvalidLineNumber {
+        value: usize,
     },
 }
 
@@ -64,6 +56,12 @@ impl fmt::Display for DiffIndexError {
                     "{field} cannot be represented as a usize: {value}"
                 )
             }
+            Self::InvalidLineNumber { value } => {
+                write!(
+                    formatter,
+                    "changed line is not a safe JSON integer: {value}"
+                )
+            }
         }
     }
 }
@@ -73,7 +71,7 @@ impl Error for DiffIndexError {
         match self {
             Self::InvalidRequest(error) => Some(error),
             Self::InvalidGlob { source, .. } => Some(source),
-            Self::InvalidLimit { .. } => None,
+            Self::InvalidLimit { .. } | Self::InvalidLineNumber { .. } => None,
         }
     }
 }
@@ -256,7 +254,7 @@ fn absolute_file_path(cwd: &Path, file: &str) -> String {
     absolute.to_string_lossy().into_owned()
 }
 
-pub fn parse_unified_diff(cwd: &Path, patch: &str) -> Vec<DiffChunk> {
+fn parse_unified_diff(cwd: &Path, patch: &str) -> Vec<ParsedDiffChunk> {
     if patch.trim().is_empty() {
         return Vec::new();
     }
@@ -275,7 +273,7 @@ pub fn parse_unified_diff(cwd: &Path, patch: &str) -> Vec<DiffChunk> {
             }
             changed_lines.sort_unstable();
             changed_lines.dedup();
-            chunks.push(DiffChunk {
+            chunks.push(ParsedDiffChunk {
                 file: current_file.to_owned(),
                 absolute_file_path: absolute_file_path(cwd, current_file),
                 patch: current_patch.join("\n"),
@@ -391,7 +389,7 @@ fn optional_usize_limit(
 }
 
 fn chunk_matches_filters(
-    chunk: &DiffChunk,
+    chunk: &ParsedDiffChunk,
     include_paths: &Option<GlobSet>,
     exclude_paths: &Option<GlobSet>,
 ) -> bool {
@@ -410,38 +408,31 @@ fn chunk_matches_filters(
     true
 }
 
-fn push_changed_line_index(
-    index: &mut Vec<ChangedLineIndexEntry>,
-    absolute_file_path: &str,
-    changed_lines: &[usize],
-) {
-    let lines = match index
-        .iter_mut()
-        .find(|entry| entry.absolute_file_path == absolute_file_path)
-    {
-        Some(entry) => &mut entry.changed_lines,
-        None => {
-            index.push(ChangedLineIndexEntry {
-                absolute_file_path: absolute_file_path.to_owned(),
-                changed_lines: Vec::new(),
-            });
-            &mut index.last_mut().expect("index entry exists").changed_lines
-        }
-    };
-    lines.extend(changed_lines.iter().copied());
-    lines.sort_unstable();
-    lines.dedup();
-}
-
-fn build_changed_line_index(chunks: &[DiffChunk]) -> Vec<ChangedLineIndexEntry> {
-    let mut index = Vec::new();
-    for chunk in chunks {
-        push_changed_line_index(&mut index, &chunk.absolute_file_path, &chunk.changed_lines);
+fn contract_line_number(value: usize) -> Result<i64, DiffIndexError> {
+    let value_as_i64 =
+        i64::try_from(value).map_err(|_error| DiffIndexError::InvalidLineNumber { value })?;
+    if value_as_i64 == 0 || value_as_i64 > MAX_SAFE_INTEGER {
+        return Err(DiffIndexError::InvalidLineNumber { value });
     }
-    index
+    Ok(value_as_i64)
 }
 
-pub fn build_diff_index(
+fn into_contract_chunk(
+    chunk: ParsedDiffChunk,
+) -> Result<DiffIndexOutputChunksItem, DiffIndexError> {
+    Ok(DiffIndexOutputChunksItem {
+        absolute_file_path: chunk.absolute_file_path,
+        changed_lines: chunk
+            .changed_lines
+            .into_iter()
+            .map(contract_line_number)
+            .collect::<Result<Vec<_>, _>>()?,
+        file: chunk.file,
+        patch: chunk.patch,
+    })
+}
+
+fn build_diff_index(
     request: &ReviewRequest,
     patch: &str,
 ) -> Result<DiffIndexOutput, DiffIndexError> {
@@ -470,13 +461,10 @@ pub fn build_diff_index(
     }
 
     Ok(DiffIndexOutput {
-        patch: filtered_chunks
-            .iter()
-            .map(|chunk| chunk.patch.as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        changed_line_index: build_changed_line_index(&filtered_chunks),
-        chunks: filtered_chunks,
+        chunks: filtered_chunks
+            .into_iter()
+            .map(into_contract_chunk)
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -493,7 +481,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{DiffIndexInput, build_diff_index_from_input, parse_unified_diff};
+    use super::{DiffIndexError, DiffIndexInput, build_diff_index_from_input, parse_unified_diff};
 
     #[test]
     fn parses_quoted_paths_and_added_lines() {
@@ -515,7 +503,27 @@ mod tests {
     }
 
     #[test]
-    fn filters_and_indexes_chunks_with_generated_review_request() {
+    fn rejects_changed_lines_outside_the_json_contract() {
+        for line in [0, 9_007_199_254_740_992_u64] {
+            let patch = format!(
+                "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +{line} @@\n-old\n+new"
+            );
+            let request = json!({
+                "cwd": "/repo",
+                "target": { "type": "uncommittedChanges" },
+                "provider": "codexDelegate",
+                "outputFormats": ["json"]
+            });
+
+            assert!(matches!(
+                build_diff_index_from_input(DiffIndexInput { request, patch }),
+                Err(DiffIndexError::InvalidLineNumber { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn filters_chunks_with_generated_review_request() {
         let patch = [
             "diff --git a/src/app.ts b/src/app.ts",
             "index 7898192..6178079 100644",
@@ -546,12 +554,8 @@ mod tests {
 
         assert_eq!(output.chunks.len(), 1);
         assert_eq!(output.chunks[0].file, "src/app.ts");
-        assert_eq!(output.changed_line_index.len(), 1);
-        assert_eq!(
-            output.changed_line_index[0].absolute_file_path,
-            "/repo/src/app.ts"
-        );
-        assert_eq!(output.changed_line_index[0].changed_lines, vec![1]);
+        assert_eq!(output.chunks[0].absolute_file_path, "/repo/src/app.ts");
+        assert_eq!(output.chunks[0].changed_lines, vec![1]);
     }
 
     #[test]
@@ -593,7 +597,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["src/one.ts"]
         );
-        assert!(!output.patch.contains("src/two.ts"));
+        assert!(
+            output
+                .chunks
+                .iter()
+                .all(|chunk| !chunk.patch.contains("src/two.ts"))
+        );
     }
 
     #[test]

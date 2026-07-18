@@ -33,16 +33,17 @@ contract generation drift before Rust helper behavior can ship.
 ## DiffIndex Output Contract
 
 `DiffIndexOutputSchema` defines the TypeScript-owned output contract for
-`crates/review-git-diff`. It contains the filtered patch, normalized per-file
-chunks, and changed-line index entries. Each index entry is a strict object with
-`absoluteFilePath` and one-based `changedLines`; tuple-shaped entries are not
-accepted.
+`crates/review-git-diff`. Its only wire-owned field is the array of normalized
+per-file chunks. Each chunk carries its patch and one-based changed lines.
+Top-level patch and changed-line index fields are not accepted because they can
+drift from the chunks.
 
-The Rust helper validates its serialized output through
-`parse_diff_index_output` before writing stdout. The TypeScript adapter validates
-the parsed JSON with `DiffIndexOutputSchema` before converting index entries to
-`Map<string, Set<number>>`. This keeps generated JSON Schema as the boundary
-authority while allowing Rust to use internal algorithm records.
+The Rust helper converts private parser records into generated
+`DiffIndexOutput` DTOs and serializes that generated type. The TypeScript adapter
+validates parsed JSON with `DiffIndexOutputSchema`, then derives both the joined
+patch and `Map<string, Set<number>>` from those validated chunks. This keeps one
+wire authority and prevents an empty or inconsistent helper-supplied index from
+bypassing changed-line validation.
 
 ## CommandRun Contracts
 

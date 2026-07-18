@@ -1252,18 +1252,11 @@ export const DiffChunkSchema = z.strictObject({
   changedLines: z.array(DiffLineNumberSchema),
 });
 
-const ChangedLineIndexEntrySchema = z.strictObject({
-  absoluteFilePath: z.string().min(1),
-  changedLines: z.array(DiffLineNumberSchema),
-});
-
 /**
- * Validates the filtered patch, chunks, and changed-line index emitted by the native diff helper.
+ * Validates the chunks emitted by the native diff helper.
  */
 export const DiffIndexOutputSchema = z.strictObject({
-  patch: z.string(),
   chunks: z.array(DiffChunkSchema),
-  changedLineIndex: z.array(ChangedLineIndexEntrySchema),
 });
 
 /**

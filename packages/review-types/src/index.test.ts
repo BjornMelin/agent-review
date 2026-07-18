@@ -796,7 +796,6 @@ describe('review-types schemas', () => {
 
   it('validates native diff-index output contracts', () => {
     const output = {
-      patch: 'diff --git a/src/app.ts b/src/app.ts',
       chunks: [
         {
           file: 'src/app.ts',
@@ -805,18 +804,13 @@ describe('review-types schemas', () => {
           changedLines: [1],
         },
       ],
-      changedLineIndex: [
-        {
-          absoluteFilePath: '/tmp/repo/src/app.ts',
-          changedLines: [1],
-        },
-      ],
     };
 
     expect(DiffIndexOutputSchema.parse(output)).toEqual(output);
 
     for (const invalidOutput of [
-      { ...output, changedLineIndex: [['/tmp/repo/src/app.ts', [1]]] },
+      { ...output, patch: output.chunks[0]?.patch },
+      { ...output, changedLineIndex: [] },
       {
         ...output,
         chunks: [{ ...output.chunks[0], changedLines: [0] }],
