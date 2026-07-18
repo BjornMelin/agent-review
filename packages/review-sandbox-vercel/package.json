@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@review-agent/review-types": "workspace:*",
-    "@vercel/sandbox": "^1.10.2",
+    "@vercel/sandbox": "^2.7.1",
     "zod": "^4.4.3"
   }
 }

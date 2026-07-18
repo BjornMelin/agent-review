@@ -234,22 +234,6 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   throw error;
 }
 
-function linkAbortSignal(
-  source: AbortSignal | undefined,
-  target: AbortController
-): () => void {
-  if (!source) {
-    return () => undefined;
-  }
-  if (source.aborted) {
-    target.abort(source.reason);
-    return () => undefined;
-  }
-  const abort = () => target.abort(source.reason);
-  source.addEventListener('abort', abort, { once: true });
-  return () => source.removeEventListener('abort', abort);
-}
-
 function abortOptions(
   signal: AbortSignal | undefined
 ): { signal: AbortSignal } | undefined {
@@ -299,6 +283,7 @@ export async function runInSandbox(
   const sandbox = await Sandbox.create({
     runtime: input.runtime ?? DEFAULT_SANDBOX_RUNTIME,
     timeout: budget.maxWallTimeMs,
+    persistent: false,
     networkPolicy: createNetworkPolicy(
       input.policy.networkProfile,
       input.policy.allowlistDomains
@@ -320,7 +305,6 @@ export async function runInSandbox(
   let workFailed = true;
   const stopSandbox = () =>
     sandbox.stop({
-      blocking: true,
       signal: AbortSignal.timeout(10_000),
     });
 
@@ -337,12 +321,10 @@ export async function runInSandbox(
         !denyAllApplied &&
         command.phase !== 'bootstrap'
       ) {
-        const options = abortOptions(input.signal);
-        if (options) {
-          await sandbox.updateNetworkPolicy('deny-all', options);
-        } else {
-          await sandbox.updateNetworkPolicy('deny-all');
-        }
+        await sandbox.update(
+          { networkPolicy: 'deny-all' },
+          abortOptions(input.signal)
+        );
         denyAllApplied = true;
       }
 
@@ -352,23 +334,14 @@ export async function runInSandbox(
         command.timeoutMs ?? budget.maxCommandTimeoutMs,
         budget.maxCommandTimeoutMs
       );
-      const controller = new AbortController();
-      const unlinkAbortSignal = linkAbortSignal(input.signal, controller);
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      const finished = await (async () => {
-        try {
-          return await sandbox.runCommand({
-            cmd: command.cmd,
-            args: command.args,
-            cwd: command.cwd,
-            env: sanitizeEnv(command, input.policy.envAllowlist),
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timeout);
-          unlinkAbortSignal();
-        }
-      })();
+      const finished = await sandbox.runCommand({
+        cmd: command.cmd,
+        args: command.args,
+        cwd: command.cwd,
+        env: sanitizeEnv(command, input.policy.envAllowlist),
+        timeoutMs,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
       throwIfAborted(input.signal);
 
       const rawStdout = await finished.stdout(abortOptions(input.signal));
@@ -429,12 +402,10 @@ export async function runInSandbox(
       !denyAllApplied
     ) {
       throwIfAborted(input.signal);
-      const options = abortOptions(input.signal);
-      if (options) {
-        await sandbox.updateNetworkPolicy('deny-all', options);
-      } else {
-        await sandbox.updateNetworkPolicy('deny-all');
-      }
+      await sandbox.update(
+        { networkPolicy: 'deny-all' },
+        abortOptions(input.signal)
+      );
       denyAllApplied = true;
     }
 
@@ -483,7 +454,7 @@ export async function runInSandbox(
       commands: commandAudits,
     };
     const result: SandboxExecutionOutput = {
-      sandboxId: sandbox.sandboxId,
+      sandboxId: sandbox.name,
       outputs,
       artifacts,
       audit,

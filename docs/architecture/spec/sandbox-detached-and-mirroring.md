@@ -8,6 +8,8 @@ completion.
 
 The default Vercel Sandbox runtime is `node24`. Callers may explicitly request
 `node22` or `python3.13` when a review workload requires a different runtime.
+Executions set `persistent: false`, so stopping a review discards its filesystem
+instead of creating a persistent snapshot.
 
 ## Policy Model
 
@@ -30,7 +32,8 @@ Default policy (`createDefaultPolicy`) denies network, uses fixed command allowl
 - Commands outside allowlist are rejected.
 - Command names must be executable names, not paths; staged scripts must be
   invoked through an allowlisted runtime such as `node`.
-- Per-command timeouts are clamped by policy max.
+- Per-command timeouts are clamped by policy max and enforced through the
+  Sandbox SDK's native `timeoutMs` command option.
 - Output size accumulation is enforced across run.
 - Wall-time budget is enforced across run.
 - Selected secret patterns in stdout/stderr are redacted.
@@ -45,9 +48,10 @@ Default policy (`createDefaultPolicy`) denies network, uses fixed command allowl
   - redaction counters
   - per-command timing/output/redaction records
 - `maxArtifactBytes` is enforced on extracted artifact content.
-- A caller-provided `AbortSignal` is linked into each sandbox command signal.
-  Sandbox creation, file staging, network-policy updates, command output reads,
-  and artifact extraction receive the caller signal when the SDK supports it.
+- A caller-provided `AbortSignal` is forwarded to the Sandbox SDK's native
+  command and operation APIs. Sandbox creation, file staging, network-policy
+  updates, command output reads, and artifact extraction receive the caller
+  signal when the SDK supports it.
   Aborted calls still stop the sandbox in `finally` with a separate bounded
   cleanup signal before surfacing the abort error to the caller.
 
@@ -69,8 +73,8 @@ Detached remote sandbox flow:
 4. The worker runs exactly one `node review-runner.mjs` command under deny-all
    network with `CI` as the only allowed environment key.
 5. The worker extracts `review-output.json`, parses it as provider-shaped output,
-   and returns `sandboxAudit` with the sandbox ID, policy, budgets, redaction
-   counters, and command audit records.
+   and returns `sandboxAudit` with the SDK's unique sandbox name as `sandboxId`,
+   plus policy, budgets, redaction counters, and command audit records.
 6. `review-service` persists the resulting `sandboxId`; lifecycle event
    correlation also includes `sandboxId` when available.
 
@@ -79,6 +83,10 @@ execution, artifact extraction, and audit propagation without injecting provider
 tokens or running arbitrary package-manager commands in the microVM. Provider
 execution and git-backed target review inside Vercel Sandbox remain gated on
 later hosted auth/source-binding work.
+
+Package tests use deterministic SDK fakes. Credential-backed verification of
+the Vercel control plane requires a linked project and Vercel OIDC or access
+token, and remains an operator-run release check rather than a CI unit test.
 
 ## Detached Execution (`review-worker`)
 
