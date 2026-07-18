@@ -1932,8 +1932,14 @@ export function redactErrorMessage(
 
 const UNKNOWN_SAFE_MODEL_ID = 'unknown';
 
-function safeObservableModelIdentifier(
-  value: string | undefined
+/**
+ * Returns a bounded, secret-free identifier suitable for public telemetry.
+ *
+ * @param value - Candidate model, route, provider, or correlation identifier.
+ * @returns The trimmed identifier, or `undefined` when it is absent or unsafe.
+ */
+export function safeObservableModelIdentifier(
+  value: string | null | undefined
 ): string | undefined {
   if (!value) {
     return undefined;
@@ -1943,7 +1949,8 @@ function safeObservableModelIdentifier(
     return undefined;
   }
   const candidate = redacted.text.trim();
-  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
+  const parsed = SafeObservableIdentifierSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function requiredObservableModelIdentifier(value: string): string {
@@ -1964,8 +1971,11 @@ function requiredProviderTelemetryIdentifier(
   return requiredObservableModelIdentifier(redact(value));
 }
 
-function redactProviderUsage(usage: ProviderUsage): ProviderUsage {
-  const input = usage as Record<string, unknown>;
+function redactProviderUsage(usage: unknown): ProviderUsage {
+  const input =
+    usage && typeof usage === 'object'
+      ? (usage as Record<string, unknown>)
+      : {};
   const candidate: Record<string, unknown> = {
     status: input.status === 'reported' ? 'reported' : 'unknown',
   };
@@ -1991,6 +2001,60 @@ function redactProviderUsage(usage: ProviderUsage): ProviderUsage {
   }
   const parsed = ProviderUsageSchema.safeParse(candidate);
   return parsed.success ? parsed.data : { status: 'unknown' };
+}
+
+function providerTelemetryInputForParse(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const telemetry = value as Record<string, unknown>;
+  return {
+    policyVersion: telemetry.policyVersion,
+    requestedModel: telemetry.requestedModel,
+    resolvedModel: telemetry.resolvedModel,
+    route: telemetry.route,
+    finalProvider: telemetry.finalProvider,
+    fallbackOrder: telemetry.fallbackOrder,
+    fallbackUsed: telemetry.fallbackUsed,
+    maxInputChars: telemetry.maxInputChars,
+    maxOutputTokens: telemetry.maxOutputTokens,
+    timeoutMs: telemetry.timeoutMs,
+    maxAttempts: telemetry.maxAttempts,
+    retention: telemetry.retention,
+    zdrRequired: telemetry.zdrRequired,
+    disallowPromptTraining: telemetry.disallowPromptTraining,
+    failureClass: telemetry.failureClass,
+    totalLatencyMs: telemetry.totalLatencyMs,
+    attempts: Array.isArray(telemetry.attempts)
+      ? telemetry.attempts.map(providerAttemptTelemetryInputForParse)
+      : telemetry.attempts,
+    usage: providerUsageInputForParse(telemetry.usage),
+  };
+}
+
+function providerAttemptTelemetryInputForParse(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const attempt = value as Record<string, unknown>;
+  return {
+    route: attempt.route,
+    model: attempt.model,
+    provider: attempt.provider,
+    status: attempt.status,
+    latencyMs: attempt.latencyMs,
+    failureClass: attempt.failureClass,
+    errorCode: attempt.errorCode,
+    retryable: attempt.retryable,
+    generationId: attempt.generationId,
+    ...(attempt.usage === undefined
+      ? {}
+      : { usage: providerUsageInputForParse(attempt.usage) }),
+  };
+}
+
+function providerUsageInputForParse(value: unknown): ProviderUsage {
+  return redactProviderUsage(value);
 }
 
 function redactProviderAttemptTelemetry(
@@ -2066,6 +2130,27 @@ function redactProviderPolicyTelemetry(
     ...(requestedModel ? { requestedModel } : {}),
     ...(finalProvider ? { finalProvider } : {}),
   };
+}
+
+/**
+ * Validates and sanitizes provider telemetry at durable/public boundaries.
+ *
+ * @param value - Untrusted provider telemetry read from a runtime or data store.
+ * @returns Canonical redaction-safe telemetry, or `undefined` when malformed.
+ */
+export function sanitizeProviderPolicyTelemetry(
+  value: unknown
+): ProviderPolicyTelemetry | undefined {
+  const parsed = ProviderPolicyTelemetrySchema.safeParse(
+    providerTelemetryInputForParse(value)
+  );
+  if (!parsed.success) {
+    return undefined;
+  }
+  return redactProviderPolicyTelemetry(
+    parsed.data,
+    (identifier) => redactSensitiveText(identifier).text
+  );
 }
 
 /**

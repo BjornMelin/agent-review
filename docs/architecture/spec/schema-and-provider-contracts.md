@@ -212,7 +212,9 @@ The review service uses `review-types` for request parsing and response DTOs.
   stdout/stderr, environment values, and runtime scope keys. Requested/resolved
   model fields are exposed only when the supplied value is a safe model
   identifier; unsafe optional values are omitted and unsafe required provider
-  telemetry model fields collapse to `unknown`.
+  telemetry model fields collapse to `unknown`. `review-types` owns this rule:
+  service and storage boundaries reuse `safeObservableModelIdentifier()` and
+  `sanitizeProviderPolicyTelemetry()` instead of projecting telemetry locally.
 - `ReviewRunListQuerySchema`: bounded list query with optional status,
   repository, and opaque cursor filters.
 - `ReviewRunListResponseSchema`: run-list page with newest-first summaries and

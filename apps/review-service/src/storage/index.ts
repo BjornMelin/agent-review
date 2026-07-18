@@ -5,9 +5,6 @@ import {
   type LifecycleEvent,
   type OutputFormat,
   type ProviderPolicyTelemetry,
-  ProviderPolicyTelemetrySchema,
-  type ProviderUsage,
-  ProviderUsageSchema,
   type ReviewArtifactMetadata,
   type ReviewAuthPrincipal,
   type ReviewAuthScope,
@@ -25,7 +22,8 @@ import {
   ReviewRunMetricsSchema,
   type ReviewRunStatus,
   type ReviewRunSummary,
-  redactSensitiveText,
+  safeObservableModelIdentifier as safeObservableModel,
+  sanitizeProviderPolicyTelemetry,
 } from '@review-agent/review-types';
 import type { SQL } from 'drizzle-orm';
 import { and, asc, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
@@ -629,66 +627,10 @@ function sandboxMetricsForRecord(
   };
 }
 
-function providerUsageMetrics(value: unknown): ProviderUsage {
-  const usage =
-    value && typeof value === 'object'
-      ? (value as Record<string, unknown>)
-      : {};
-  const candidate: Record<string, unknown> = {
-    status: usage.status === 'reported' ? 'reported' : 'unknown',
-  };
-  for (const key of [
-    'inputTokens',
-    'outputTokens',
-    'totalTokens',
-    'reasoningTokens',
-    'cachedInputTokens',
-  ] as const) {
-    if (
-      typeof usage[key] === 'number' &&
-      Number.isInteger(usage[key]) &&
-      usage[key] >= 0
-    ) {
-      candidate[key] = usage[key];
-    }
-  }
-  for (const key of ['costUsd', 'marketCostUsd'] as const) {
-    if (typeof usage[key] === 'number' && usage[key] >= 0) {
-      candidate[key] = usage[key];
-    }
-  }
-  const parsed = ProviderUsageSchema.safeParse(candidate);
-  const safeUsage: ProviderUsage = parsed.success
-    ? parsed.data
-    : { status: 'unknown' };
-  return {
-    status: safeUsage.status,
-    ...(safeUsage.inputTokens === undefined
-      ? {}
-      : { inputTokens: safeUsage.inputTokens }),
-    ...(safeUsage.outputTokens === undefined
-      ? {}
-      : { outputTokens: safeUsage.outputTokens }),
-    ...(safeUsage.totalTokens === undefined
-      ? {}
-      : { totalTokens: safeUsage.totalTokens }),
-    ...(safeUsage.reasoningTokens === undefined
-      ? {}
-      : { reasoningTokens: safeUsage.reasoningTokens }),
-    ...(safeUsage.cachedInputTokens === undefined
-      ? {}
-      : { cachedInputTokens: safeUsage.cachedInputTokens }),
-    ...(safeUsage.costUsd === undefined ? {} : { costUsd: safeUsage.costUsd }),
-    ...(safeUsage.marketCostUsd === undefined
-      ? {}
-      : { marketCostUsd: safeUsage.marketCostUsd }),
-  };
-}
-
 function providerMetricsForRecord(
   record: ReviewRecord
 ): ReviewRunMetrics['providerSummary'] {
-  const telemetry = safeProviderTelemetry(
+  const telemetry = sanitizeProviderPolicyTelemetry(
     record.result?.result.metadata.providerTelemetry
   );
   if (!telemetry) {
@@ -699,7 +641,7 @@ function providerMetricsForRecord(
     attemptCount: telemetry.attempts.length,
     fallbackUsed: telemetry.fallbackUsed,
     failureClass: telemetry.failureClass,
-    usage: providerUsageMetrics(telemetry.usage),
+    usage: telemetry.usage,
   };
 }
 
@@ -801,6 +743,9 @@ export function buildReviewRunSummary(
   const artifactFormats =
     options.artifactFormats ??
     artifactMetadataForRecord(record).map((artifact) => artifact.format);
+  const providerTelemetry = sanitizeProviderPolicyTelemetry(
+    record.result?.result.metadata.providerTelemetry
+  );
   return {
     reviewId: record.reviewId,
     status: record.status,
@@ -831,13 +776,7 @@ export function buildReviewRunSummary(
           ),
         }
       : {}),
-    ...(record.result?.result.metadata.providerTelemetry
-      ? {
-          providerTelemetry: safeProviderTelemetry(
-            record.result.result.metadata.providerTelemetry
-          ),
-        }
-      : {}),
+    ...(providerTelemetry ? { providerTelemetry } : {}),
     metrics: structuredClone(buildReviewRunMetrics(record)),
     ...(record.detachedRunId ? { detachedRunId: record.detachedRunId } : {}),
     ...(record.workflowRunId ? { workflowRunId: record.workflowRunId } : {}),
@@ -863,7 +802,9 @@ function buildReviewRunSummaryForListRow(
 ): ReviewRunSummary {
   const completedAt = msFromDate(run.completedAt);
   const findingCount = Number(run.findingCount ?? 0);
-  const providerTelemetry = parseProviderTelemetry(run.providerTelemetry);
+  const providerTelemetry = sanitizeProviderPolicyTelemetry(
+    run.providerTelemetry
+  );
   const metrics =
     parseReviewRunMetrics(run.metrics) ??
     buildReviewRunMetricsForListRow(run, {
@@ -925,7 +866,7 @@ function buildReviewRunMetricsForListRow(
         attemptCount: options.providerTelemetry.attempts.length,
         fallbackUsed: options.providerTelemetry.fallbackUsed,
         failureClass: options.providerTelemetry.failureClass,
-        usage: providerUsageMetrics(options.providerTelemetry.usage),
+        usage: options.providerTelemetry.usage,
       }
     : undefined;
   return ReviewRunMetricsSchema.parse({
@@ -1067,28 +1008,6 @@ function safeRunErrorForStatus(status: ReviewRunStatus, error: string): string {
   return safeRunDiagnosticMessage(error, fallback);
 }
 
-function safeObservableModel(
-  model: string | null | undefined
-): string | undefined {
-  if (!model) {
-    return undefined;
-  }
-  const redacted = redactSensitiveText(model);
-  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
-    return undefined;
-  }
-  const candidate = redacted.text.trim();
-  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
-}
-
-const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
-
-function requiredObservableIdentifier(
-  value: string | null | undefined
-): string {
-  return safeObservableModel(value) ?? 'unknown';
-}
-
 function dateFromMs(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
@@ -1097,68 +1016,9 @@ function msFromDate(value: Date | null): number | undefined {
   return value ? value.getTime() : undefined;
 }
 
-function parseProviderTelemetry(
-  value: unknown
-): ProviderPolicyTelemetry | undefined {
-  const parsed = ProviderPolicyTelemetrySchema.safeParse(
-    providerTelemetryInputForParse(value)
-  );
-  return parsed.success ? safeProviderTelemetry(parsed.data) : undefined;
-}
-
 function parseReviewRunMetrics(value: unknown): ReviewRunMetrics | undefined {
   const parsed = ReviewRunMetricsSchema.safeParse(value);
   return parsed.success ? safeReviewRunMetrics(parsed.data) : undefined;
-}
-
-function providerTelemetryInputForParse(value: unknown): unknown {
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-  const telemetry = value as Record<string, unknown>;
-  return {
-    policyVersion: telemetry.policyVersion,
-    requestedModel: telemetry.requestedModel,
-    resolvedModel: telemetry.resolvedModel,
-    route: telemetry.route,
-    finalProvider: telemetry.finalProvider,
-    fallbackOrder: telemetry.fallbackOrder,
-    fallbackUsed: telemetry.fallbackUsed,
-    maxInputChars: telemetry.maxInputChars,
-    maxOutputTokens: telemetry.maxOutputTokens,
-    timeoutMs: telemetry.timeoutMs,
-    maxAttempts: telemetry.maxAttempts,
-    retention: telemetry.retention,
-    zdrRequired: telemetry.zdrRequired,
-    disallowPromptTraining: telemetry.disallowPromptTraining,
-    failureClass: telemetry.failureClass,
-    totalLatencyMs: telemetry.totalLatencyMs,
-    attempts: Array.isArray(telemetry.attempts)
-      ? telemetry.attempts.map(providerAttemptTelemetryInputForParse)
-      : telemetry.attempts,
-    usage: providerUsageMetrics(telemetry.usage),
-  };
-}
-
-function providerAttemptTelemetryInputForParse(value: unknown): unknown {
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-  const attempt = value as Record<string, unknown>;
-  return {
-    route: attempt.route,
-    model: attempt.model,
-    provider: attempt.provider,
-    status: attempt.status,
-    latencyMs: attempt.latencyMs,
-    failureClass: attempt.failureClass,
-    errorCode: attempt.errorCode,
-    retryable: attempt.retryable,
-    generationId: attempt.generationId,
-    ...(attempt.usage === undefined
-      ? {}
-      : { usage: providerUsageMetrics(attempt.usage) }),
-  };
 }
 
 function safeReviewRunMetrics(metrics: ReviewRunMetrics): ReviewRunMetrics {
@@ -1173,58 +1033,6 @@ function safeReviewRunMetrics(metrics: ReviewRunMetrics): ReviewRunMetrics {
     ...rest,
     ...(requestedModel ? { requestedModel } : {}),
     ...(resolvedModel ? { resolvedModel } : {}),
-  });
-}
-
-function safeProviderTelemetry(
-  telemetry: ProviderPolicyTelemetry | undefined
-): ProviderPolicyTelemetry | undefined {
-  if (!telemetry) {
-    return undefined;
-  }
-  const requestedModel = safeObservableModel(telemetry.requestedModel);
-  const finalProvider = safeObservableModel(telemetry.finalProvider);
-  return ProviderPolicyTelemetrySchema.parse({
-    policyVersion: requiredObservableIdentifier(telemetry.policyVersion),
-    resolvedModel: requiredObservableIdentifier(telemetry.resolvedModel),
-    route: requiredObservableIdentifier(telemetry.route),
-    fallbackOrder: telemetry.fallbackOrder.flatMap((model) => {
-      const safeModel = safeObservableModel(model);
-      return safeModel ? [safeModel] : [];
-    }),
-    fallbackUsed: telemetry.fallbackUsed,
-    maxInputChars: telemetry.maxInputChars,
-    maxOutputTokens: telemetry.maxOutputTokens,
-    timeoutMs: telemetry.timeoutMs,
-    maxAttempts: telemetry.maxAttempts,
-    retention: telemetry.retention,
-    zdrRequired: telemetry.zdrRequired,
-    disallowPromptTraining: telemetry.disallowPromptTraining,
-    failureClass: telemetry.failureClass,
-    totalLatencyMs: telemetry.totalLatencyMs,
-    attempts: telemetry.attempts.map((attempt) => ({
-      route: requiredObservableIdentifier(attempt.route),
-      model: requiredObservableIdentifier(attempt.model),
-      status: attempt.status,
-      latencyMs: attempt.latencyMs,
-      ...(safeObservableModel(attempt.provider)
-        ? { provider: safeObservableModel(attempt.provider) }
-        : {}),
-      ...(attempt.failureClass ? { failureClass: attempt.failureClass } : {}),
-      ...(safeObservableModel(attempt.errorCode)
-        ? { errorCode: safeObservableModel(attempt.errorCode) }
-        : {}),
-      ...(attempt.retryable === undefined
-        ? {}
-        : { retryable: attempt.retryable }),
-      ...(safeObservableModel(attempt.generationId)
-        ? { generationId: safeObservableModel(attempt.generationId) }
-        : {}),
-      ...(attempt.usage ? { usage: providerUsageMetrics(attempt.usage) } : {}),
-    })),
-    usage: providerUsageMetrics(telemetry.usage),
-    ...(requestedModel ? { requestedModel } : {}),
-    ...(finalProvider ? { finalProvider } : {}),
   });
 }
 
