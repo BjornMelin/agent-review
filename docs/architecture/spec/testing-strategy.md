@@ -120,8 +120,13 @@ narrow `review-git-diff index` stdin/stdout JSON contract:
   TypeScript.
 - output: `{ patch, chunks, changedLineIndex }`, where `patch` is the filtered
   per-file patch text, `chunks` are normalized diff chunks, and
-  `changedLineIndex` is an array of absolute-path/line-list tuples converted
-  back to the TypeScript `Map<string, Set<number>>` shape.
+  `changedLineIndex` is an array of strict `{ absoluteFilePath, changedLines }`
+  objects converted back to the TypeScript `Map<string, Set<number>>` shape.
+
+`DiffIndexOutputSchema` is generated into the Rust parity crate. The native
+helper validates serialized output before writing stdout, and the TypeScript
+adapter validates parsed JSON before decoding the changed-line map. Contract
+tests reject the legacy tuple shape and invalid one-based line values.
 
 The legacy TypeScript parser is retained only as `packages/review-git`
 test-support baseline code for parity checks; production `review-git` no longer

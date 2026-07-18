@@ -1,6 +1,6 @@
 use review_agent_contracts::{
     ContractParseError, JSON_SCHEMA_MANIFEST, parse_command_run_input, parse_command_run_output,
-    parse_review_request, parse_review_result, parse_sandbox_audit,
+    parse_diff_index_output, parse_review_request, parse_review_result, parse_sandbox_audit,
 };
 use serde_json::{Number, Value, json};
 
@@ -205,6 +205,53 @@ fn generated_command_run_dtos_round_trip_runner_contracts() {
         serde_json::to_value(output_dto).expect("command output DTO serializes"),
         output
     );
+}
+
+#[test]
+fn generated_diff_index_output_dto_round_trips_native_contract() {
+    let output = json!({
+        "patch": "diff --git a/src/app.ts b/src/app.ts",
+        "chunks": [{
+            "file": "src/app.ts",
+            "absoluteFilePath": "/tmp/repo/src/app.ts",
+            "patch": "diff --git a/src/app.ts b/src/app.ts",
+            "changedLines": [1]
+        }],
+        "changedLineIndex": [{
+            "absoluteFilePath": "/tmp/repo/src/app.ts",
+            "changedLines": [1]
+        }]
+    });
+
+    let dto = parse_diff_index_output(&output).expect("diff index output DTO parses");
+
+    assert_eq!(
+        serde_json::to_value(dto).expect("diff index output DTO serializes"),
+        output
+    );
+}
+
+#[test]
+fn validated_diff_index_output_rejects_legacy_and_invalid_shapes() {
+    for invalid_output in [
+        json!({
+            "patch": "",
+            "chunks": [],
+            "changedLineIndex": [["/tmp/repo/src/app.ts", [1]]]
+        }),
+        json!({
+            "patch": "diff --git a/src/app.ts b/src/app.ts",
+            "chunks": [{
+                "file": "src/app.ts",
+                "absoluteFilePath": "/tmp/repo/src/app.ts",
+                "patch": "diff --git a/src/app.ts b/src/app.ts",
+                "changedLines": [0]
+            }],
+            "changedLineIndex": []
+        }),
+    ] {
+        assert_invalid_json(parse_diff_index_output(&invalid_output));
+    }
 }
 
 #[test]

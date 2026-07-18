@@ -1236,6 +1236,36 @@ const CommandRunFileSchema = z.strictObject({
   redactions: SandboxAuditRedactionsSchema,
 });
 
+const DiffLineNumberSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Validates one parsed and filtered file chunk emitted by the native diff helper.
+ */
+export const DiffChunkSchema = z.strictObject({
+  file: z.string().min(1),
+  absoluteFilePath: z.string().min(1),
+  patch: z.string().min(1),
+  changedLines: z.array(DiffLineNumberSchema),
+});
+
+const ChangedLineIndexEntrySchema = z.strictObject({
+  absoluteFilePath: z.string().min(1),
+  changedLines: z.array(DiffLineNumberSchema),
+});
+
+/**
+ * Validates the filtered patch, chunks, and changed-line index emitted by the native diff helper.
+ */
+export const DiffIndexOutputSchema = z.strictObject({
+  patch: z.string(),
+  chunks: z.array(DiffChunkSchema),
+  changedLineIndex: z.array(ChangedLineIndexEntrySchema),
+});
+
 /**
  * Validates command execution requests sent from TypeScript packages to the runner helper.
  */
@@ -1642,6 +1672,14 @@ export type ReviewArtifactMetadata = z.infer<
  * Describes persisted runtime lease ownership and heartbeat timestamps for a run.
  */
 export type ReviewRunLease = z.infer<typeof ReviewRunLeaseSchema>;
+/**
+ * Parsed and filtered native diff-helper chunk.
+ */
+export type DiffChunk = z.infer<typeof DiffChunkSchema>;
+/**
+ * Structured native diff-helper output.
+ */
+export type DiffIndexOutput = z.infer<typeof DiffIndexOutputSchema>;
 /**
  * Command execution request accepted by the local runner helper.
  */
@@ -2409,6 +2447,7 @@ export type JsonSchemaSet = {
   reviewPublishResponse: unknown;
   reviewEventCursor: unknown;
   reviewArtifactMetadata: unknown;
+  diffIndexOutput: unknown;
   commandRunInput: unknown;
   commandRunOutput: unknown;
   sandboxAudit: unknown;
@@ -2574,6 +2613,7 @@ export function buildJsonSchemaSet(): JsonSchemaSet {
     reviewPublishResponse: toDraft7JsonSchema(ReviewPublishResponseSchema),
     reviewEventCursor: toDraft7JsonSchema(ReviewEventCursorSchema),
     reviewArtifactMetadata: toDraft7JsonSchema(ReviewArtifactMetadataSchema),
+    diffIndexOutput: toDraft7JsonSchema(DiffIndexOutputSchema),
     commandRunInput: toDraft7JsonSchema(CommandRunInputSchema),
     commandRunOutput: toDraft7JsonSchema(CommandRunOutputSchema),
     sandboxAudit: toDraft7JsonSchema(SandboxAuditSchema),

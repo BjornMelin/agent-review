@@ -2,6 +2,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use review_agent_contracts::parse_diff_index_output;
 use review_git_diff::{DiffIndexInput, build_diff_index_from_input, parse_unified_diff};
 
 #[derive(Debug, Parser)]
@@ -31,7 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
             let request: DiffIndexInput = serde_json::from_str(&input)?;
-            let output = build_diff_index_from_input(request)?;
+            let output = serde_json::to_value(build_diff_index_from_input(request)?)?;
+            parse_diff_index_output(&output)?;
             serde_json::to_writer_pretty(io::stdout(), &output)?;
             println!();
         }

@@ -30,6 +30,20 @@ Rust contract gates are part of root validation:
 `pnpm check` runs the TypeScript gates and then `pnpm rust:check`, so CI catches
 contract generation drift before Rust helper behavior can ship.
 
+## DiffIndex Output Contract
+
+`DiffIndexOutputSchema` defines the TypeScript-owned output contract for
+`crates/review-git-diff`. It contains the filtered patch, normalized per-file
+chunks, and changed-line index entries. Each index entry is a strict object with
+`absoluteFilePath` and one-based `changedLines`; tuple-shaped entries are not
+accepted.
+
+The Rust helper validates its serialized output through
+`parse_diff_index_output` before writing stdout. The TypeScript adapter validates
+the parsed JSON with `DiffIndexOutputSchema` before converting index entries to
+`Map<string, Set<number>>`. This keeps generated JSON Schema as the boundary
+authority while allowing Rust to use internal algorithm records.
+
 ## CommandRun Contracts
 
 `CommandRunInputSchema` and `CommandRunOutputSchema` define the TypeScript-owned

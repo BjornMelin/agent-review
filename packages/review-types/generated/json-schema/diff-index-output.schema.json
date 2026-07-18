@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "patch": {
+      "type": "string"
+    },
+    "chunks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "absoluteFilePath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "patch": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedLines": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "required": ["file", "absoluteFilePath", "patch", "changedLines"],
+        "additionalProperties": false
+      }
+    },
+    "changedLineIndex": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "absoluteFilePath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedLines": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "required": ["absoluteFilePath", "changedLines"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["patch", "chunks", "changedLineIndex"],
+  "additionalProperties": false
+}

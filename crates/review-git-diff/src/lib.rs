@@ -25,10 +25,17 @@ pub struct DiffIndexInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChangedLineIndexEntry {
+    pub absolute_file_path: String,
+    pub changed_lines: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiffIndexOutput {
     pub patch: String,
     pub chunks: Vec<DiffChunk>,
-    pub changed_line_index: Vec<(String, Vec<usize>)>,
+    pub changed_line_index: Vec<ChangedLineIndexEntry>,
 }
 
 #[derive(Debug)]
@@ -404,18 +411,21 @@ fn chunk_matches_filters(
 }
 
 fn push_changed_line_index(
-    index: &mut Vec<(String, Vec<usize>)>,
+    index: &mut Vec<ChangedLineIndexEntry>,
     absolute_file_path: &str,
     changed_lines: &[usize],
 ) {
     let lines = match index
         .iter_mut()
-        .find(|(candidate, _lines)| candidate == absolute_file_path)
+        .find(|entry| entry.absolute_file_path == absolute_file_path)
     {
-        Some((_path, lines)) => lines,
+        Some(entry) => &mut entry.changed_lines,
         None => {
-            index.push((absolute_file_path.to_owned(), Vec::new()));
-            &mut index.last_mut().expect("index entry exists").1
+            index.push(ChangedLineIndexEntry {
+                absolute_file_path: absolute_file_path.to_owned(),
+                changed_lines: Vec::new(),
+            });
+            &mut index.last_mut().expect("index entry exists").changed_lines
         }
     };
     lines.extend(changed_lines.iter().copied());
@@ -423,7 +433,7 @@ fn push_changed_line_index(
     lines.dedup();
 }
 
-fn build_changed_line_index(chunks: &[DiffChunk]) -> Vec<(String, Vec<usize>)> {
+fn build_changed_line_index(chunks: &[DiffChunk]) -> Vec<ChangedLineIndexEntry> {
     let mut index = Vec::new();
     for chunk in chunks {
         push_changed_line_index(&mut index, &chunk.absolute_file_path, &chunk.changed_lines);
@@ -536,10 +546,12 @@ mod tests {
 
         assert_eq!(output.chunks.len(), 1);
         assert_eq!(output.chunks[0].file, "src/app.ts");
+        assert_eq!(output.changed_line_index.len(), 1);
         assert_eq!(
-            output.changed_line_index,
-            vec![("/repo/src/app.ts".to_owned(), vec![1])]
+            output.changed_line_index[0].absolute_file_path,
+            "/repo/src/app.ts"
         );
+        assert_eq!(output.changed_line_index[0].changed_lines, vec![1]);
     }
 
     #[test]
