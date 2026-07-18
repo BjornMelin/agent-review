@@ -3,27 +3,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   readFileToBufferMock,
   runCommandMock,
-  updateNetworkPolicyMock,
+  updateMock,
   stopMock,
   createMock,
 } = vi.hoisted(() => {
   const runCommand = vi.fn();
   const readFileToBuffer = vi.fn();
   const writeFiles = vi.fn();
-  const updateNetworkPolicy = vi.fn();
+  const update = vi.fn();
   const stop = vi.fn();
   const create = vi.fn(async () => ({
-    sandboxId: 'sbx-test',
+    name: 'sbx-test',
     writeFiles,
     readFileToBuffer,
     runCommand,
-    updateNetworkPolicy,
+    update,
     stop,
   }));
   return {
     readFileToBufferMock: readFileToBuffer,
     runCommandMock: runCommand,
-    updateNetworkPolicyMock: updateNetworkPolicy,
+    updateMock: update,
     stopMock: stop,
     createMock: create,
   };
@@ -251,10 +251,20 @@ describe('sandbox policy and budget enforcement', () => {
     expect(result.audit.redactions.bearer).toBeGreaterThan(0);
     expect(result.audit.commands[0]?.commandId).toBeTruthy();
     expect(createMock).toHaveBeenCalledWith(
-      expect.objectContaining({ runtime: 'node24' })
+      expect.objectContaining({ persistent: false, runtime: 'node24' })
     );
-    expect(updateNetworkPolicyMock).toHaveBeenCalledWith('deny-all');
+    expect(updateMock).toHaveBeenCalledWith(
+      { networkPolicy: 'deny-all' },
+      undefined
+    );
+    expect(runCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 30_000 })
+    );
+    expect(result.sandboxId).toBe('sbx-test');
     expect(stopMock).toHaveBeenCalledTimes(1);
+    expect(stopMock).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('passes through an explicit sandbox runtime override', async () => {
