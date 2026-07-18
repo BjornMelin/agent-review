@@ -625,6 +625,7 @@ export class OpenAICompatibleReviewProvider implements ReviewProvider {
         );
         const result = await generateText({
           model: provider(attempt.modelId),
+          maxRetries: 0,
           instructions: input.rubric,
           prompt,
           telemetry: PRIVATE_REVIEW_TELEMETRY,

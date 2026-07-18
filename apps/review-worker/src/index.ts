@@ -70,11 +70,6 @@ type WorkflowRunHandle = {
   cancel(): void | Promise<void>;
 };
 
-/**
- * Defines the retry budget for the durable review execution step.
- */
-export const REVIEW_WORKFLOW_STEP_MAX_RETRIES = 3;
-
 function createRemoteSandboxPolicy() {
   const policy = createDefaultPolicy();
   policy.commandAllowlist = new Set(['node']);
@@ -165,14 +160,13 @@ function currentWorkflowRunId(): string | undefined {
 
 function withProviders(
   request: ReviewRequest,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  sandboxRunner?: SandboxReviewRunner
 ): Promise<ReviewRunResult> {
   return runReview(request, {
     providers,
     ...(abortSignal ? { signal: abortSignal } : {}),
-    ...(request.executionMode === 'remoteSandbox'
-      ? { sandboxRunner: runRemoteSandboxReview }
-      : {}),
+    ...(sandboxRunner ? { sandboxRunner } : {}),
   });
 }
 
@@ -228,26 +222,22 @@ export async function reviewWorkflow(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
   'use workflow';
-  return reviewExecutionStep(request);
+  return request.executionMode === 'remoteSandbox'
+    ? remoteSandboxExecutionStep(request)
+    : reviewExecutionStep(request);
 }
 
-/**
- * Runs provider-backed review execution as an explicit retryable Workflow step.
- *
- * @param request - Validated review request supplied by the workflow function.
- * @returns Completed review result emitted by the review core.
- */
-export async function reviewExecutionStep(
-  request: ReviewRequest
+async function executeReviewStep(
+  request: ReviewRequest,
+  sandboxRunner?: SandboxReviewRunner
 ): Promise<ReviewRunResult> {
-  'use step';
   const workflowRunId = currentWorkflowRunId();
   const controller = new AbortController();
   if (workflowRunId) {
     activeWorkflowAbortControllers.set(workflowRunId, controller);
   }
   try {
-    return await withProviders(request, controller.signal);
+    return await withProviders(request, controller.signal, sandboxRunner);
   } finally {
     if (
       workflowRunId &&
@@ -258,8 +248,44 @@ export async function reviewExecutionStep(
   }
 }
 
+/**
+ * Runs provider-backed review execution without Workflow-owned retries.
+ *
+ * @param request - Validated review request supplied by the workflow function.
+ * @returns Completed review result emitted by the review core.
+ */
+export async function reviewExecutionStep(
+  request: ReviewRequest
+): Promise<ReviewRunResult> {
+  'use step';
+  if (request.executionMode === 'remoteSandbox') {
+    throw new Error('provider review step does not accept remoteSandbox');
+  }
+  return executeReviewStep(request);
+}
+
 Object.assign(reviewExecutionStep, {
-  maxRetries: REVIEW_WORKFLOW_STEP_MAX_RETRIES,
+  maxRetries: 0,
+});
+
+/**
+ * Runs remote sandbox execution with bounded Workflow retries.
+ *
+ * @param request - Validated remote sandbox request supplied by the workflow.
+ * @returns Completed review result emitted by the review core.
+ */
+export async function remoteSandboxExecutionStep(
+  request: ReviewRequest
+): Promise<ReviewRunResult> {
+  'use step';
+  if (request.executionMode !== 'remoteSandbox') {
+    throw new Error('remote sandbox review step requires remoteSandbox');
+  }
+  return executeReviewStep(request, runRemoteSandboxReview);
+}
+
+Object.assign(remoteSandboxExecutionStep, {
+  maxRetries: 3,
 });
 
 /**

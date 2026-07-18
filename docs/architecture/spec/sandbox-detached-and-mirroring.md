@@ -96,6 +96,11 @@ Execution strategy:
 5. If Workflow cannot accept the run, persist a failed terminal record and return
    an error instead of falling back to in-process success.
 
+`reviewWorkflow` routes provider-backed requests to a step with Workflow retries
+disabled because provider policy owns model and network attempts. It routes
+`remoteSandbox` requests to a separate step capped at three Workflow retries for
+transient sandbox operational failures.
+
 Run records expose:
 
 - `runId`

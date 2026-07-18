@@ -197,6 +197,7 @@ describe('openai-compatible provider contract', () => {
     expect(generateTextMock).toHaveBeenCalledWith(
       expect.objectContaining({
         instructions: 'rubric',
+        maxRetries: 0,
         maxOutputTokens: 4096,
         telemetry: {
           isEnabled: false,
