@@ -11,10 +11,10 @@ The `CI` workflow exposes these named lanes:
 
 | Check | Purpose | Primary command |
 | --- | --- | --- |
-| `Static checks` | Biome repository check plus package lint scripts. | `pnpm exec biome ci --error-on-warnings .` and `pnpm lint` |
+| `Static checks` | Biome repository check. | `pnpm lint` |
 | `Generated contracts` | Regenerate committed JSON Schema artifacts, fail on drift, then prove Rust DTO parity. | `pnpm ci:contracts` |
 | `Rust gates` | Check formatting, clippy, and tests across the Cargo workspace. | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, `cargo test --workspace --all-targets --all-features --locked` |
-| `Typecheck, tests, and builds` | Prove TypeScript contracts, Vitest suites, Rust diff/index benchmark, Review Room build, and workspace build. | `pnpm typecheck`, `pnpm test`, `pnpm git:benchmark`, `pnpm --filter @review-agent/review-web build`, `pnpm build` |
+| `Typecheck, tests, and builds` | Prove TypeScript contracts, Vitest suites, Rust diff/index benchmark, and workspace builds, including Review Room. | `pnpm typecheck`, `pnpm test`, `pnpm git:benchmark`, `pnpm build` |
 | `CLI release artifact` | Build production-profile native helpers, deploy only package `files` allowlists, create the archive twice, verify identical hashes, extract in a clean directory, and prove success/threshold exit fixtures. | `pnpm ci:cli-release` |
 | `Dependency security audit` | Fail on high-severity production npm advisories and RustSec advisory warnings. | `pnpm ci:security` |
 | `check` | Branch-protection aggregator requiring every lane above to succeed. | GitHub Actions `needs` result assertion |
