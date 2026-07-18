@@ -400,6 +400,8 @@ defaults.
 - Applies explicit provider-level fallback attempts in registry order. A
   fallback is never silent: successful results persist `providerTelemetry`
   with all failed/skipped/successful attempts and the final resolved model.
+- Sets AI SDK `maxRetries` to `0`; the registry provider policy is the sole
+  owner of model and network attempts.
 - Fails before SDK execution when the rendered prompt exceeds the model
   policy's `maxInputChars`; passes `maxOutputTokens` and policy timeout
   settings to `generateText`.

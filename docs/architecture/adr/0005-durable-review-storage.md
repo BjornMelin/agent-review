@@ -19,8 +19,8 @@ contracts, but it could not survive service restarts, support operational
 queries, retain artifact metadata independently from response bodies, or provide
 stable cleanup semantics.
 
-Vercel Workflow can coordinate detached execution, retries, and resumption, but
-it is not the service's queryable system of record. The service needs durable
+Vercel Workflow can coordinate detached execution and resumption, but it is not
+the service's queryable system of record. The service needs durable
 run state that keeps endpoint payloads stable while making lifecycle history and
 artifact metadata available to API routes, diagnostics, and future hosted UI
 surfaces.
@@ -56,7 +56,8 @@ hydration, artifact metadata, retention cleanup, status transitions, and cascade
 deletion stay executable without an external Postgres service.
 
 Detached Workflow run identifiers and observed states are persisted through the
-same service store. Workflow coordinates execution and retries; it does not own
+same service store. Workflow coordinates detached execution and resumption; the
+provider layer owns model and network retry policy. Workflow does not own
 queryable run, event, or artifact state.
 
 ## Consequences

@@ -70,11 +70,6 @@ type WorkflowRunHandle = {
   cancel(): void | Promise<void>;
 };
 
-/**
- * Defines the retry budget for the durable review execution step.
- */
-export const REVIEW_WORKFLOW_STEP_MAX_RETRIES = 3;
-
 function createRemoteSandboxPolicy() {
   const policy = createDefaultPolicy();
   policy.commandAllowlist = new Set(['node']);
@@ -232,7 +227,7 @@ export async function reviewWorkflow(
 }
 
 /**
- * Runs provider-backed review execution as an explicit retryable Workflow step.
+ * Runs provider-backed review execution without Workflow-owned retries.
  *
  * @param request - Validated review request supplied by the workflow function.
  * @returns Completed review result emitted by the review core.
@@ -259,7 +254,7 @@ export async function reviewExecutionStep(
 }
 
 Object.assign(reviewExecutionStep, {
-  maxRetries: REVIEW_WORKFLOW_STEP_MAX_RETRIES,
+  maxRetries: 0,
 });
 
 /**

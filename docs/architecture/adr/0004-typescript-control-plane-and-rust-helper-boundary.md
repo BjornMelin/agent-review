@@ -53,8 +53,9 @@ termination so the Rust process can cancel delegated process groups before a
 hard-kill fallback.
 
 Postgres with Drizzle is the target durable store for run, event, and artifact
-metadata. Vercel Workflow coordinates execution, retries, and resumption; it
-does not replace queryable durable state. GitHub identity plus scoped service
+metadata. Vercel Workflow coordinates detached execution and resumption; model
+and network retries remain provider-policy concerns. Workflow does not replace
+queryable durable state. GitHub identity plus scoped service
 tokens are the target authorization model. The first web product surface is the
 Next.js Review Room, not a native desktop shell.
 

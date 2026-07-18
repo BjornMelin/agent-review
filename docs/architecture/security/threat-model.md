@@ -245,7 +245,8 @@ Required controls:
 - Apply defaults for omitted `maxFiles` and `maxDiffBytes`; enforce untracked
   file count and file-size budgets before reading untracked file contents.
 - Provider routing has per-model input/output/timeout budget policy, retry
-  ceilings, and cost telemetry.
+  ceilings, and cost telemetry. Provider-backed Workflow steps and AI SDK calls
+  disable their own retries so those ceilings cannot multiply across layers.
 - SSE, status polling, artifact reads, and cancellation endpoints require
   deployment-edge rate limits until app-level rate-limit middleware is added.
   The app already enforces request-size limits, schema/security budgets,
@@ -328,12 +329,14 @@ Mapped issues: [#17](https://github.com/BjornMelin/agent-review/issues/17),
 
 ### A8. Durable Workflow Replay or State Leakage
 
-Workflow runtime retries, replays, or persisted step logs expose private inputs
-or run a non-idempotent provider/GitHub publish step multiple times.
+Workflow replays or persisted step logs expose private inputs or run a
+non-idempotent provider/GitHub publish step multiple times.
 
 Required controls:
 
 - Workflow inputs and step outputs use redacted/minimized DTOs.
+- Provider-backed review steps set Workflow `maxRetries` to `0`; provider policy
+  remains the single owner of model and network attempts.
 - Every provider call, GitHub publish, artifact write, and state transition has
   idempotency keys tied to run ID, commit SHA, provider/model, and artifact
   format.

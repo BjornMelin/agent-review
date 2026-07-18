@@ -31,8 +31,9 @@ Hard-cut production local detached fallback state from `review-worker`.
 - If Workflow cannot accept a detached run, the service records a failed
   terminal state and returns an error instead of reporting local fallback
   success.
-- The review execution step declares an explicit retry budget on the Workflow
-  step; provider-specific retry classification remains a later policy concern.
+- The provider-backed review step sets Workflow `maxRetries` to `0`, while the
+  OpenAI-compatible provider sets AI SDK `maxRetries` to `0`. Registry provider
+  policy is the sole owner of model and network attempt ceilings and fallback.
 
 ## Consequences
 

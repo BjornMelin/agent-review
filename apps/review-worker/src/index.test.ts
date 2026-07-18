@@ -82,11 +82,7 @@ vi.mock('@workflow/core', async (importOriginal) => {
 
 vi.mock('@workflow/core/runtime', () => workflowRuntimeMock);
 
-import {
-  REVIEW_WORKFLOW_STEP_MAX_RETRIES,
-  ReviewWorker,
-  reviewExecutionStep,
-} from './index.js';
+import { ReviewWorker, reviewExecutionStep } from './index.js';
 
 function createRequest(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
   return {
@@ -388,12 +384,11 @@ describe('ReviewWorker', () => {
     expect(runReviewMock).not.toHaveBeenCalled();
   });
 
-  it('declares the review execution step retry budget', () => {
-    const retryableStep = reviewExecutionStep as typeof reviewExecutionStep & {
+  it('disables Workflow retries for provider-backed execution', () => {
+    const providerStep = reviewExecutionStep as typeof reviewExecutionStep & {
       maxRetries: number;
     };
-    expect(REVIEW_WORKFLOW_STEP_MAX_RETRIES).toBe(3);
-    expect(retryableStep.maxRetries).toBe(REVIEW_WORKFLOW_STEP_MAX_RETRIES);
+    expect(providerStep.maxRetries).toBe(0);
   });
 
   it('routes remote sandbox execution through a deny-all Vercel sandbox runner', async () => {
