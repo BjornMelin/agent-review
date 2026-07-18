@@ -6,7 +6,7 @@
   "scripts": {
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
-    "lint": "turbo run lint --concurrency=1",
+    "lint": "biome ci --error-on-warnings .",
     "test": "turbo run test",
     "format": "turbo run format",
     "rust:fmt": "cargo fmt --all -- --check",

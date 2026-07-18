@@ -32,9 +32,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Run Biome CI
-        run: pnpm exec biome ci --error-on-warnings .
-      - name: Run package lint scripts
+      - name: Run repository lint
         run: pnpm lint
 
   contracts:
@@ -99,8 +97,6 @@ jobs:
         run: pnpm test
       - name: Run Rust diff/index benchmark
         run: pnpm git:benchmark
-      - name: Build Review Room
-        run: pnpm --filter @review-agent/review-web build
       - name: Build workspace
         run: pnpm build
 
