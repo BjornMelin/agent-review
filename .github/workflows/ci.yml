@@ -45,9 +45,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           version: 11.0.9
@@ -67,9 +66,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - run: rustup default stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Cargo clippy
@@ -85,9 +83,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           version: 11.0.9
@@ -115,9 +112,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           version: 11.0.9
@@ -144,9 +140,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           version: 11.0.9

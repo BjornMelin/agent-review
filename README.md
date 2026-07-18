@@ -19,6 +19,14 @@ The platform reviews code changes from git context and produces structured findi
 - Detached remote sandbox policy runner with Vercel Sandbox audit metadata
 - Optional Convex metadata mirroring
 
+## Release Status
+
+The installable CLI is the released distribution surface; use the
+[latest GitHub release](https://github.com/BjornMelin/agent-review/releases/latest)
+for supported native archives and checksums. The hosted service, worker, and
+Review Room are operator-managed deployment surfaces in this repository, not a
+publicly operated SaaS offering.
+
 ## Monorepo Layout
 
 ```text
@@ -43,6 +51,7 @@ packages/
 crates/
   review-contracts/
   review-git-diff/
+  review-runner/
 docs/
   architecture/
   deployment/
@@ -54,8 +63,10 @@ docs/
 
 - Node.js 24.x
 - pnpm 11.0.9
-- Rust stable with `rustfmt` and `clippy`
+- The Rust toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
 - git (required for diff collection)
+- GitHub CLI (`gh`) for the installation commands below, or a browser for
+  downloading the same release assets directly
 - Optional: `codex` CLI for `codexDelegate` provider
 
 ## Install the CLI
@@ -66,7 +77,7 @@ checksums for both the archive and its separately published manifest. Node.js
 24 or newer and git remain host prerequisites.
 
 ```bash
-version=v0.1.0
+version=v0.1.1
 target=linux-x64-gnu
 artifact="review-agent-${version}-${target}.tar.gz"
 manifest="${artifact%.tar.gz}.manifest.json"
@@ -92,9 +103,10 @@ Windows installation, archive contract, and release procedure.
 
 ## Quickstart
 
-The local quickstart validates the full workspace and builds the shipped
-artifacts. It does not require hosted service auth, Postgres, Workflow, Vercel
-Sandbox, or provider API keys.
+The local quickstart runs the core workspace checks and package builds. It does
+not require hosted service auth, Postgres, Workflow, Vercel Sandbox, or provider
+API keys. Release maintainers should also run the complete
+[release procedure](docs/release/cli-distribution.md#release-procedure).
 
 ```bash
 pnpm install --frozen-lockfile
@@ -266,7 +278,8 @@ Root scripts:
 - `pnpm check`
 - `bash scripts/repro-check.sh`
 
-CI workflow: `.github/workflows/ci.yml` installs Node/pnpm and stable Rust, then
+CI workflow: `.github/workflows/ci.yml` installs Node/pnpm and the pinned Rust
+toolchain, then
 runs the branch-protection `check` aggregator across static checks, generated
 contracts, Rust gates, TypeScript typecheck/tests/builds, Rust diff-index
 benchmarks, a deterministic installable CLI artifact, Review Room build, and

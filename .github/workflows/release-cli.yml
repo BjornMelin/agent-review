@@ -13,6 +13,7 @@ on:
       - "crates/**"
       - "docs/architecture/spec/cli-contract.md"
       - "docs/release/cli-distribution.md"
+      - "docs/release/notes/**"
       - "examples/github-actions/**"
       - "package.json"
       - "packages/review-*/**"
@@ -50,6 +51,10 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test "$(git cat-file -t "$GITHUB_REF")" = "tag"
+          package_version=$(node -p "require('./apps/review-cli/package.json').version")
+          test "$GITHUB_REF_NAME" = "v${package_version}"
+          test -f "docs/release/notes/${GITHUB_REF_NAME}.md"
 
   package:
     name: Package ${{ matrix.target }}
@@ -74,9 +79,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           version: 11.0.9
@@ -109,6 +113,9 @@ jobs:
       # Required to create or resume the release and replace its draft assets.
       contents: write
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
       - name: Download native release archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -129,16 +136,40 @@ jobs:
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
+          notes_file="docs/release/notes/${tag}.md"
+          rendered_notes=$(mktemp)
+          sed "s/{{SOURCE_SHA}}/${GITHUB_SHA}/g" "$notes_file" > "$rendered_notes"
+          generated_notes=$(mktemp)
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" --jq .body > "$generated_notes"
+          expected_body_file=$(mktemp)
+          cat "$rendered_notes" > "$expected_body_file"
+          printf '\n\n' >> "$expected_body_file"
+          cat "$generated_notes" >> "$expected_body_file"
+          expected_body=$(cat "$expected_body_file")
+          expected_title="Review Agent $tag"
           expected_assets=$(mktemp)
           find release -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$expected_assets"
+
+          verify_release_metadata() {
+            local actual_body actual_title
+            actual_body=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+            actual_title=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json name --jq .name)
+            if [[ "$actual_title" != "$expected_title" || "$actual_body" != "$expected_body" ]]; then
+              echo "Release metadata does not match the canonical title and notes." >&2
+              return 1
+            fi
+          }
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft \
-              --verify-tag --generate-notes --title "Review Agent $tag"
+              --verify-tag --notes-file "$expected_body_file" \
+              --title "Review Agent $tag"
             is_draft=true
           fi
+          verify_release_metadata
 
           verify_readback() {
             local readback
@@ -173,3 +204,5 @@ jobs:
           diff -u "$expected_assets" "$actual_assets"
           verify_readback
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = "false"
+          verify_release_metadata
