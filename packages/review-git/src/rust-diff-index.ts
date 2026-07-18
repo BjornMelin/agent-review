@@ -166,6 +166,8 @@ async function runWithStdin(
     });
     let stdout = '';
     let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let timedOut = false;
     let outputLimitError: Error | undefined;
     const timer = setTimeout(() => {
@@ -176,10 +178,11 @@ async function runWithStdin(
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
-      if (
-        Buffer.byteLength(stdout, 'utf8') + Buffer.byteLength(chunk, 'utf8') >
-        maxStdoutBytes
-      ) {
+      if (outputLimitError) {
+        return;
+      }
+      const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+      if (stdoutBytes + chunkBytes > maxStdoutBytes) {
         outputLimitError = new Error(
           `${command} ${args.join(' ')} exceeded stdout limit ${maxStdoutBytes} bytes`
         );
@@ -187,12 +190,14 @@ async function runWithStdin(
         return;
       }
       stdout += chunk;
+      stdoutBytes += chunkBytes;
     });
     child.stderr.on('data', (chunk) => {
-      if (
-        Buffer.byteLength(stderr, 'utf8') + Buffer.byteLength(chunk, 'utf8') >
-        maxStderrBytes
-      ) {
+      if (outputLimitError) {
+        return;
+      }
+      const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+      if (stderrBytes + chunkBytes > maxStderrBytes) {
         outputLimitError = new Error(
           `${command} ${args.join(' ')} exceeded stderr limit ${maxStderrBytes} bytes`
         );
@@ -200,6 +205,7 @@ async function runWithStdin(
         return;
       }
       stderr += chunk;
+      stderrBytes += chunkBytes;
     });
     child.on('error', (error) => {
       clearTimeout(timer);
