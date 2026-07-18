@@ -34,6 +34,9 @@ Hard-cut production local detached fallback state from `review-worker`.
 - The provider-backed review step sets Workflow `maxRetries` to `0`, while the
   OpenAI-compatible provider sets AI SDK `maxRetries` to `0`. Registry provider
   policy is the sole owner of model and network attempt ceilings and fallback.
+- Remote sandbox execution uses a separate Workflow step with `maxRetries` set
+  to `3` for transient sandbox operational failures; those retries do not wrap
+  provider-backed execution.
 
 ## Consequences
 

@@ -247,6 +247,8 @@ Required controls:
 - Provider routing has per-model input/output/timeout budget policy, retry
   ceilings, and cost telemetry. Provider-backed Workflow steps and AI SDK calls
   disable their own retries so those ceilings cannot multiply across layers.
+- Remote sandbox operational retries remain isolated in a Workflow step capped
+  at three retries and constrained by the sandbox command and resource budgets.
 - SSE, status polling, artifact reads, and cancellation endpoints require
   deployment-edge rate limits until app-level rate-limit middleware is added.
   The app already enforces request-size limits, schema/security budgets,

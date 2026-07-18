@@ -122,6 +122,8 @@ desktop hosted-service client and not a second control plane.
 - Vercel Workflow coordinates detached execution and resumption. Provider policy
   owns model and network retries; Workflow does not replace queryable service
   run, event, or artifact state.
+- Remote sandbox execution retains a separate Workflow step capped at three
+  retries for transient sandbox operational failures.
 
 ## Failure Behavior
 

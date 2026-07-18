@@ -641,6 +641,8 @@ Returns:
   service store. Workflow orchestrates detached execution and resumption, while
   provider policy owns model and network retries and `ReviewStoreAdapter`
   remains the queryable run/event/artifact state boundary.
+- Remote sandbox operational failures use a separate Workflow step capped at
+  three retries; provider-backed execution is never wrapped by that budget.
 - Provider and sandbox cancellation uses native `AbortSignal` support:
   AI SDK `generateText` receives `abortSignal`, the Codex delegate forwards the
   signal into the Rust process-group runner, and Vercel Sandbox command

@@ -160,14 +160,13 @@ function currentWorkflowRunId(): string | undefined {
 
 function withProviders(
   request: ReviewRequest,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  sandboxRunner?: SandboxReviewRunner
 ): Promise<ReviewRunResult> {
   return runReview(request, {
     providers,
     ...(abortSignal ? { signal: abortSignal } : {}),
-    ...(request.executionMode === 'remoteSandbox'
-      ? { sandboxRunner: runRemoteSandboxReview }
-      : {}),
+    ...(sandboxRunner ? { sandboxRunner } : {}),
   });
 }
 
@@ -223,7 +222,30 @@ export async function reviewWorkflow(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
   'use workflow';
-  return reviewExecutionStep(request);
+  return request.executionMode === 'remoteSandbox'
+    ? remoteSandboxExecutionStep(request)
+    : reviewExecutionStep(request);
+}
+
+async function executeReviewStep(
+  request: ReviewRequest,
+  sandboxRunner?: SandboxReviewRunner
+): Promise<ReviewRunResult> {
+  const workflowRunId = currentWorkflowRunId();
+  const controller = new AbortController();
+  if (workflowRunId) {
+    activeWorkflowAbortControllers.set(workflowRunId, controller);
+  }
+  try {
+    return await withProviders(request, controller.signal, sandboxRunner);
+  } finally {
+    if (
+      workflowRunId &&
+      activeWorkflowAbortControllers.get(workflowRunId) === controller
+    ) {
+      activeWorkflowAbortControllers.delete(workflowRunId);
+    }
+  }
 }
 
 /**
@@ -236,25 +258,34 @@ export async function reviewExecutionStep(
   request: ReviewRequest
 ): Promise<ReviewRunResult> {
   'use step';
-  const workflowRunId = currentWorkflowRunId();
-  const controller = new AbortController();
-  if (workflowRunId) {
-    activeWorkflowAbortControllers.set(workflowRunId, controller);
+  if (request.executionMode === 'remoteSandbox') {
+    throw new Error('provider review step does not accept remoteSandbox');
   }
-  try {
-    return await withProviders(request, controller.signal);
-  } finally {
-    if (
-      workflowRunId &&
-      activeWorkflowAbortControllers.get(workflowRunId) === controller
-    ) {
-      activeWorkflowAbortControllers.delete(workflowRunId);
-    }
-  }
+  return executeReviewStep(request);
 }
 
 Object.assign(reviewExecutionStep, {
   maxRetries: 0,
+});
+
+/**
+ * Runs remote sandbox execution with bounded Workflow retries.
+ *
+ * @param request - Validated remote sandbox request supplied by the workflow.
+ * @returns Completed review result emitted by the review core.
+ */
+export async function remoteSandboxExecutionStep(
+  request: ReviewRequest
+): Promise<ReviewRunResult> {
+  'use step';
+  if (request.executionMode !== 'remoteSandbox') {
+    throw new Error('remote sandbox review step requires remoteSandbox');
+  }
+  return executeReviewStep(request, runRemoteSandboxReview);
+}
+
+Object.assign(remoteSandboxExecutionStep, {
+  maxRetries: 3,
 });
 
 /**

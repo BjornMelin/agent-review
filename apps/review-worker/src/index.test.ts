@@ -82,7 +82,12 @@ vi.mock('@workflow/core', async (importOriginal) => {
 
 vi.mock('@workflow/core/runtime', () => workflowRuntimeMock);
 
-import { ReviewWorker, reviewExecutionStep } from './index.js';
+import {
+  ReviewWorker,
+  remoteSandboxExecutionStep,
+  reviewExecutionStep,
+  reviewWorkflow,
+} from './index.js';
 
 function createRequest(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
   return {
@@ -384,11 +389,44 @@ describe('ReviewWorker', () => {
     expect(runReviewMock).not.toHaveBeenCalled();
   });
 
-  it('disables Workflow retries for provider-backed execution', () => {
+  it('splits provider and sandbox Workflow retry ownership', () => {
     const providerStep = reviewExecutionStep as typeof reviewExecutionStep & {
       maxRetries: number;
     };
+    const sandboxStep =
+      remoteSandboxExecutionStep as typeof remoteSandboxExecutionStep & {
+        maxRetries: number;
+      };
     expect(providerStep.maxRetries).toBe(0);
+    expect(sandboxStep.maxRetries).toBe(3);
+  });
+
+  it('routes Workflow execution by execution mode', async () => {
+    const localRequest = createRequest();
+    const sandboxRequest = createRequest({ executionMode: 'remoteSandbox' });
+    runReviewMock
+      .mockResolvedValueOnce(createReviewResult(localRequest))
+      .mockResolvedValueOnce(createReviewResult(sandboxRequest));
+
+    await reviewWorkflow(localRequest);
+    await reviewWorkflow(sandboxRequest);
+
+    expect(runReviewMock.mock.calls[0]?.[1]).not.toHaveProperty(
+      'sandboxRunner'
+    );
+    expect(runReviewMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ sandboxRunner: expect.any(Function) })
+    );
+  });
+
+  it('rejects direct calls through the wrong retry boundary', async () => {
+    await expect(
+      reviewExecutionStep(createRequest({ executionMode: 'remoteSandbox' }))
+    ).rejects.toThrow('provider review step does not accept remoteSandbox');
+    await expect(remoteSandboxExecutionStep(createRequest())).rejects.toThrow(
+      'remote sandbox review step requires remoteSandbox'
+    );
+    expect(runReviewMock).not.toHaveBeenCalled();
   });
 
   it('routes remote sandbox execution through a deny-all Vercel sandbox runner', async () => {
@@ -451,7 +489,7 @@ describe('ReviewWorker', () => {
       };
     });
 
-    const result = await reviewExecutionStep(request);
+    const result = await remoteSandboxExecutionStep(request);
 
     expect(result.sandboxAudit?.sandboxId).toBe('sbx-worker-test');
     expect(runInSandboxMock).toHaveBeenCalledWith(
