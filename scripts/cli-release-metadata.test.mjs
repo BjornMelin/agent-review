@@ -48,3 +48,28 @@ test('copy-ready install commands pin the canonical CLI package version', async 
     `release pins must all equal ${expectedTag}`
   );
 });
+
+test('canonical CLI version has operator-authored release notes', async () => {
+  const packageMetadata = JSON.parse(
+    await readRepoFile('apps/review-cli/package.json')
+  );
+  const tag = `v${packageMetadata.version}`;
+  const [notes, workflow] = await Promise.all([
+    readRepoFile(`docs/release/notes/${tag}.md`),
+    readRepoFile('.github/workflows/release-cli.yml'),
+  ]);
+
+  assert.match(notes, /\{\{SOURCE_SHA\}\}/);
+  assert.match(
+    notes,
+    new RegExp(`/blob/${tag}/docs/release/cli-distribution\\.md`)
+  );
+  assert.match(workflow, /docs\/release\/notes\/\$\{tag\}\.md/);
+  assert.match(workflow, /test "\$GITHUB_REF_NAME" = "v\$\{package_version\}"/);
+  assert.match(workflow, /git cat-file -t "\$GITHUB_REF"/);
+  assert.match(workflow, /verify_release_metadata/);
+  assert.match(workflow, /sed "s\/\{\{SOURCE_SHA\}\}\/\$\{GITHUB_SHA\}\/g"/);
+  assert.match(workflow, /releases\/generate-notes/);
+  assert.match(workflow, /--notes-file "\$expected_body_file"/);
+  assert.match(workflow, /"\$actual_body" != "\$expected_body"/);
+});

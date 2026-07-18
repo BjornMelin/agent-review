@@ -28,7 +28,7 @@ jobs:
       - name: Install pinned Review Agent release
         env:
           GH_TOKEN: ${{ github.token }}
-          REVIEW_AGENT_VERSION: v0.1.0
+          REVIEW_AGENT_VERSION: v0.1.1
           REVIEW_AGENT_TARGET: linux-x64-gnu
         run: |
           set -euo pipefail

@@ -61,16 +61,16 @@ well as the archive.
 Archive creation uses an explicit sorted path list, fixed source-commit mtime,
 portable ownership metadata, `noDirRecurse`, and portable gzip headers. The
 packager creates the archive twice and requires identical SHA-256 hashes. This
-proves determinism for the same staging tree and toolchain invocation; it is not
-a promise that a later floating Rust `stable` toolchain produces identical
-native bytes.
+proves determinism for the same staging tree and toolchain invocation. The Rust
+release is pinned in `rust-toolchain.toml`; updating that pin is an explicit
+release-toolchain change.
 
 ## Install
 
 Linux x64 example:
 
 ```bash
-version=v0.1.0
+version=v0.1.1
 target=linux-x64-gnu
 artifact="review-agent-${version}-${target}.tar.gz"
 manifest="${artifact%.tar.gz}.manifest.json"
@@ -93,7 +93,7 @@ On macOS, use the matching `macos-*` target and verify with
 PowerShell:
 
 ```powershell
-$Version = "v0.1.0"
+$Version = "v0.1.1"
 $Target = "windows-x64"
 $Artifact = "review-agent-$Version-$Target.tar.gz"
 $Manifest = $Artifact -replace '\.tar\.gz$', '.manifest.json'
@@ -130,11 +130,16 @@ archive in a clean external git repository.
 
 ## Release Procedure
 
-1. Update `apps/review-cli/package.json` and release notes in one PR.
+1. Update `apps/review-cli/package.json`, every copy-ready install pin, and
+   `docs/release/notes/v<version>.md` in one PR. The tag workflow requires that
+   versioned note and replaces its `{{SOURCE_SHA}}` placeholder with the tagged
+   commit, appends GitHub's generated changelog, and creates one canonical
+   release body. A resumed draft must already have the exact canonical title
+   and body before it can publish.
 2. Run `pnpm install --frozen-lockfile`, `pnpm ci:contracts`, `pnpm run check`,
    `pnpm build`, `bash scripts/repro-check.sh`, and `pnpm ci:cli-release`.
 3. Merge only after the required `check` aggregator is green.
-4. Create and push the exact `v<package version>` tag.
+4. Create and push an annotated `v<package version>` tag.
 5. The `Release CLI` workflow must first pass its five-target matrix on the PR.
    Pushing the tag repeats that matrix, combines checksums into `SHA256SUMS`,
    resumes or creates a draft, verifies uploaded assets by readback, and only
