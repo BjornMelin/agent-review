@@ -31,6 +31,8 @@ import {
   redactSensitiveText,
   resolveReviewSecurityLimits,
   SandboxAuditSchema,
+  safeObservableModelIdentifier,
+  sanitizeProviderPolicyTelemetry,
   withReviewRequestSecurityDefaults,
 } from './index.js';
 
@@ -516,6 +518,97 @@ describe('review-types schemas', () => {
         attempts: [],
       })
     ).toThrow();
+  });
+
+  it('owns provider telemetry sanitization at untrusted boundaries', () => {
+    const input = {
+      policyVersion: 'policy body: private-marker',
+      requestedModel: 'prompt=private',
+      resolvedModel: 'model body: private-marker',
+      route: 'route body: private-marker',
+      finalProvider: 'provider body: private-marker',
+      fallbackOrder: ['gateway:openai/gpt-5', 'model body: private-marker'],
+      fallbackUsed: true,
+      maxInputChars: 120_000,
+      maxOutputTokens: 4096,
+      timeoutMs: 120_000,
+      maxAttempts: 2,
+      retention: 'unknown',
+      zdrRequired: false,
+      disallowPromptTraining: true,
+      failureClass: 'invalid_response',
+      totalLatencyMs: 42,
+      attempts: [
+        {
+          route: 'gateway',
+          model: 'model body: private-marker',
+          provider: 'provider body: private-marker',
+          status: 'failed',
+          latencyMs: 42,
+          errorCode: 'stderr: private-marker',
+          generationId: 'artifact body: private-marker',
+          usage: {
+            status: 'reported',
+            inputTokens: 100,
+            outputTokens: 1.5,
+            costUsd: 0.001,
+            marketCostUsd: -1,
+            rawProviderOutput: 'cwd=/repo/private prompt=secret',
+          },
+        },
+      ],
+      usage: {
+        status: 'reported',
+        totalTokens: 120,
+        reasoningTokens: -1,
+        costUsd: 0.001,
+        rawProviderOutput: 'cwd=/repo/private prompt=secret',
+      },
+      rawProviderOutput: 'cwd=/repo/private prompt=secret',
+    };
+    const original = structuredClone(input);
+    const sanitized = sanitizeProviderPolicyTelemetry(input);
+
+    expect(sanitized).toEqual({
+      policyVersion: 'unknown',
+      resolvedModel: 'unknown',
+      route: 'unknown',
+      fallbackOrder: ['gateway:openai/gpt-5'],
+      fallbackUsed: true,
+      maxInputChars: 120_000,
+      maxOutputTokens: 4096,
+      timeoutMs: 120_000,
+      maxAttempts: 2,
+      retention: 'unknown',
+      zdrRequired: false,
+      disallowPromptTraining: true,
+      failureClass: 'invalid_response',
+      totalLatencyMs: 42,
+      attempts: [
+        {
+          route: 'gateway',
+          model: 'unknown',
+          status: 'failed',
+          latencyMs: 42,
+          usage: {
+            status: 'reported',
+            inputTokens: 100,
+            costUsd: 0.001,
+          },
+        },
+      ],
+      usage: {
+        status: 'reported',
+        totalTokens: 120,
+        costUsd: 0.001,
+      },
+    });
+    expect(input).toEqual(original);
+    expect(sanitizeProviderPolicyTelemetry(sanitized)).toEqual(sanitized);
+    expect(sanitizeProviderPolicyTelemetry({})).toBeUndefined();
+    expect(safeObservableModelIdentifier(' gateway:openai/gpt-5 ')).toBe(
+      'gateway:openai/gpt-5'
+    );
   });
 
   it('validates hosted repository authorization metadata', () => {

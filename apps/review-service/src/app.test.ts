@@ -13,7 +13,10 @@ import type {
   ReviewRunSummary,
   ReviewStatusResponse,
 } from '@review-agent/review-types';
-import { redactSensitiveText } from '@review-agent/review-types';
+import {
+  redactSensitiveText,
+  safeObservableModelIdentifier as safeObservableModel,
+} from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -41,7 +44,6 @@ const PRIVATE_RUN_ERROR_MARKER_PATTERN =
 const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
 const STACK_FRAME_RUN_ERROR_PATTERN =
   /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
-const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 
 function createTestReviewServiceApp(
   dependencies: ReviewServiceDependencies
@@ -269,18 +271,6 @@ function safeRunDiagnosticMessage(error: string, fallback: string): string {
     return fallback;
   }
   return candidate;
-}
-
-function safeObservableModel(model: string | undefined): string | undefined {
-  if (!model) {
-    return undefined;
-  }
-  const redacted = redactSensitiveText(model);
-  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
-    return undefined;
-  }
-  const candidate = redacted.text.trim();
-  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
 }
 
 function createRunSummary(record: ReviewRecord): ReviewRunSummary {
