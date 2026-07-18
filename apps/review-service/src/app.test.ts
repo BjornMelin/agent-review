@@ -13,10 +13,7 @@ import type {
   ReviewRunSummary,
   ReviewStatusResponse,
 } from '@review-agent/review-types';
-import {
-  redactSensitiveText,
-  safeObservableModelIdentifier as safeObservableModel,
-} from '@review-agent/review-types';
+import { safeObservableModelIdentifier as safeObservableModel } from '@review-agent/review-types';
 import type { DetachedRunRecord } from '@review-agent/review-worker';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -36,14 +33,9 @@ import {
   type ReviewServiceWorker,
   type ReviewStoreAdapter,
 } from './index.js';
+import { safeRunErrorForStatus } from './run-diagnostics.js';
 
 const TEST_ALLOWED_CWD_ROOTS = [process.cwd(), '/repo'];
-const MAX_PUBLIC_RUN_ERROR_LENGTH = 240;
-const PRIVATE_RUN_ERROR_MARKER_PATTERN =
-  /\b(?:args|argv|artifact|authorization|bearer|body|command|cwd|diff|env|environment|file|path|prompt|sandbox output|scope[-_ ]?key|secret|stderr|stdout|stack|token|trace)\b\s*[:=]?/i;
-const PATHISH_RUN_ERROR_PATTERN = /[\\/]|(?:^|\s)~\//;
-const STACK_FRAME_RUN_ERROR_PATTERN =
-  /(?:^|\s)at\s+(?:async\s+)?[\w.$<>]+(?:\s|\()/;
 
 function createTestReviewServiceApp(
   dependencies: ReviewServiceDependencies
@@ -230,55 +222,13 @@ function cloneRecord(record: ReviewRecord): ReviewRecord {
   return next;
 }
 
-function safeRunErrorForTestSummary(record: ReviewRecord): string | undefined {
-  if (!record.error) {
-    return undefined;
-  }
-  if (
-    record.error === 'runtime lease expired' ||
-    record.error === 'detached run not found'
-  ) {
-    return record.error;
-  }
-  if (record.status === 'cancelled') {
-    return 'review run cancelled';
-  }
-  const fallback = /detached/i.test(record.error)
-    ? /start/i.test(record.error)
-      ? 'detached start failed'
-      : 'detached run failed'
-    : 'review run failed';
-  return safeRunDiagnosticMessage(record.error, fallback);
-}
-
-function safeRunDiagnosticMessage(error: string, fallback: string): string {
-  const normalized = error.replace(/\s+/g, ' ').trim();
-  if (!normalized) {
-    return fallback;
-  }
-  const redacted = redactSensitiveText(normalized);
-  if (redacted.redactions.apiKeyLike > 0 || redacted.redactions.bearer > 0) {
-    return fallback;
-  }
-  const candidate = redacted.text.trim();
-  if (
-    !candidate ||
-    candidate.length > MAX_PUBLIC_RUN_ERROR_LENGTH ||
-    PRIVATE_RUN_ERROR_MARKER_PATTERN.test(candidate) ||
-    PATHISH_RUN_ERROR_PATTERN.test(candidate) ||
-    STACK_FRAME_RUN_ERROR_PATTERN.test(candidate)
-  ) {
-    return fallback;
-  }
-  return candidate;
-}
-
 function createRunSummary(record: ReviewRecord): ReviewRunSummary {
   const repository = record.authorization?.repository;
   const safeRequestModel = safeObservableModel(record.request.model);
   const safeModelResolved = safeObservableModel(
     record.result?.result.metadata.modelResolved
   );
+  const error = safeRunErrorForStatus(record.status, record.error);
   return {
     reviewId: record.reviewId,
     status: record.status,
@@ -309,9 +259,7 @@ function createRunSummary(record: ReviewRecord): ReviewRunSummary {
           },
         }
       : {}),
-    ...(safeRunErrorForTestSummary(record)
-      ? { error: safeRunErrorForTestSummary(record) }
-      : {}),
+    ...(error ? { error } : {}),
     findingCount: record.result?.result.findings.length ?? 0,
     artifactFormats: record.result
       ? Object.keys(record.result.artifacts).filter(
