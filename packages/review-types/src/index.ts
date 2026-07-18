@@ -1949,7 +1949,8 @@ export function safeObservableModelIdentifier(
     return undefined;
   }
   const candidate = redacted.text.trim();
-  return SAFE_MODEL_ID_PATTERN.test(candidate) ? candidate : undefined;
+  const parsed = SafeObservableIdentifierSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function requiredObservableModelIdentifier(value: string): string {

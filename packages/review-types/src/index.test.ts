@@ -609,6 +609,15 @@ describe('review-types schemas', () => {
     expect(safeObservableModelIdentifier(' gateway:openai/gpt-5 ')).toBe(
       'gateway:openai/gpt-5'
     );
+    const maxLengthIdentifier = 'a'.repeat(
+      DEFAULT_REVIEW_SECURITY_LIMITS.maxModelBytes
+    );
+    expect(safeObservableModelIdentifier(maxLengthIdentifier)).toBe(
+      maxLengthIdentifier
+    );
+    expect(
+      safeObservableModelIdentifier(`${maxLengthIdentifier}a`)
+    ).toBeUndefined();
   });
 
   it('validates hosted repository authorization metadata', () => {
