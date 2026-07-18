@@ -1,3 +1,4 @@
+import type { ReviewRunStatus } from '@review-agent/review-types';
 import { redactSensitiveText } from '@review-agent/review-types';
 
 const MAX_PUBLIC_RUN_ERROR_LENGTH = 240;
@@ -43,4 +44,32 @@ export function safeRunDiagnosticMessage(
     return fallback;
   }
   return candidate;
+}
+
+/**
+ * Returns the public error for a run status or omits it when no error exists.
+ *
+ * @param status - Current run status.
+ * @param error - Persisted terminal error, if any.
+ * @returns Redaction-safe status text or `undefined`.
+ */
+export function safeRunErrorForStatus(
+  status: ReviewRunStatus,
+  error?: string
+): string | undefined {
+  if (!error) {
+    return undefined;
+  }
+  if (error === 'runtime lease expired' || error === 'detached run not found') {
+    return error;
+  }
+  if (status === 'cancelled') {
+    return 'review run cancelled';
+  }
+  const fallback = /detached/i.test(error)
+    ? /start/i.test(error)
+      ? 'detached start failed'
+      : 'detached run failed'
+    : 'review run failed';
+  return safeRunDiagnosticMessage(error, fallback);
 }

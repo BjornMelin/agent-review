@@ -33,7 +33,7 @@ import {
 } from 'drizzle-orm/node-postgres';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import pg, { type PoolConfig } from 'pg';
-import { safeRunDiagnosticMessage } from '../run-diagnostics.js';
+import { safeRunErrorForStatus } from '../run-diagnostics.js';
 import * as schema from './schema.js';
 import {
   authAuditEvents,
@@ -991,21 +991,6 @@ function repositoryMatchesFilter(
       repository.name.toLowerCase() === filter.name.toLowerCase()
     );
   });
-}
-
-function safeRunErrorForStatus(status: ReviewRunStatus, error: string): string {
-  if (error === 'runtime lease expired' || error === 'detached run not found') {
-    return error;
-  }
-  if (status === 'cancelled') {
-    return 'review run cancelled';
-  }
-  const fallback = /detached/i.test(error)
-    ? /start/i.test(error)
-      ? 'detached start failed'
-      : 'detached run failed'
-    : 'review run failed';
-  return safeRunDiagnosticMessage(error, fallback);
 }
 
 function dateFromMs(value: number | undefined): Date | null {

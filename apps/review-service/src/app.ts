@@ -61,7 +61,10 @@ import {
   GitHubPublicationError,
   type ReviewPublicationService,
 } from './github-publication.js';
-import { safeRunDiagnosticMessage } from './run-diagnostics.js';
+import {
+  safeRunDiagnosticMessage,
+  safeRunErrorForStatus,
+} from './run-diagnostics.js';
 import {
   artifactMetadataForRecord,
   buildReviewRunMetrics,
@@ -426,27 +429,6 @@ function safeRunFailureMessage(
   return safeRunDiagnosticMessage(error, fallback);
 }
 
-function safeRunErrorForStatus(record: ReviewRecord): string | undefined {
-  if (!record.error) {
-    return undefined;
-  }
-  if (
-    record.error === 'runtime lease expired' ||
-    record.error === 'detached run not found'
-  ) {
-    return record.error;
-  }
-  if (record.status === 'cancelled') {
-    return 'review run cancelled';
-  }
-  const fallback = /detached/i.test(record.error)
-    ? /start/i.test(record.error)
-      ? 'detached start failed'
-      : 'detached run failed'
-    : 'review run failed';
-  return safeRunDiagnosticMessage(record.error, fallback);
-}
-
 function runLogRecord(
   event: ReviewServiceRunLogRecord['event'],
   record: ReviewRecord
@@ -558,12 +540,11 @@ function buildStatusResponse(
   }
 ): ReviewStatusResponse {
   const artifacts = artifactMetadataForRecord(record);
+  const error = safeRunErrorForStatus(record.status, record.error);
   return {
     reviewId: record.reviewId,
     status: record.status,
-    ...(safeRunErrorForStatus(record)
-      ? { error: safeRunErrorForStatus(record) }
-      : {}),
+    ...(error ? { error } : {}),
     ...(record.result
       ? { result: redactReviewResult(record.result.result).result }
       : {}),
